@@ -2091,26 +2091,6 @@ def _validate_flux_language_hints(hints: list[str]) -> list[str]:
 @register_stt(provider=DEEPGRAM_PROVIDER)
 class DeepgramSTTConfiguration(BaseSTTConfiguration):
     provider: Literal[ServiceProviders.DEEPGRAM] = ServiceProviders.DEEPGRAM
-    enable_eager_end_of_turn: bool = Field(
-        default=False,
-        description=(
-            "Generate speculative replies to Flux's predicted end of turn. "
-            "Replies are held until commit and discarded if the caller resumes. "
-            "Reduces latency at the cost of extra LLM requests."
-        ),
-        json_schema_extra={"visible_for_models": list(DEEPGRAM_FLUX_MODELS)},
-    )
-    eager_eot_threshold: float = Field(
-        default=0.5,
-        ge=0.3,
-        le=0.7,
-        description=(
-            "Flux eager confidence threshold, used only when eager end of turn "
-            "is enabled. Lower values predict sooner; must not exceed Dograh's "
-            "committed end-of-turn threshold of 0.7."
-        ),
-        json_schema_extra={"visible_for_models": list(DEEPGRAM_FLUX_MODELS)},
-    )
     model: str = Field(
         default="nova-3-general",
         description="Deepgram STT model.",
@@ -2144,6 +2124,26 @@ class DeepgramSTTConfiguration(BaseSTTConfiguration):
             "examples": DEEPGRAM_FLUX_MULTILINGUAL_LANGUAGES,
             "visible_for_models": ["flux-general-multi"],
         },
+    )
+    enable_eager_end_of_turn: bool = Field(
+        default=False,
+        description=(
+            "Generate speculative replies to Flux's predicted end of turn. "
+            "Replies are held until commit and discarded if the caller resumes. "
+            "Reduces latency at the cost of extra LLM requests."
+        ),
+        json_schema_extra={"visible_for_models": list(DEEPGRAM_FLUX_MODELS)},
+    )
+    eager_eot_threshold: float = Field(
+        default=0.5,
+        ge=0.3,
+        le=0.7,
+        description=(
+            "Flux eager confidence threshold, used only when eager end of turn "
+            "is enabled. Lower values predict sooner; must not exceed Dograh's "
+            "committed end-of-turn threshold of 0.7."
+        ),
+        json_schema_extra={"visible_for_models": list(DEEPGRAM_FLUX_MODELS)},
     )
 
     base_url: str = Field(
@@ -2254,6 +2254,29 @@ DOGRAH_MULTILINGUAL_AUTODETECT_LANGUAGES = DEEPGRAM_FLUX_MULTILINGUAL_LANGUAGES
 @register_stt(provider=DOGRAH_PROVIDER)
 class DograhSTTService(BaseSTTConfiguration):
     provider: Literal[ServiceProviders.DOGRAH] = ServiceProviders.DOGRAH
+    model: str = Field(
+        default="default",
+        description="Dograh STT tier.",
+        json_schema_extra={"examples": DOGRAH_STT_MODELS},
+    )
+    language: str = Field(
+        default="multi",
+        description="Language code; use 'multi' for auto-detect, optionally guided by language hints.",
+        json_schema_extra={"examples": DOGRAH_STT_LANGUAGES},
+    )
+    language_hints: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Languages to bias transcription toward, in addition to the language "
+            "above. For English and Spanish calls, choose auto-detect and select "
+            "both hints. Hints guide recognition without restricting it to these "
+            "languages, and only apply to Flux-supported languages."
+        ),
+        json_schema_extra={
+            "examples": DEEPGRAM_FLUX_MULTILINGUAL_LANGUAGES,
+            "visible_for_languages": DEEPGRAM_FLUX_MULTILINGUAL_LANGUAGE_OPTIONS,
+        },
+    )
     enable_eager_end_of_turn: bool = Field(
         default=False,
         description=(
@@ -2275,29 +2298,6 @@ class DograhSTTService(BaseSTTConfiguration):
             "committed end-of-turn threshold of 0.7."
         ),
         json_schema_extra={
-            "visible_for_languages": DEEPGRAM_FLUX_MULTILINGUAL_LANGUAGE_OPTIONS,
-        },
-    )
-    model: str = Field(
-        default="default",
-        description="Dograh STT tier.",
-        json_schema_extra={"examples": DOGRAH_STT_MODELS},
-    )
-    language: str = Field(
-        default="multi",
-        description="Language code; use 'multi' for auto-detect, optionally guided by language hints.",
-        json_schema_extra={"examples": DOGRAH_STT_LANGUAGES},
-    )
-    language_hints: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Languages to bias transcription toward, in addition to the language "
-            "above. For English and Spanish calls, choose auto-detect and select "
-            "both hints. Hints guide recognition without restricting it to these "
-            "languages, and only apply to Flux-supported languages."
-        ),
-        json_schema_extra={
-            "examples": DEEPGRAM_FLUX_MULTILINGUAL_LANGUAGES,
             "visible_for_languages": DEEPGRAM_FLUX_MULTILINGUAL_LANGUAGE_OPTIONS,
         },
     )

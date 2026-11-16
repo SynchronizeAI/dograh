@@ -67,6 +67,7 @@ class _Attempt:
     cancelled: bool = False
     done: bool = False
     first_output: float | None = None
+    first_byte: float | None = None
     buffered: list[tuple[Frame, FrameDirection]] = field(default_factory=list)
 
 
@@ -348,13 +349,23 @@ class FallbackLLMProcessor(LLMService):
         ) or isinstance(frame, AssistantImageRawFrame):
             self._choose(attempt)
         if isinstance(frame, MetricsFrame):
-            # Include the delay before a backup request in user-visible timing.
+            # Include the backup's wait, but exclude speculative lead time once
+            # the turn is committed. Non-speculative races keep their origin.
+            metrics_started = (
+                race.hedge_started if race.hedge_started is not None else race.started
+            )
             for data in frame.data:
                 if isinstance(data, TTFBMetricsData):
-                    data.value = time.monotonic() - race.started
+                    attempt.first_byte = time.monotonic()
+                    data.value = attempt.first_byte - metrics_started
                 elif isinstance(data, TTFATMetricsData):
-                    data.ttfat = time.monotonic() - race.started
-                    data.ttfb = attempt.first_output or data.ttfb
+                    data.ttfat = time.monotonic() - metrics_started
+                    data.ttfb = (
+                        max(0, attempt.first_byte - metrics_started)
+                        if metrics_started != race.started
+                        and attempt.first_byte is not None
+                        else attempt.first_output or data.ttfb
+                    )
                     data.thinking_time = data.ttfat - data.ttfb
             frame.data = [
                 data
@@ -561,15 +572,6 @@ class FallbackLLMProcessor(LLMService):
             # Match standalone LLMService: stop the withdrawn request as well
             # as dropping its buffered output. This also retires its hedge.
             await self._handle_user_turn_response_cancel(frame)
-        elif (
-            isinstance(frame, UserStoppedSpeakingFrame)
-            and direction == FrameDirection.DOWNSTREAM
-            and (race := self._active_race) is not None
-            and race.hedge_started is None
-            and not race.interrupted
-        ):
-            race.hedge_started = time.monotonic()
-            race.changed.set()
         if isinstance(frame, StartFrame) and self._output_task is None:
             self._output_task = self.create_task(self._drain_output())
         if isinstance(frame, LLMContextFrame):
@@ -604,3 +606,14 @@ class FallbackLLMProcessor(LLMService):
         # A flush probe traverses this single ordered queue on all three legs;
         # it never splits into branches or gets deduplicated by frame ID.
         await LLMService.push_frame(self, frame, direction)
+        if (
+            isinstance(frame, UserStoppedSpeakingFrame)
+            and direction == FrameDirection.DOWNSTREAM
+            and (race := self._active_race) is not None
+            and race.hedge_started is None
+            and not self._speculation_gate.is_speculating
+        ):
+            # Generation may start while the control frame flushes. Inspect
+            # the race only after the gate has recorded the committed turn.
+            race.hedge_started = time.monotonic()
+            race.changed.set()

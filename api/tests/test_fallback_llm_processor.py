@@ -32,7 +32,11 @@ from pipecat.frames.frames import (
     MetricsFrame,
     StartFrame,
 )
-from pipecat.metrics.metrics import LLMUsageMetricsData, TTFBMetricsData
+from pipecat.metrics.metrics import (
+    LLMUsageMetricsData,
+    TTFATMetricsData,
+    TTFBMetricsData,
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import (
@@ -846,6 +850,77 @@ async def test_speculative_no_output_hedge_gets_full_1200ms_after_commit(
     await control(harness, UserStoppedSpeakingFrame())
     await asyncio.wait_for(backup.started.wait(), 2)
     assert asyncio.get_running_loop().time() - committed >= 1.2
+    async with asyncio.timeout(1):
+        while not any(isinstance(f, LLMTextFrame) for f in harness.downstream.frames):
+            await asyncio.sleep(0.001)
+    assert [
+        f.text for f in harness.downstream.frames if isinstance(f, LLMTextFrame)
+    ] == ["backup"]
+    assert primary.closed.is_set()
+    timings = [
+        data
+        for f in harness.downstream.frames
+        if isinstance(f, MetricsFrame)
+        for data in f.data
+        if isinstance(data, (TTFBMetricsData, TTFATMetricsData))
+    ]
+    assert len(timings) == 2
+    for data in timings:
+        # The 1.25 seconds spent speculating are excluded from public latency.
+        elapsed = data.value if isinstance(data, TTFBMetricsData) else data.ttfat
+        assert 1.2 <= elapsed < 2
+    ttfb = next(data for data in timings if isinstance(data, TTFBMetricsData))
+    ttfat = next(data for data in timings if isinstance(data, TTFATMetricsData))
+    assert ttfat.ttfb == pytest.approx(ttfb.value, abs=0.02)
+    assert ttfat.thinking_time == pytest.approx(ttfat.ttfat - ttfat.ttfb)
+
+
+@pytest.mark.asyncio
+async def test_speculation_started_during_commit_flush_keeps_hedge(
+    harness, monkeypatch
+):
+    from pipecat.frames.frames import UserStoppedSpeakingFrame
+
+    harness.llm._first_output_timeout_secs = 5
+    harness.llm.primary._stream_idle_timeout_secs = 5
+    primary, backup = Stream(asyncio.Event()), Stream(chunk("backup"))
+    install_streams(harness, monkeypatch, primary, backup)
+    entered, release = asyncio.Event(), asyncio.Event()
+    original_flush = harness.llm._flush_output
+
+    async def flush():
+        if asyncio.current_task() is committing:
+            entered.set()
+            await release.wait()
+        await original_flush()
+
+    monkeypatch.setattr(harness.llm, "_flush_output", flush)
+    committing = asyncio.create_task(
+        harness.llm.process_frame(UserStoppedSpeakingFrame(), DOWN)
+    )
+    generating = None
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        generating = asyncio.create_task(
+            harness.llm._generate(LLMContextFrame(LLMContext(), speculation=True))
+        )
+        await asyncio.wait_for(primary.started.wait(), 1)
+        assert harness.llm._speculation_gate.is_speculating
+        release.set()
+        await asyncio.wait_for(committing, 1)
+        await asyncio.wait_for(backup.started.wait(), 1)
+        await asyncio.wait_for(generating, 1)
+        assert [
+            f.text for f in harness.downstream.frames if isinstance(f, LLMTextFrame)
+        ] == ["backup"]
+        assert primary.closed.is_set()
+    finally:
+        release.set()
+        tasks = [committing, *([generating] if generating else [])]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio

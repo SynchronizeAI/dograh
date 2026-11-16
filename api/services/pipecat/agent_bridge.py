@@ -29,6 +29,7 @@ from pipecat.frames.frames import (
     StopWorkerFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
+    UserTurnResponseCancelFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
@@ -86,7 +87,14 @@ class AgentBridgeProcessor(BusBridgeProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await FrameProcessor.process_frame(self, frame, direction)
         if isinstance(
-            frame, (InterruptionFrame, CancelFrame, EndFrame, LLMContextFrame)
+            frame,
+            (
+                InterruptionFrame,
+                CancelFrame,
+                EndFrame,
+                LLMContextFrame,
+                UserTurnResponseCancelFrame,
+            ),
         ):
             await self._cancel_pending_inference()
         if isinstance(frame, CALL_FRAMES + TEED_FRAMES):

@@ -205,6 +205,9 @@ async def test_confirmed_flux_guess_releases_once(eager_pipeline):
     await wait_until(lambda: bool(h.spoken))
     assert h.spoken == ["Prepared answer."]
     assert [f.speculation for f in h.requests()] == [True]
+    await asyncio.sleep(0.1)
+    assert h.spoken == ["Prepared answer."]
+    assert [f.speculation for f in h.requests()] == [True]
 
 
 async def test_speculative_tools_wait_for_flux_commit(eager_pipeline):

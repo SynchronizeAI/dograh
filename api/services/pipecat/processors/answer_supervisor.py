@@ -15,6 +15,7 @@ from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
     LLMContextFrame,
+    LLMContextUserTurnFrame,
     ProposedUserStartedSpeakingFrame,
     ProposedUserStoppedSpeakingFrame,
     TranscriptionFrame,
@@ -45,16 +46,28 @@ class AnswerVerdict:
 
 
 class AnswerContextGate(FrameProcessor):
-    def __init__(self):
+    def __init__(self, context: LLMContext):
         # No queue between the aggregator commit and this drop acknowledgement.
         # Keep this processor free of waits, classification, and engine actions.
         super().__init__(enable_direct_mode=True)
         self.closed = True
+        self._context = context
         self.dropped_contexts = 0
         self.held_user_messages: dict[int, dict] = {}
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
+        if (
+            self.closed
+            and isinstance(frame, LLMContextUserTurnFrame)
+            and not frame.speculation
+        ):
+            # A matching eager commit emits a user-turn message without a
+            # second inference frame. Track the canonical messages too, so
+            # screening can discard machine speech from the shared context.
+            for message in self._context.messages:
+                if isinstance(message, dict) and message.get("role") == "user":
+                    self.held_user_messages[id(message)] = message
         if isinstance(frame, LLMContextFrame) and self.closed:
             self.dropped_contexts += 1
             for message in frame.context.messages:
@@ -76,7 +89,7 @@ class AnswerSupervisor(FrameProcessor):
         self.config = config
         self._context = context
         self._classify = classify
-        self._gate = AnswerContextGate()
+        self._gate = AnswerContextGate(context)
         self._armed_at: float | None = None
         self.opening_deadline = OpeningDeadline()
         self._onset: float | None = None

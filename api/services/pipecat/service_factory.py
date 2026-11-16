@@ -319,11 +319,17 @@ def _elevenlabs_realtime_stt_host(base_url: str) -> str:
     return websocket_url
 
 
-def stt_uses_external_turns(user_config) -> bool:
+def _stt_uses_flux(user_config) -> bool:
     if user_config.stt.provider == ServiceProviders.DEEPGRAM.value:
         return user_config.stt.model in DEEPGRAM_FLUX_MODELS
     if user_config.stt.provider == ServiceProviders.DOGRAH.value:
         return dograh_stt_uses_flux_language(getattr(user_config.stt, "language", None))
+    return False
+
+
+def stt_uses_external_turns(user_config) -> bool:
+    if _stt_uses_flux(user_config):
+        return True
     if user_config.stt.provider == ServiceProviders.CARTESIA.value:
         return user_config.stt.model == "ink-2"
     return False
@@ -331,15 +337,9 @@ def stt_uses_external_turns(user_config) -> bool:
 
 def stt_uses_eager_end_of_turn(user_config) -> bool:
     """Only Flux (direct or Dograh-managed) can speculate on its turn ends."""
-    config = user_config.stt
-    is_flux = (
-        config.provider == ServiceProviders.DEEPGRAM
-        and config.model in DEEPGRAM_FLUX_MODELS
-    ) or (
-        config.provider == ServiceProviders.DOGRAH
-        and dograh_stt_uses_flux_language(getattr(config, "language", None))
+    return _stt_uses_flux(user_config) and getattr(
+        user_config.stt, "enable_eager_end_of_turn", False
     )
-    return is_flux and getattr(config, "enable_eager_end_of_turn", False)
 
 
 class AzureLLMService(OpenAISpokenToolCallMixin, BaseAzureLLMService):

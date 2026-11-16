@@ -12,6 +12,7 @@ from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     CancelFrame,
     EndFrame,
+    EagerTranscriptionFrame,
     LLMContextFrame,
     ProposedUserStartedSpeakingFrame,
     ProposedUserStoppedSpeakingFrame,
@@ -33,7 +34,10 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.turns.user_mute import FirstSpeechUserMuteStrategy
 from pipecat.turns.user_start import ExternalUserTurnStartStrategy
 from pipecat.turns.user_stop import ExternalUserTurnStopStrategy
-from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat.turns.user_turn_strategies import (
+    EagerUserTurnStrategies,
+    UserTurnStrategies,
+)
 
 from api.schemas.answer_supervisor import AnswerSupervisorConfig
 from api.services.pipecat.answer_classification import (
@@ -56,7 +60,9 @@ class Capture(FrameProcessor):
 
 
 @asynccontextmanager
-async def call(*, classify=None, before_drop=None, arm_on_start=True, **settings):
+async def call(
+    *, classify=None, before_drop=None, arm_on_start=True, eager=False, **settings
+):
     config = AnswerSupervisorConfig(
         listening_window_ms=80,
         human_utterance_max_ms=40,
@@ -78,7 +84,9 @@ async def call(*, classify=None, before_drop=None, arm_on_start=True, **settings
     aggregator = LLMUserAggregator(
         context,
         params=LLMUserAggregatorParams(
-            user_turn_strategies=UserTurnStrategies(
+            user_turn_strategies=EagerUserTurnStrategies(enable_interruptions=False)
+            if eager
+            else UserTurnStrategies(
                 start=[ExternalUserTurnStartStrategy(enable_interruptions=False)],
                 stop=[ExternalUserTurnStopStrategy()],
             ),
@@ -130,6 +138,31 @@ async def call(*, classify=None, before_drop=None, arm_on_start=True, **settings
 
 async def verdict(c):
     return await asyncio.wait_for(c.supervisor.wait_for_verdict(), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_screening_discards_canonical_message_from_confirmed_eager_turn():
+    async with call(eager=True, listening_window_ms=1000) as c:
+        system = {"role": "system", "content": "Keep this instruction"}
+        c.context.add_message(system)
+        text = "Please leave a message after the beep."
+        await c.worker.queue_frame(ProposedUserStartedSpeakingFrame())
+        await asyncio.sleep(0.02)
+        await c.worker.queue_frame(EagerTranscriptionFrame(text, "synthetic", ""))
+        async with asyncio.timeout(1):
+            while c.supervisor.llm_gate().dropped_contexts != 1:
+                await asyncio.sleep(0.005)
+        await c.worker.queue_frame(
+            TranscriptionFrame(text, "synthetic", "", finalized=True)
+        )
+        await c.worker.queue_frame(ProposedUserStoppedSpeakingFrame())
+        await verdict(c)
+        committed = next(m for m in c.context.messages if m.get("role") == "user")
+        assert id(committed) in c.supervisor.llm_gate().held_user_messages
+        # Confirmation reuses the inference, so the gate sees no second context.
+        assert c.supervisor.llm_gate().dropped_contexts == 1
+        c.supervisor.begin_screening_wait(start_timeout=False)
+        assert c.context.messages == [system]
 
 
 @pytest.mark.asyncio

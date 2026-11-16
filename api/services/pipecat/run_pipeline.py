@@ -71,6 +71,7 @@ from api.services.pipecat.service_factory import (
     create_stt_service,
     get_llm_runtime_configuration,
     stt_uses_external_turns,
+    stt_uses_eager_end_of_turn,
 )
 from api.services.pipecat.termination_funnel_processor import (
     TerminationFunnelProcessor,
@@ -122,7 +123,10 @@ from pipecat.turns.user_stop import (
     SpeechTimeoutUserTurnStopStrategy,
     TurnAnalyzerUserTurnStopStrategy,
 )
-from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat.turns.user_turn_strategies import (
+    EagerUserTurnStrategies,
+    UserTurnStrategies,
+)
 from pipecat.utils.enums import RealtimeFeedbackType
 from pipecat.utils.run_context import set_current_org_id, set_current_run_id
 
@@ -259,6 +263,27 @@ def _create_non_realtime_user_turn_stop_strategies(
         ]
 
     return [SpeechTimeoutUserTurnStopStrategy()]
+
+
+def _create_non_realtime_user_turn_strategies(
+    run_configs: dict, user_config, *, uses_external_turns: bool
+):
+    start = _create_non_realtime_user_turn_start_strategies(
+        run_configs, uses_external_turns=uses_external_turns
+    )
+    if stt_uses_eager_end_of_turn(user_config):
+        # Preserve the workflow's interruption policy (including min_words).
+        # This Pipecat version's ExternalUserTurnStrategies.__post_init__
+        # overwrites constructor-supplied start strategies.
+        strategies = EagerUserTurnStrategies()
+        strategies.start = start
+        return strategies
+    return UserTurnStrategies(
+        start=start,
+        stop=_create_non_realtime_user_turn_stop_strategies(
+            run_configs, uses_external_turns=uses_external_turns
+        ),
+    )
 
 
 def _create_realtime_user_turn_config(provider: str, model: str | None = None):
@@ -998,8 +1023,9 @@ async def _run_pipeline_impl(
         # Provider turn endings stay authoritative even when a word threshold
         # controls when the caller can interrupt.
         uses_external_turns = stt_uses_external_turns(user_config)
-        user_turn_start_strategies = _create_non_realtime_user_turn_start_strategies(
+        user_turn_strategies = _create_non_realtime_user_turn_strategies(
             run_configs,
+            user_config,
             uses_external_turns=uses_external_turns,
         )
         turn_start_strategy = run_configs.get(
@@ -1009,17 +1035,8 @@ async def _run_pipeline_impl(
         logger.info(
             f"[run {workflow_run_id}] Non-realtime interrupt strategy "
             f"requested={turn_start_strategy} "
-            f"resolved={','.join(type(s).__name__ for s in user_turn_start_strategies)} "
+            f"resolved={','.join(type(s).__name__ for s in user_turn_strategies.start)} "
             f"uses_external_turns={uses_external_turns}"
-        )
-
-        user_turn_stop_strategies = _create_non_realtime_user_turn_stop_strategies(
-            run_configs,
-            uses_external_turns=uses_external_turns,
-        )
-        user_turn_strategies = UserTurnStrategies(
-            start=user_turn_start_strategies,
-            stop=user_turn_stop_strategies,
         )
 
     user_turn_stop_timeout = _resolve_user_turn_stop_timeout(

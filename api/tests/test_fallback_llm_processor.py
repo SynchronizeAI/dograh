@@ -789,7 +789,10 @@ async def test_speculative_winner_releases_once_on_confirmed_turn(harness, monke
     from pipecat.frames.frames import UserStoppedSpeakingFrame
 
     install_streams(
-        harness, monkeypatch, Stream(asyncio.Event()), Stream(chunk("backup"))
+        harness,
+        monkeypatch,
+        Stream(ConnectionError("primary")),
+        Stream(chunk("backup")),
     )
     assert await generate(harness, speculation=True) == []
     await control(harness, UserStoppedSpeakingFrame())
@@ -812,7 +815,7 @@ async def test_superseded_speculative_backup_cannot_release_old_text(
 ):
     from pipecat.frames.frames import UserStoppedSpeakingFrame
 
-    primary = Stream(asyncio.Event())
+    primary = Stream(ConnectionError("primary"))
     install_streams(harness, monkeypatch, primary, Stream(chunk("old")))
     assert await generate(harness, speculation=True) == []
     primary.steps = (chunk("new"),)
@@ -821,6 +824,51 @@ async def test_superseded_speculative_backup_cannot_release_old_text(
     assert [
         f.text for f in harness.downstream.frames if isinstance(f, LLMTextFrame)
     ] == ["new"]
+
+
+@pytest.mark.asyncio
+async def test_speculative_no_output_hedge_gets_full_1200ms_after_commit(
+    harness, monkeypatch
+):
+    from pipecat.frames.frames import UserStoppedSpeakingFrame
+
+    harness.llm._fallback_after_secs = 1.2
+    harness.llm._first_output_timeout_secs = 5
+    harness.llm.primary._stream_idle_timeout_secs = 5
+    primary, backup = Stream(asyncio.Event()), Stream(chunk("backup"))
+    install_streams(harness, monkeypatch, primary, backup)
+    await harness.llm.queue_frame(LLMContextFrame(LLMContext(), speculation=True))
+    await asyncio.wait_for(primary.started.wait(), 1)
+    # More than a hedge interval spent guessing must not launch a backup.
+    await asyncio.sleep(1.25)
+    assert not backup.started.is_set()
+    committed = asyncio.get_running_loop().time()
+    await control(harness, UserStoppedSpeakingFrame())
+    await asyncio.wait_for(backup.started.wait(), 2)
+    assert asyncio.get_running_loop().time() - committed >= 1.2
+
+
+@pytest.mark.asyncio
+async def test_withdrawn_speculation_retires_request_and_hedge(harness, monkeypatch):
+    from pipecat.frames.frames import (
+        UserTurnResponseCancelFrame,
+        UserStoppedSpeakingFrame,
+    )
+
+    harness.llm._first_output_timeout_secs = 5
+    primary, backup = Stream(asyncio.Event()), Stream(chunk("backup"))
+    install_streams(harness, monkeypatch, primary, backup)
+    await harness.llm.queue_frame(LLMContextFrame(LLMContext(), speculation=True))
+    await asyncio.wait_for(primary.started.wait(), 1)
+    await control(harness, UserTurnResponseCancelFrame())
+    assert primary.closed.is_set()
+    await asyncio.sleep(0.04)
+    assert not backup.started.is_set()
+    # The final turn has its own full hedge budget.
+    await control(harness, UserStoppedSpeakingFrame())
+    primary.steps = (chunk("committed answer"),)
+    assert await generate(harness) == ["committed answer"]
+    assert not backup.started.is_set()
 
 
 @pytest.mark.asyncio

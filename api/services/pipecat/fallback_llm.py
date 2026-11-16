@@ -33,6 +33,8 @@ from pipecat.frames.frames import (
     MetricsFrame,
     NodeTransitionStartedFrame,
     StartFrame,
+    UserStoppedSpeakingFrame,
+    UserTurnResponseCancelFrame,
 )
 from pipecat.metrics.metrics import (
     LLMUsageMetricsData,
@@ -71,6 +73,7 @@ class _Attempt:
 @dataclass
 class _Race:
     started: float = field(default_factory=time.monotonic)
+    hedge_started: float | None = None
     changed: asyncio.Event = field(default_factory=asyncio.Event)
     attempts: list[_Attempt] = field(default_factory=list)
     winner: _Attempt | None = None
@@ -119,6 +122,7 @@ class FallbackLLMProcessor(LLMService):
         self._first_output_timeout_secs = first_output_timeout_secs
         self._fallback_metrics = {"started": 0, "won": 0}
         self._latest: list[_Attempt | None] = [None] * len(services)
+        self._active_race: _Race | None = None
         self._outbox: asyncio.Queue[
             tuple[Frame, FrameDirection, _Attempt | None] | asyncio.Future[None]
         ] = asyncio.Queue()
@@ -461,6 +465,11 @@ class FallbackLLMProcessor(LLMService):
             # be by LLMService._begin_tool_response on a single service.
             service._discard_pending_node_transition_calls("new_context")
         race = _Race()
+        # Speculation buys the primary time, not an earlier backup request.
+        # A matching commit wakes this race and starts its no-output budget.
+        if not self._speculation_gate.is_speculating:
+            race.hedge_started = race.started
+        self._active_race = race
         self._launch(race, 0, frame)
         loser_cleanup = None
         try:
@@ -483,9 +492,10 @@ class FallbackLLMProcessor(LLMService):
                     and not primary.done
                     and primary.error is None
                     and self._fallback_after_secs is not None
+                    and race.hedge_started is not None
                 ):
                     remaining = self._fallback_after_secs - (
-                        time.monotonic() - race.started
+                        time.monotonic() - race.hedge_started
                     )
                     if remaining <= 0:
                         self._launch(race, slow_index, frame)
@@ -538,6 +548,8 @@ class FallbackLLMProcessor(LLMService):
                         for a in race.attempts
                     ],
                 )
+            if self._active_race is race:
+                self._active_race = None
             if cancelled:
                 raise asyncio.CancelledError
 
@@ -545,6 +557,19 @@ class FallbackLLMProcessor(LLMService):
         # The wrapper owns the ordered data queue. Child direct-mode tasks are
         # cancelled in _generate's finally before an interruption is forwarded.
         await FrameProcessor.process_frame(self, frame, direction)
+        if isinstance(frame, UserTurnResponseCancelFrame):
+            # Match standalone LLMService: stop the withdrawn request as well
+            # as dropping its buffered output. This also retires its hedge.
+            await self._handle_user_turn_response_cancel(frame)
+        elif (
+            isinstance(frame, UserStoppedSpeakingFrame)
+            and direction == FrameDirection.DOWNSTREAM
+            and (race := self._active_race) is not None
+            and race.hedge_started is None
+            and not race.interrupted
+        ):
+            race.hedge_started = time.monotonic()
+            race.changed.set()
         if isinstance(frame, StartFrame) and self._output_task is None:
             self._output_task = self.create_task(self._drain_output())
         if isinstance(frame, LLMContextFrame):

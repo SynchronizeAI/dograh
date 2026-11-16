@@ -7,6 +7,7 @@ from pipecat.transcriptions.language import Language
 
 from api.services.configuration.registry import (
     DeepgramSTTConfiguration,
+    DograhSTTService,
     ServiceProviders,
 )
 from api.services.pipecat.audio_config import AudioConfig
@@ -109,6 +110,56 @@ def test_create_deepgram_flux_multi_sends_every_language_hint():
     settings = _create_flux_multi("multi", ["hi", "en"])
 
     assert settings.language_hints == [Language.HI, Language.EN]
+
+
+@pytest.mark.parametrize("schema", [DeepgramSTTConfiguration, DograhSTTService])
+@pytest.mark.parametrize("threshold", [0.3, 0.4, 0.5, 0.7])
+def test_flux_eager_threshold_accepts_supported_values(schema, threshold):
+    config = schema(api_key="test-key", eager_eot_threshold=threshold)
+    assert config.eager_eot_threshold == threshold
+    assert config.enable_eager_end_of_turn is False
+
+
+@pytest.mark.parametrize("schema", [DeepgramSTTConfiguration, DograhSTTService])
+@pytest.mark.parametrize(
+    "threshold", [0.29, 0.71, -1, 1, float("nan"), float("inf"), None]
+)
+def test_flux_eager_threshold_rejects_invalid_values(schema, threshold):
+    with pytest.raises(ValueError, match="eager_eot_threshold"):
+        schema(api_key="test-key", eager_eot_threshold=threshold)
+
+
+@pytest.mark.parametrize(
+    ("schema", "model", "factory"),
+    [
+        (DeepgramSTTConfiguration, "flux-general-en", "DeepgramFluxSTTService"),
+        (DeepgramSTTConfiguration, "flux-general-multi", "DeepgramFluxSTTService"),
+        (DograhSTTService, "default", "DograhFluxSTTService"),
+    ],
+)
+@pytest.mark.parametrize("enabled", [None, False, True])
+def test_flux_eager_constructor_is_opt_in(schema, model, factory, enabled):
+    fields = {} if enabled is None else {"enable_eager_end_of_turn": enabled}
+    config = schema(api_key="test-key", model=model, eager_eot_threshold=0.4, **fields)
+    with patch(f"api.services.pipecat.service_factory.{factory}") as service:
+        create_stt_service(
+            SimpleNamespace(stt=config),
+            AudioConfig(
+                transport_in_sample_rate=16000, transport_out_sample_rate=16000
+            ),
+            keyterms=["Dograh"],
+        )
+    kwargs = service.call_args.kwargs
+    assert kwargs.get("enable_eager_end_of_turn", False) is bool(enabled)
+    if not enabled:
+        assert "enable_eager_end_of_turn" not in kwargs
+    settings = kwargs["settings"]
+    assert settings.eager_eot_threshold == (0.4 if enabled else 0.5)
+    assert settings.eot_threshold == 0.7
+    assert settings.eot_timeout_ms == 3000
+    assert settings.keyterm == ["Dograh"]
+    assert kwargs["sample_rate"] == 16000
+    assert kwargs["should_interrupt"] is False
 
 
 def test_create_deepgram_flux_multi_combines_language_with_hints_once():

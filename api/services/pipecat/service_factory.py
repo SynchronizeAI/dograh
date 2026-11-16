@@ -329,6 +329,19 @@ def stt_uses_external_turns(user_config) -> bool:
     return False
 
 
+def stt_uses_eager_end_of_turn(user_config) -> bool:
+    """Only Flux (direct or Dograh-managed) can speculate on its turn ends."""
+    config = user_config.stt
+    is_flux = (
+        config.provider == ServiceProviders.DEEPGRAM
+        and config.model in DEEPGRAM_FLUX_MODELS
+    ) or (
+        config.provider == ServiceProviders.DOGRAH
+        and dograh_stt_uses_flux_language(getattr(config, "language", None))
+    )
+    return is_flux and getattr(config, "enable_eager_end_of_turn", False)
+
+
 class AzureLLMService(OpenAISpokenToolCallMixin, BaseAzureLLMService):
     """Azure streaming service with spoken-tool recovery."""
 
@@ -637,6 +650,13 @@ def create_stt_service(
     is_deepgram = user_config.stt.provider == ServiceProviders.DEEPGRAM.value
     deepgram_base_url = _deepgram_base_url(user_config.stt) if is_deepgram else None
     configurable_settings = _stt_configurable_settings(user_config.stt)
+    eager_enabled = stt_uses_eager_end_of_turn(user_config)
+    # Keep the disabled constructor and wire parameters exactly as before,
+    # even if a saved configuration retains a custom eager threshold.
+    eager_kwargs = {"enable_eager_end_of_turn": True} if eager_enabled else {}
+    eager_threshold = (
+        getattr(user_config.stt, "eager_eot_threshold", 0.5) if eager_enabled else 0.5
+    )
 
     logger.info(
         f"Creating STT service: provider={user_config.stt.provider}, "
@@ -650,7 +670,7 @@ def create_stt_service(
                 "model": user_config.stt.model,
                 "eot_timeout_ms": 3000,
                 "eot_threshold": 0.7,
-                "eager_eot_threshold": 0.5,
+                "eager_eot_threshold": eager_threshold,
                 "keyterm": keyterms or [],
                 **configurable_settings,
             }
@@ -662,6 +682,7 @@ def create_stt_service(
                 settings=DeepgramFluxSTTSettings(**settings_kwargs),
                 should_interrupt=False,  # Let UserAggregator take care of sending InterruptionFrame
                 sample_rate=audio_config.transport_in_sample_rate,
+                **eager_kwargs,
             )
 
         # Other models than flux
@@ -731,7 +752,7 @@ def create_stt_service(
                 "model": "flux-general-multi",
                 "eot_timeout_ms": 3000,
                 "eot_threshold": 0.7,
-                "eager_eot_threshold": 0.5,
+                "eager_eot_threshold": eager_threshold,
                 "keyterm": keyterms or [],
                 **configurable_settings,
             }
@@ -742,6 +763,7 @@ def create_stt_service(
                 settings=DeepgramFluxSTTSettings(**settings_kwargs),
                 should_interrupt=False,  # external turn strategies own interruption
                 sample_rate=audio_config.transport_in_sample_rate,
+                **eager_kwargs,
             )
 
         return DograhSTTService(

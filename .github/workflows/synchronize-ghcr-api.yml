@@ -1,0 +1,66 @@
+# Fork-only (SynchronizeAI/dograh): build the API image for our self-hosted Dograh from this branch and push it
+# to GHCR. Same build as upstream's build-api-image.yml (api/Dockerfile, linux/amd64, submodules), different
+# registry. Not part of the upstream PR.
+name: Synchronize GHCR API image
+
+on:
+  push:
+    branches:
+      - fm/eager-eot-1.51
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: synchronize-ghcr-api
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: false
+          dotnet: false
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Compute tag
+        id: tag
+        run: echo "tag=1.51.0-eager-$(git rev-parse --short=8 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: api/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/synchronizeai/dograh-api:${{ steps.tag.outputs.tag }}
+          labels: org.opencontainers.image.source=https://github.com/SynchronizeAI/dograh
+          cache-from: type=gha,scope=dograh-api-amd64
+          cache-to: type=gha,mode=max,scope=dograh-api-amd64
+
+      - name: Summary
+        run: echo "\`ghcr.io/synchronizeai/dograh-api:${{ steps.tag.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"

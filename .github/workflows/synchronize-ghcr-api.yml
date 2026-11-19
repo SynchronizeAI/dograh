@@ -1,0 +1,189 @@
+# Fork-only (SynchronizeAI/dograh): run API tests and build the API image for sync/**
+# branches, pushing to GHCR. Not part of upstream Dograh.
+name: Synchronize GHCR API image
+
+on:
+  push:
+    branches:
+      - 'sync/**'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag or SHA to build. Empty uses the workflow default ref.'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: synchronize-ghcr-api-${{ inputs.ref || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    # Pin one commit for every job. The ref input only ever reaches
+    # actions/checkout, never a shell; the SHA is read back from the checkout.
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.pin.outputs.sha }}
+    steps:
+      - name: Checkout requested ref
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Pin commit SHA
+        id: pin
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          [[ $sha =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        # pgvector image: api/alembic/versions/dc33eef8dabe_add_document_tables.py
+        # runs CREATE EXTENSION vector, which plain postgres doesn't ship.
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # api/conftest.py creates test_db via the postgres admin DB.
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/test_db
+      REDIS_URL: redis://localhost:6379/0
+      ENABLE_AWS_S3: "false"
+      # MINIO is not actually contacted by tests, but storage.py constructs
+      # the MinioFileSystem at import time and requires MINIO_PUBLIC_ENDPOINT.
+      MINIO_PUBLIC_ENDPOINT: http://localhost:9000
+      DEPLOYMENT_MODE: oss
+      ENVIRONMENT: test
+      LOG_LEVEL: DEBUG
+      PYTHONPATH: ${{ github.workspace }}
+
+    steps:
+      - name: Checkout repo (with pipecat submodule)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+
+      - name: Set up Node 22 (test_ts_bridge.py shells out to node)
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      - name: Create Python virtual environment
+        run: |
+          python -m venv .venv
+          echo "${{ github.workspace }}/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Install api and pipecat dependencies
+        run: ./scripts/setup_requirements.sh --dev
+
+      - name: Install ts_validator npm deps
+        working-directory: api/mcp_server/ts_validator
+        run: npm install
+
+      # Upstream api-tests.yml runs `pytest tests/ -xvs`. This job drops -x (the
+      # full suite runs every round, so one push shows every failure) and -s.
+      - name: Run pytest
+        working-directory: api
+        run: pytest tests/ -v
+
+  build:
+    needs: [resolve, test]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
+        with:
+          android: false
+          dotnet: false
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          submodules: true
+          persist-credentials: false
+
+      - name: Compute tag
+        id: tag
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' api/pyproject.toml)
+          test -n "$version"
+          sha=$(git rev-parse HEAD)
+          echo "tag=${version}-sync.${sha:0:8}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: api/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/synchronizeai/dograh-api:${{ steps.tag.outputs.tag }}
+          labels: org.opencontainers.image.source=https://github.com/SynchronizeAI/dograh
+          cache-from: type=gha,scope=dograh-api-amd64
+          cache-to: type=gha,mode=max,scope=dograh-api-amd64
+
+      - name: Summary
+        run: |
+          {
+            echo "\`ghcr.io/synchronizeai/dograh-api:${{ steps.tag.outputs.tag }}\`"
+            echo "digest: \`${{ steps.build.outputs.digest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

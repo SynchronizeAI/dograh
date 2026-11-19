@@ -426,3 +426,96 @@ def test_unsupported_or_disabled_calls_do_not_create_a_classifier(
         assert not supervisor.config.enabled
         assert supervisor.llm_gate().closed
     factory.assert_not_called()
+
+
+@pytest.mark.parametrize("classifier_enabled", [False, True])
+@pytest.mark.parametrize(
+    ("stt_kwargs", "expected"),
+    [
+        (
+            {
+                "api_key": "test-key",
+                "model": "flux-general-en",
+                "enable_eager_end_of_turn": True,
+            },
+            True,
+        ),
+        ({"api_key": "test-key", "model": "flux-general-en"}, False),
+        ({"api_key": "test-key", "model": "nova-3-general"}, False),
+    ],
+)
+def test_answer_supervisor_track_eager_wiring(
+    monkeypatch, classifier_enabled, stt_kwargs, expected
+):
+    from pipecat.processors.aggregators.llm_context import LLMContext
+
+    from api.services.configuration.registry import DeepgramSTTConfiguration
+    from api.services.pipecat.run_pipeline import (
+        _create_answer_supervisor,
+        _eager_end_of_turn_enabled,
+    )
+
+    stt = DeepgramSTTConfiguration(**stt_kwargs)
+    user_config = SimpleNamespace(stt=stt)
+    track_eager = _eager_end_of_turn_enabled(user_config, False)
+    assert track_eager is expected
+
+    factory = Mock()
+    monkeypatch.setattr("api.services.pipecat.run_pipeline.create_llm_service", factory)
+    monkeypatch.setattr(
+        "api.services.pipecat.run_pipeline.create_llm_service_from_provider", factory
+    )
+    voicemail = (
+        {"enabled": True, "use_workflow_llm": True}
+        if classifier_enabled
+        else {"enabled": False}
+    )
+    supervisor = _create_answer_supervisor(
+        voicemail,
+        is_realtime=False,
+        start_node=None,
+        context=LLMContext(),
+        user_config=user_config,
+        correlation_id="test-run",
+        track_eager_user_turns=track_eager,
+    )
+    assert supervisor.llm_gate()._track_eager_user_turns is expected
+    if classifier_enabled:
+        factory.assert_called_once()
+    else:
+        factory.assert_not_called()
+
+
+@pytest.mark.parametrize("is_realtime", [False, True])
+@pytest.mark.parametrize(
+    ("stt_kwargs", "flux_eager"),
+    [
+        (
+            {
+                "api_key": "test-key",
+                "model": "flux-general-en",
+                "enable_eager_end_of_turn": True,
+            },
+            True,
+        ),
+        ({"api_key": "test-key", "model": "flux-general-en"}, False),
+        ({"api_key": "test-key", "model": "nova-3-general"}, False),
+    ],
+)
+def test_eager_end_of_turn_enabled_is_never_on_for_realtime(
+    is_realtime, stt_kwargs, flux_eager
+):
+    from api.services.configuration.registry import DeepgramSTTConfiguration
+    from api.services.pipecat.run_pipeline import _eager_end_of_turn_enabled
+
+    user_config = SimpleNamespace(stt=DeepgramSTTConfiguration(**stt_kwargs))
+    assert _eager_end_of_turn_enabled(user_config, is_realtime) is (
+        flux_eager and not is_realtime
+    )
+
+
+@pytest.mark.parametrize("user_config", [None, SimpleNamespace(stt=None), object()])
+def test_eager_end_of_turn_enabled_tolerates_a_missing_stt_config(user_config):
+    from api.services.pipecat.run_pipeline import _eager_end_of_turn_enabled
+
+    assert _eager_end_of_turn_enabled(user_config, False) is False

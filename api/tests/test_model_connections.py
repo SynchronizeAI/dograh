@@ -32,6 +32,41 @@ def selection(row, **settings):
     return {"provider_connection_uuid": row.uuid, "settings": settings}
 
 
+@pytest.mark.asyncio
+async def test_workflow_flux_eager_settings_survive_snapshot_hydration(catalog):
+    catalog(connection(), default=True)
+    deepgram = catalog(connection("deepgram", keys="test-key"))
+    result = await service.resolve_model_configuration(
+        1,
+        workflow_override={
+            "stt": selection(
+                deepgram,
+                model="flux-general-en",
+                enable_eager_end_of_turn=True,
+                eager_eot_threshold=0.4,
+            ),
+        },
+    )
+    restored = await service.hydrate_model_configuration_snapshot(1, result.snapshot)
+    assert restored.stt.enable_eager_end_of_turn is True
+    assert restored.stt.eager_eot_threshold == 0.4
+    assert restored.stt.model == "flux-general-en"
+
+
+@pytest.mark.asyncio
+async def test_workflow_flux_eager_override_validates_threshold(catalog):
+    catalog(connection(), default=True)
+    deepgram = catalog(connection("deepgram", keys="test-key"))
+    with pytest.raises(HTTPException) as error:
+        await service.resolve_model_configuration(
+            1,
+            workflow_override={
+                "stt": selection(deepgram, eager_eot_threshold=0.8),
+            },
+        )
+    assert error.value.status_code == 422
+
+
 def pipeline(row):
     return {
         "version": 3,

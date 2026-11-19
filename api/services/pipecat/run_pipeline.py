@@ -70,6 +70,7 @@ from api.services.pipecat.service_factory import (
     create_realtime_llm_service,
     create_stt_service,
     get_llm_runtime_configuration,
+    stt_uses_eager_end_of_turn,
     stt_uses_external_turns,
 )
 from api.services.pipecat.termination_funnel_processor import (
@@ -122,7 +123,10 @@ from pipecat.turns.user_stop import (
     SpeechTimeoutUserTurnStopStrategy,
     TurnAnalyzerUserTurnStopStrategy,
 )
-from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat.turns.user_turn_strategies import (
+    EagerUserTurnStrategies,
+    UserTurnStrategies,
+)
 from pipecat.utils.enums import RealtimeFeedbackType
 from pipecat.utils.run_context import set_current_org_id, set_current_run_id
 
@@ -131,6 +135,15 @@ ensure_tracing()
 
 DEFAULT_USER_TURN_STOP_TIMEOUT = 5.0
 EXTERNAL_TURN_USER_STOP_TIMEOUT = 30.0
+
+
+def _eager_end_of_turn_enabled(user_config, is_realtime) -> bool:
+    """Decide once whether Flux eager end-of-turn is on for this call.
+
+    The turn strategies and the answer supervisor's gate must agree, so both
+    take this value rather than reading the STT settings themselves.
+    """
+    return not is_realtime and stt_uses_eager_end_of_turn(user_config)
 
 
 def _create_answer_supervisor(
@@ -142,6 +155,7 @@ def _create_answer_supervisor(
     user_config,
     correlation_id,
     get_parent_context=None,
+    track_eager_user_turns: bool = False,
 ):
     config = resolve_answer_supervisor_config(
         voicemail_config,
@@ -151,7 +165,9 @@ def _create_answer_supervisor(
     if config is None:
         return None
     if not config.enabled:
-        return AnswerSupervisor(config, context=context)
+        return AnswerSupervisor(
+            config, context=context, track_eager_user_turns=track_eager_user_turns
+        )
     # Private inference uses its own service and fixed subtype instructions.
     if voicemail_config.get("use_workflow_llm", True):
         classifier_llm = create_llm_service(
@@ -171,7 +187,12 @@ def _create_answer_supervisor(
         system_prompt=voicemail_config.get("system_prompt"),
         get_parent_context=get_parent_context,
     )
-    return AnswerSupervisor(config, context=context, classify=classifier.classify)
+    return AnswerSupervisor(
+        config,
+        context=context,
+        classify=classifier.classify,
+        track_eager_user_turns=track_eager_user_turns,
+    )
 
 
 def _create_opening_input_gate(start_node, audio_buffer):
@@ -259,6 +280,30 @@ def _create_non_realtime_user_turn_stop_strategies(
         ]
 
     return [SpeechTimeoutUserTurnStopStrategy()]
+
+
+def _create_non_realtime_user_turn_strategies(
+    run_configs: dict,
+    *,
+    uses_external_turns: bool,
+    track_eager_user_turns: bool = False,
+):
+    start = _create_non_realtime_user_turn_start_strategies(
+        run_configs, uses_external_turns=uses_external_turns
+    )
+    if track_eager_user_turns:
+        # Preserve the workflow's interruption policy (including min_words).
+        # This Pipecat version's ExternalUserTurnStrategies.__post_init__
+        # overwrites constructor-supplied start strategies.
+        strategies = EagerUserTurnStrategies()
+        strategies.start = start
+        return strategies
+    return UserTurnStrategies(
+        start=start,
+        stop=_create_non_realtime_user_turn_stop_strategies(
+            run_configs, uses_external_turns=uses_external_turns
+        ),
+    )
 
 
 def _create_realtime_user_turn_config(provider: str, model: str | None = None):
@@ -971,6 +1016,7 @@ async def _run_pipeline_impl(
         correct_aggregation_callback=engine.create_aggregation_correction_callback(),
     )
 
+    eager_enabled = _eager_end_of_turn_enabled(user_config, is_realtime)
     voicemail_config = run_configs.get("voicemail_detection", {})
     answer_supervisor = _create_answer_supervisor(
         voicemail_config,
@@ -980,6 +1026,7 @@ async def _run_pipeline_impl(
         user_config=user_config,
         correlation_id=mps_correlation_id,
         get_parent_context=engine._get_otel_context,
+        track_eager_user_turns=eager_enabled,
     )
     user_mute_strategies = _create_user_mute_strategies(engine, answer_supervisor)
     if answer_supervisor is None:
@@ -998,9 +1045,10 @@ async def _run_pipeline_impl(
         # Provider turn endings stay authoritative even when a word threshold
         # controls when the caller can interrupt.
         uses_external_turns = stt_uses_external_turns(user_config)
-        user_turn_start_strategies = _create_non_realtime_user_turn_start_strategies(
+        user_turn_strategies = _create_non_realtime_user_turn_strategies(
             run_configs,
             uses_external_turns=uses_external_turns,
+            track_eager_user_turns=eager_enabled,
         )
         turn_start_strategy = run_configs.get(
             "turn_start_strategy", DEFAULT_TURN_START_STRATEGY
@@ -1009,17 +1057,8 @@ async def _run_pipeline_impl(
         logger.info(
             f"[run {workflow_run_id}] Non-realtime interrupt strategy "
             f"requested={turn_start_strategy} "
-            f"resolved={','.join(type(s).__name__ for s in user_turn_start_strategies)} "
+            f"resolved={','.join(type(s).__name__ for s in user_turn_strategies.start)} "
             f"uses_external_turns={uses_external_turns}"
-        )
-
-        user_turn_stop_strategies = _create_non_realtime_user_turn_stop_strategies(
-            run_configs,
-            uses_external_turns=uses_external_turns,
-        )
-        user_turn_strategies = UserTurnStrategies(
-            start=user_turn_start_strategies,
-            stop=user_turn_stop_strategies,
         )
 
     user_turn_stop_timeout = _resolve_user_turn_stop_timeout(

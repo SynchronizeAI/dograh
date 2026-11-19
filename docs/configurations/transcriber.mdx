@@ -22,3 +22,49 @@ Hints only help within the languages Flux multilingual supports. They do not add
 In **Dograh** mode, language hints are also available when you select auto-detect (`multi`) or a Flux-supported language. For bilingual English/Spanish calls, choose auto-detect and check **English** and **Spanish** under **Language hints**. These hints bias recognition toward both languages; they do not guarantee that other languages will be excluded.
 
 Selecting a specific Flux-supported language combines that language with your hints. Hints are hidden and unused when you select a language that Dograh routes to its standard transcriber.
+
+## Flux eager end of turn
+
+For Deepgram `flux-general-en` and `flux-general-multi`, you can enable
+`enable_eager_end_of_turn` in your STT model settings. It is also available in
+Dograh mode when the selected language uses Flux. It defaults to `false`.
+
+When enabled, the LLM prepares a reply at Flux's predicted end of turn. The
+reply is held until Flux commits the turn. If the caller resumes or the final
+transcript does not match, the prepared reply is discarded. Speculative tool
+calls are cancelled and retried against the committed transcript; they do not
+execute before commit. A configured no-output LLM fallback timer starts at
+commit, so speculative waiting does not trigger an early hedge.
+
+`eager_eot_threshold` defaults to `0.5`. You can set it from `0.3` to `0.7`,
+inclusive; it cannot exceed the fixed committed-turn threshold of `0.7`.
+Lower values predict sooner and can spend more LLM requests on withdrawn
+guesses. To opt into the more aggressive `0.4` setting for one workflow, use
+this fragment of its `workflow_configurations`:
+
+```json
+{
+  "model_configuration_override": {
+    "stt": {
+      "settings": {
+        "model": "flux-general-en",
+        "enable_eager_end_of_turn": true,
+        "eager_eot_threshold": 0.4
+      }
+    }
+  }
+}
+```
+
+This example inherits a Deepgram STT provider connection from your selected
+model configuration. To select a different connection, add
+`provider_connection_uuid` alongside `settings`. For Dograh's Flux proxy, keep
+the Dograh model and select `multi` or a Flux-supported language instead of
+setting `model` to `flux-general-en`.
+
+You can also save these fields under `configuration.stt.settings` in a named
+model configuration, or use the same `stt` override in an API trigger's
+`model_configuration_overrides`. The setting is fixed for the call; agent
+transfers do not change it. With eager end of turn disabled, Dograh keeps its
+existing turn strategy and sends the existing eager threshold of `0.5`, even
+if you saved a different threshold.

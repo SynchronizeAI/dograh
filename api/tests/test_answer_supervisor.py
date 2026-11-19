@@ -11,14 +11,18 @@ from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     CancelFrame,
+    EagerTranscriptionFrame,
     EndFrame,
+    InterimTranscriptionFrame,
     LLMContextFrame,
+    LLMContextUserTurnFrame,
     ProposedUserStartedSpeakingFrame,
     ProposedUserStoppedSpeakingFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
     UserIdleTimeoutUpdateFrame,
     UserStartedSpeakingFrame,
+    UserTurnResponseCancelFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
@@ -29,11 +33,14 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMUserAggregator,
     LLMUserAggregatorParams,
 )
-from pipecat.processors.frame_processor import FrameProcessor
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.turns.user_mute import FirstSpeechUserMuteStrategy
 from pipecat.turns.user_start import ExternalUserTurnStartStrategy
 from pipecat.turns.user_stop import ExternalUserTurnStopStrategy
-from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat.turns.user_turn_strategies import (
+    EagerUserTurnStrategies,
+    UserTurnStrategies,
+)
 
 from api.schemas.answer_supervisor import AnswerSupervisorConfig
 from api.services.pipecat.answer_classification import (
@@ -41,6 +48,7 @@ from api.services.pipecat.answer_classification import (
     classify_machine_utterance,
 )
 from api.services.pipecat.processors.answer_supervisor import AnswerSupervisor
+from api.services.pipecat.run_pipeline import _create_non_realtime_user_turn_strategies
 from api.services.pipecat.worker_runner import run_pipeline_worker
 
 
@@ -55,8 +63,51 @@ class Capture(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class UpstreamCancels(FrameProcessor):
+    """Head of the pipeline: records the cancels that travel up to the source."""
+
+    def __init__(self):
+        super().__init__()
+        self.frames = []
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if direction == FrameDirection.UPSTREAM and isinstance(
+            frame, UserTurnResponseCancelFrame
+        ):
+            self.frames.append(frame)
+        await self.push_frame(frame, direction)
+
+
+def user_turn_strategies(*, eager, turns):
+    if not eager:
+        return UserTurnStrategies(
+            start=[ExternalUserTurnStartStrategy(enable_interruptions=False)],
+            stop=[ExternalUserTurnStopStrategy()],
+        )
+    if turns == "bare":
+        return EagerUserTurnStrategies(enable_interruptions=False)
+    # What run_pipeline builds for a Flux call: turn starts interrupt the bot
+    # and the eager stop strategy answers a predicted end of turn. "external"
+    # follows the provider's turn starts; "min_words" is the workflow default.
+    start = {"external": "default", "min_words": "min_words"}[turns]
+    return _create_non_realtime_user_turn_strategies(
+        {"turn_start_strategy": start},
+        uses_external_turns=True,
+        track_eager_user_turns=True,
+    )
+
+
 @asynccontextmanager
-async def call(*, classify=None, before_drop=None, arm_on_start=True, **settings):
+async def call(
+    *,
+    classify=None,
+    before_drop=None,
+    arm_on_start=True,
+    eager=False,
+    turns="bare",
+    **settings,
+):
     config = AnswerSupervisorConfig(
         listening_window_ms=80,
         human_utterance_max_ms=40,
@@ -65,7 +116,12 @@ async def call(*, classify=None, before_drop=None, arm_on_start=True, **settings
         screening_wait_ms=180,
     ).model_copy(update=settings)
     context = LLMContext()
-    supervisor = AnswerSupervisor(config, context=context, classify=classify)
+    supervisor = AnswerSupervisor(
+        config,
+        context=context,
+        classify=classify,
+        track_eager_user_turns=eager,
+    )
     if before_drop is not None:
         original = supervisor.llm_gate().process_frame
 
@@ -78,17 +134,15 @@ async def call(*, classify=None, before_drop=None, arm_on_start=True, **settings
     aggregator = LLMUserAggregator(
         context,
         params=LLMUserAggregatorParams(
-            user_turn_strategies=UserTurnStrategies(
-                start=[ExternalUserTurnStartStrategy(enable_interruptions=False)],
-                stop=[ExternalUserTurnStopStrategy()],
-            ),
+            user_turn_strategies=user_turn_strategies(eager=eager, turns=turns),
             user_mute_strategies=[FirstSpeechUserMuteStrategy()],
         ),
     )
     supervisor.bind(aggregator)
     capture = Capture()
+    upstream = UpstreamCancels()
     worker = PipelineWorker(
-        Pipeline([supervisor, aggregator, supervisor.llm_gate(), capture]),
+        Pipeline([upstream, supervisor, aggregator, supervisor.llm_gate(), capture]),
         enable_rtvi=False,
     )
     started = asyncio.Event()
@@ -118,6 +172,8 @@ async def call(*, classify=None, before_drop=None, arm_on_start=True, **settings
             supervisor=supervisor,
             context=context,
             capture=capture,
+            turns=turns,
+            upstream_cancels=upstream.frames,
             worker=worker,
             say=say,
             aggregator=aggregator,
@@ -130,6 +186,310 @@ async def call(*, classify=None, before_drop=None, arm_on_start=True, **settings
 
 async def verdict(c):
     return await asyncio.wait_for(c.supervisor.wait_for_verdict(), timeout=1)
+
+
+async def eventually(condition, *, timeout=0.5):
+    """Bound a wait on pipeline state; the timeout only guards against a hang."""
+
+    async def poll():
+        while not condition():
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(poll(), timeout)
+
+
+def context_requests(c):
+    return [f for f in c.capture.frames if isinstance(f, LLMContextFrame)]
+
+
+def committed_turn_reached_capture(c):
+    return any(
+        isinstance(f, LLMContextUserTurnFrame) and not f.speculation
+        for f in c.capture.frames
+    )
+
+
+async def begin_user_turn(c):
+    await c.worker.queue_frame(ProposedUserStartedSpeakingFrame())
+    if c.turns == "min_words":
+        # This strategy opens the turn on the first words, not on the proposal.
+        await c.worker.queue_frame(InterimTranscriptionFrame("I", "synthetic", ""))
+    # A turn start that interrupts resets the aggregator's queue, so let it
+    # drain before the next frame arrives.
+    assert await c.worker.flush_pipeline(timeout=0.5)
+
+
+async def eager_turn_dropped_by_closed_gate(c, text):
+    await begin_user_turn(c)
+    await c.worker.queue_frame(EagerTranscriptionFrame(text, "synthetic", ""))
+    await eventually(lambda: c.supervisor.llm_gate().dropped_contexts == 1)
+    assert not context_requests(c)
+    # The gate withdraws the speculation it dropped. A flush completes once
+    # that cancel has travelled up through the aggregator's turn controller.
+    assert await c.worker.flush_pipeline(timeout=0.5)
+
+
+async def commit_turn(c, text):
+    await c.worker.queue_frame(
+        TranscriptionFrame(text, "synthetic", "", finalized=True)
+    )
+    await c.worker.queue_frame(ProposedUserStoppedSpeakingFrame())
+
+
+# The bare shape has no interruptions; the others run the strategies
+# run_pipeline builds for a Flux call, which interrupt on every turn start.
+turn_shapes = pytest.mark.parametrize(
+    "turns",
+    ["bare", "external", "min_words"],
+    ids=["bare_turns", "external_turns", "min_words_turns"],
+)
+production_turn_shapes = pytest.mark.parametrize(
+    "turns", ["external", "min_words"], ids=["external_turns", "min_words_turns"]
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("eager", [False, True], ids=["eager_off", "eager_on"])
+async def test_gate_withdraws_a_dropped_speculation_only_when_eager_is_tracked(eager):
+    async with call(eager=eager, listening_window_ms=1000) as c:
+        await c.worker.queue_frame(
+            LLMContextFrame(context=LLMContext(), speculation=True)
+        )
+        assert await c.worker.flush_pipeline(timeout=0.5)
+        assert c.supervisor.llm_gate().dropped_contexts == 1
+        assert not context_requests(c)
+        # Upstream only: the dropped speculation has no held response behind
+        # the gate, and a downstream cancel would reach the agent bridge.
+        assert len(c.upstream_cancels) == (1 if eager else 0)
+        assert not any(
+            isinstance(f, UserTurnResponseCancelFrame) for f in c.capture.frames
+        )
+
+
+@pytest.mark.asyncio
+async def test_eager_on_pins_screening_timing_window():
+    async with call(eager=True, listening_window_ms=1000) as c:
+        gate = c.supervisor.llm_gate()
+        text = "Please leave a message after the beep."
+        await eager_turn_dropped_by_closed_gate(c, text)
+
+        # Screening starts between the eager end of turn and its commit.
+        c.supervisor.begin_screening_wait(start_timeout=False)
+        await commit_turn(c, text)
+        await asyncio.wait_for(c.supervisor.wait_for_verdict(), timeout=0.5)
+
+        committed = next(m for m in c.context.messages if m.get("role") == "user")
+        assert id(committed) in gate.held_user_messages
+        # The withdrawn speculation leaves the commit its own inference, which
+        # the closed gate drops like any committed turn's.
+        assert await c.worker.flush_pipeline(timeout=0.5)
+        assert gate.dropped_contexts == 2
+        assert not context_requests(c)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("eager", "turns"),
+    [
+        (False, "bare"),
+        (True, "bare"),
+        (True, "external"),
+        (True, "min_words"),
+    ],
+    ids=[
+        "eager_off",
+        "eager_on_bare_turns",
+        "eager_on_external_turns",
+        "eager_on_min_words_turns",
+    ],
+)
+async def test_turn_committed_while_closed_is_held_as_with_eager_off(eager, turns):
+    async with call(eager=eager, turns=turns, listening_window_ms=1000) as c:
+        gate = c.supervisor.llm_gate()
+        text = "I would like an appointment"
+        if eager:
+            await eager_turn_dropped_by_closed_gate(c, text)
+        else:
+            await begin_user_turn(c)
+        await commit_turn(c, text)
+        await eventually(lambda: committed_turn_reached_capture(c))
+
+        assert await c.worker.flush_pipeline(timeout=0.5)
+        committed = next(m for m in c.context.messages if m.get("role") == "user")
+        assert c.context.messages == [{"role": "user", "content": text}]
+        assert id(committed) in gate.held_user_messages
+        # Eager on adds only the speculation the gate dropped before the commit.
+        assert gate.dropped_contexts == (2 if eager else 1)
+        assert not context_requests(c)
+
+        # Opening the gate requests nothing either: the engine's run_llm
+        # answers a turn committed while the gate was closed.
+        c.supervisor.release()
+        assert await c.worker.flush_pipeline(timeout=0.5)
+        assert not context_requests(c)
+
+
+@pytest.mark.asyncio
+@turn_shapes
+async def test_eager_turn_confirmed_after_release_is_still_answered(turns):
+    async with call(eager=True, turns=turns, listening_window_ms=1000) as c:
+        gate = c.supervisor.llm_gate()
+        text = "I would like an appointment"
+        await eager_turn_dropped_by_closed_gate(c, text)
+
+        # The caller is released after the gate dropped the speculation but
+        # before the turn commits. The gate withdrew the speculation, so the
+        # commit runs its own inference; a confirmed speculation would have
+        # run none and left the caller unanswered.
+        c.supervisor.release()
+        await commit_turn(c, text)
+        await eventually(lambda: committed_turn_reached_capture(c))
+
+        assert await c.worker.flush_pipeline(timeout=0.5)
+        (request,) = context_requests(c)
+        assert not request.speculation
+        assert request.context is c.context
+        assert c.context.messages == [{"role": "user", "content": text}]
+        assert gate.dropped_contexts == 1
+
+
+@pytest.mark.asyncio
+@production_turn_shapes
+@pytest.mark.parametrize("release_before_vad", [True, False])
+async def test_production_turns_get_one_reply_with_local_vad_between_eager_and_commit(
+    turns, release_before_vad
+):
+    async with call(eager=True, turns=turns, listening_window_ms=1000) as c:
+        text = "I would like an appointment"
+        await eager_turn_dropped_by_closed_gate(c, text)
+        if release_before_vad:
+            c.supervisor.release()
+
+        # Noise or a breath: local VAD hears speech the provider did not
+        # report, with no TurnResumed. It resets the turn's inference state.
+        await c.worker.queue_frame(VADUserStartedSpeakingFrame())
+        await c.worker.queue_frame(VADUserStoppedSpeakingFrame())
+        assert await c.worker.flush_pipeline(timeout=0.5)
+        if not release_before_vad:
+            c.supervisor.release()
+
+        await commit_turn(c, text)
+        await eventually(lambda: committed_turn_reached_capture(c))
+
+        assert await c.worker.flush_pipeline(timeout=0.5)
+        (request,) = context_requests(c)
+        assert not request.speculation
+        assert request.context is c.context
+        assert c.context.messages == [{"role": "user", "content": text}]
+
+
+@pytest.mark.asyncio
+@turn_shapes
+async def test_withdrawn_speculation_is_answered_once_after_release(turns):
+    async with call(eager=True, turns=turns, listening_window_ms=1000) as c:
+        await eager_turn_dropped_by_closed_gate(c, "I want to cancel")
+
+        c.supervisor.release()
+        # The committed transcript differs from the eager one and is answered
+        # from its own inference.
+        await commit_turn(c, "I want to cancel and reschedule it")
+        await eventually(lambda: committed_turn_reached_capture(c))
+
+        assert await c.worker.flush_pipeline(timeout=0.5)
+        (request,) = context_requests(c)
+        assert not request.speculation
+        assert request.context is c.context
+        assert c.context.messages == [
+            {"role": "user", "content": "I want to cancel and reschedule it"}
+        ]
+
+
+@pytest.mark.asyncio
+@turn_shapes
+async def test_speculation_passed_by_an_open_gate_is_not_requested_twice(turns):
+    async with call(eager=True, turns=turns, listening_window_ms=1000) as c:
+        c.supervisor.release()
+        text = "I would like an appointment"
+        await begin_user_turn(c)
+        await c.worker.queue_frame(EagerTranscriptionFrame(text, "synthetic", ""))
+        await eventually(lambda: bool(context_requests(c)))
+
+        await commit_turn(c, text)
+        await eventually(lambda: committed_turn_reached_capture(c))
+
+        assert await c.worker.flush_pipeline(timeout=0.5)
+        (request,) = context_requests(c)
+        assert request.speculation
+        assert c.supervisor.llm_gate().dropped_contexts == 0
+        # An open gate leaves the speculation for the commit to confirm.
+        assert not c.upstream_cancels
+
+
+@pytest.mark.asyncio
+async def test_screening_discards_committed_message_of_an_eager_turn():
+    async with call(eager=True, listening_window_ms=1000) as c:
+        system = {"role": "system", "content": "Keep this instruction"}
+        c.context.add_message(system)
+        text = "Please leave a message after the beep."
+        await eager_turn_dropped_by_closed_gate(c, text)
+        await commit_turn(c, text)
+        await verdict(c)
+        committed = next(m for m in c.context.messages if m.get("role") == "user")
+        assert id(committed) in c.supervisor.llm_gate().held_user_messages
+        # The speculation and the committed turn's own inference were dropped.
+        assert c.supervisor.llm_gate().dropped_contexts == 2
+        c.supervisor.begin_screening_wait(start_timeout=False)
+        assert c.context.messages == [system]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "defer_cancel", [True, False], ids=["cancel_deferred", "no_flush_race"]
+)
+async def test_screening_discards_a_commit_that_confirmed_a_dropped_speculation(
+    defer_cancel,
+):
+    async with call(eager=True, listening_window_ms=1000) as c:
+        gate = c.supervisor.llm_gate()
+        system = {"role": "system", "content": "Keep this instruction"}
+        c.context.add_message(system)
+        text = "Please leave a message after the beep."
+        push_frame = gate.push_frame
+        late_cancels = []
+
+        async def hold_cancel(frame, direction=FrameDirection.DOWNSTREAM):
+            if isinstance(frame, UserTurnResponseCancelFrame):
+                late_cancels.append(frame)
+                return
+            await push_frame(frame, direction)
+
+        if defer_cancel:
+            # The gate's cancel loses the race against the commit: the turn
+            # controller still holds the speculation when the commit arrives.
+            gate.push_frame = hold_cancel
+        await begin_user_turn(c)
+        # No flush between the eager transcript and the commit, as when Flux
+        # frames queue up behind a busy aggregator.
+        await c.worker.queue_frame(EagerTranscriptionFrame(text, "synthetic", ""))
+        await commit_turn(c, text)
+        await verdict(c)
+        await eventually(lambda: committed_turn_reached_capture(c))
+        assert await c.worker.flush_pipeline(timeout=0.5)
+
+        committed = next(m for m in c.context.messages if m.get("role") == "user")
+        assert id(committed) in gate.held_user_messages
+        if defer_cancel:
+            # The commit confirmed the speculation, so it ran no inference of
+            # its own and only the speculative context was dropped.
+            assert gate.dropped_contexts == 1
+            assert len(late_cancels) == 1
+            # The cancel arriving after the turn ended changes nothing.
+            await push_frame(late_cancels[0], FrameDirection.UPSTREAM)
+            assert await c.worker.flush_pipeline(timeout=0.5)
+            assert gate.dropped_contexts == 1
+        assert not context_requests(c)
+        c.supervisor.begin_screening_wait(start_timeout=False)
+        assert c.context.messages == [system]
 
 
 @pytest.mark.asyncio

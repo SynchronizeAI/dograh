@@ -5,7 +5,12 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
 import pytest
-from pipecat.frames.frames import InterruptionFrame, LLMContextFrame
+from pipecat.frames.frames import (
+    InterruptionFrame,
+    LLMContextFrame,
+    UserTurnResponseCancelFrame,
+)
+from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.tests.mock_llm_service import ContextCapturingMockLLM
 from pipecat.utils.enums import EndTaskReason
 
@@ -160,6 +165,36 @@ async def test_early_caller_context_is_sent_once_after_setup_unless_interrupted(
         else:
             assert await asyncio.wait_for(engine.drain_call_pipeline(), 1)
             assert not engine.active_agent.llm.captured_contexts
+
+
+@pytest.mark.asyncio
+async def test_withdrawn_speculation_is_not_sent_when_generation_becomes_ready():
+    async with preparing_call(greeting=None) as (h, release, _):
+        llm = h.engine.active_agent.llm
+        await h.call_worker.queue_frame(
+            LLMContextFrame(
+                LLMContext(messages=[{"role": "user", "content": "Withdrawn guess"}]),
+                speculation=True,
+            )
+        )
+        assert await asyncio.wait_for(h.engine.drain_call_pipeline(), 1)
+        assert not llm.captured_contexts
+        await h.call_worker.queue_frame(UserTurnResponseCancelFrame())
+        assert await asyncio.wait_for(h.engine.drain_call_pipeline(), 1)
+        release.set()
+        assert await asyncio.wait_for(h.engine.wait_for_generation_ready(), 2)
+        await asyncio.sleep(0.05)
+        assert await asyncio.wait_for(h.engine.drain_call_pipeline(), 1)
+        assert not llm.captured_contexts
+        h.engine.context.add_message({"role": "user", "content": "Committed turn"})
+        await h.call_worker.queue_frame(LLMContextFrame(h.engine.context))
+        await eventually(lambda: bool(llm.captured_contexts))
+        assert len(llm.captured_contexts) == 1
+        assert [
+            m["content"]
+            for m in llm.captured_contexts[0]["messages"]
+            if m["role"] == "user"
+        ] == ["Committed turn"]
 
 
 @pytest.mark.asyncio

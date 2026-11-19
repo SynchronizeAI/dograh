@@ -898,6 +898,7 @@ export interface components {
             llm_fallback?: components["schemas"]["FallbackPolicy_ServiceSelection_"] | null;
             stt?: components["schemas"]["ServiceOverride"] | null;
             tts?: components["schemas"]["ServiceOverride"] | null;
+            tts_fallback?: components["schemas"]["TTSFallbackPolicy_ServiceSelection_"] | null;
             realtime?: components["schemas"]["ServiceOverride"] | null;
             embeddings?: components["schemas"]["ServiceOverride"] | null;
         };
@@ -1187,6 +1188,22 @@ export interface components {
              * Format: uuid
              */
             provider_connection_uuid: string;
+        };
+        /** TTSFallbackPolicy[ServiceSelection] */
+        TTSFallbackPolicy_ServiceSelection_: {
+            /**
+             * Version
+             * @default 1
+             * @constant
+             */
+            version: 1;
+            /** Rules */
+            rules?: components["schemas"]["TTSFallbackRule_ServiceSelection_"][];
+        };
+        /** TTSFallbackRule[ServiceSelection] */
+        TTSFallbackRule_ServiceSelection_: {
+            condition: components["schemas"]["ErrorCondition"];
+            target: components["schemas"]["ServiceSelection"];
         };
         /** ToolDelayedAudioMessage */
         ToolDelayedAudioMessage: {
@@ -1657,6 +1674,8 @@ export type RecordingListResponseSchema = components['schemas']['RecordingListRe
 export type RecordingResponseSchema = components['schemas']['RecordingResponseSchema'];
 export type ServiceOverride = components['schemas']['ServiceOverride'];
 export type ServiceSelection = components['schemas']['ServiceSelection'];
+export type TtsFallbackPolicyServiceSelection = components['schemas']['TTSFallbackPolicy_ServiceSelection_'];
+export type TtsFallbackRuleServiceSelection = components['schemas']['TTSFallbackRule_ServiceSelection_'];
 export type ToolDelayedAudioMessage = components['schemas']['ToolDelayedAudioMessage'];
 export type ToolDelayedTextMessage = components['schemas']['ToolDelayedTextMessage'];
 export type ToolParameter = components['schemas']['ToolParameter'];

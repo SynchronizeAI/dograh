@@ -13,7 +13,7 @@ The switch does not replay audio the primary missed.
 
 The policy is **off** when omitted or when `rules` is empty.
 
-A workflow without `stt_fallback` keeps today's recognizer and today's turn taking.
+Without this policy, fallback handling leaves the configured recognizer and turn strategy unchanged.
 
 It is ignored in **realtime** mode.
 
@@ -68,9 +68,7 @@ An empty `rules` array disables an inherited policy.
 
 An override that sets `mode` describes a whole configuration and does not inherit one.
 
-Pre-call data fetch cannot change `stt_fallback`.
-
-Recognition is already running by the time that hook answers.
+See [Pre-Call Data Fetch](../voice-agent/pre-call-data-fetch) for which settings that hook can override.
 
 Configure through the API today.
 

@@ -10,6 +10,7 @@ the call ends.
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 
 from loguru import logger
@@ -64,6 +65,20 @@ def _stop_primary_reconnects(primary: FrameProcessor) -> None:
 
     if hasattr(primary, "_reconnect"):
         primary._reconnect = _fail_instead_of_reconnecting
+
+    # Deepgram retries in a separate connection task and ignores the generic
+    # reconnect controls. Cancel that task only after its error frame has made
+    # it through the switcher, so failover handling can finish first.
+    push_error = primary.push_error
+
+    async def _push_error_and_stop_connection_loop(*args, **kwargs):
+        await push_error(*args, **kwargs)
+        connection_task = getattr(primary, "_connection_task", None)
+        if connection_task is asyncio.current_task() and not primary.is_usable:
+            connection_task.cancel()
+
+    if hasattr(primary, "_connection_task"):
+        primary.push_error = _push_error_and_stop_connection_loop
 
 
 class _SwitchOnFirstUnrecoverableError(ServiceSwitcherStrategy):

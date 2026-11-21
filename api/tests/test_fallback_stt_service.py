@@ -16,6 +16,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.processors.frame_processor import FrameProcessor, FrameProcessorSetup
+from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.turns.user_stop import (
     ExternalUserTurnStopStrategy,
     SpeechTimeoutUserTurnStopStrategy,
@@ -120,6 +121,45 @@ async def test_replaced_reconnect_does_not_replay_or_retry():
     assert primary.reconnects == 0
     assert primary._reconnect_audio_buffer == []
     assert stt.strategy.active_service is backup
+    await pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_deepgram_connection_loop_stops_on_first_failure(monkeypatch):
+    import pipecat.services.deepgram.stt as deepgram_stt
+
+    attempts = 0
+
+    class UnavailableEndpoint:
+        def connect(self, **_kwargs):
+            class Connection:
+                async def __aenter__(self):
+                    nonlocal attempts
+                    attempts += 1
+                    raise ConnectionError("disposable endpoint unavailable")
+
+                async def __aexit__(self, *_args):
+                    return False
+
+            return Connection()
+
+    monkeypatch.setattr(
+        deepgram_stt, "exponential_backoff_time", lambda *_args, **_kwargs: 0.01
+    )
+    primary = DeepgramSTTService(api_key="disposable", sample_rate=16000)
+    primary._client = SimpleNamespace(
+        listen=SimpleNamespace(v1=SimpleNamespace(connect=UnavailableEndpoint().connect))
+    )
+    backup = FakeSTT("backup")
+    stt, pipeline = await _pipeline(primary, backup)
+
+    assert stt.strategy.active_service is backup
+    assert stt.fallback_metrics == {"switched": 1}
+    assert attempts == 1
+    audio = _audio(b"\x02\x00")
+    await pipeline.queue_frame(audio)
+    await asyncio.sleep(0.05)
+    assert backup.audio == [audio]
     await pipeline.cleanup()
 
 

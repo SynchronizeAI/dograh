@@ -23,6 +23,19 @@ In **Dograh** mode, language hints are also available when you select auto-detec
 
 Selecting a specific Flux-supported language combines that language with your hints. Hints are hidden and unused when you select a language that Dograh routes to its standard transcriber.
 
+## AssemblyAI model and end of turn
+
+AssemblyAI's default model is `u3-rt-pro`. To use Universal-3.7 Realtime
+Agent, select `assemblyai-stt-3-7-realtime-agent`. Dograh lists Korean (`ko`)
+for the 3.7 model; `u3-rt-pro` does not list Korean as a supported language.
+See [AssemblyAI's model selection guide](https://www.assemblyai.com/docs/streaming/select-the-speech-model).
+
+For cascade calls, select **AssemblyAI end of turn** in the workflow's turn
+detection settings to use AssemblyAI's end-of-turn signal. It works with
+AssemblyAI Universal-3 Pro models, including `u3-rt-pro` and the 3.7 Realtime
+Agent. With another transcriber or an unsupported model, Dograh keeps the
+selected transcriber's existing turn handling.
+
 ## Flux eager end of turn
 
 For Deepgram `flux-general-en` and `flux-general-multi`, you can enable

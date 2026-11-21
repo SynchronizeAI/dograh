@@ -234,7 +234,7 @@ export const ConfigurationsDialog = ({
                                     ? "Best for short responses (1-2 word statements). Ends turn when transcription indicates completion."
                                     : turnStopStrategy === 'turn_analyzer'
                                     ? "Best for longer responses with natural pauses. Uses ML model to detect end of turn."
-                                    : "Uses AssemblyAI's own end of turn when the speech model supports it. Other transcribers keep transcription-based detection."}
+                                    : "Uses AssemblyAI's own end of turn when the speech model supports it. Other transcribers keep their existing turn handling (Flux and Cartesia keep provider turns)."}
                             </p>
                         </div>
 

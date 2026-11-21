@@ -337,6 +337,30 @@ def stt_uses_external_turns(user_config) -> bool:
     return False
 
 
+def stt_uses_assemblyai_end_of_turn(user_config, turn_stop_strategy) -> bool:
+    """Use AssemblyAI's own end of turn only when the workflow asks for it.
+
+    The model has to be one Pipecat treats as Universal-3 Pro, which includes
+    the 3.7 realtime agent. Anything else keeps today's local turn stop.
+    """
+    if turn_stop_strategy != "assemblyai":
+        return False
+    stt = getattr(user_config, "stt", None)
+    if (
+        stt is None
+        or getattr(stt, "provider", None) != ServiceProviders.ASSEMBLYAI.value
+    ):
+        return False
+    return is_u3_pro_model(getattr(stt, "model", None))
+
+
+def cascade_uses_external_turns(user_config, turn_stop_strategy=None) -> bool:
+    """Provider turn endings: Flux, Cartesia Ink-2, or an opted-in AssemblyAI model."""
+    return stt_uses_external_turns(user_config) or stt_uses_assemblyai_end_of_turn(
+        user_config, turn_stop_strategy
+    )
+
+
 def stt_uses_eager_end_of_turn(user_config) -> bool:
     """Only Flux (direct or Dograh-managed) can speculate on its turn ends."""
     if user_config is None or getattr(user_config, "stt", None) is None:
@@ -639,6 +663,7 @@ def create_stt_service(
     audio_config: "AudioConfig",
     keyterms: list[str] | None = None,
     correlation_id: str | None = None,
+    turn_stop_strategy: str | None = None,
 ):
     """Create and return appropriate STT service based on user configuration
 
@@ -821,10 +846,16 @@ def create_stt_service(
         settings_kwargs = {"model": user_config.stt.model, **configurable_settings}
         if keyterms:
             settings_kwargs["keyterms_prompt"] = keyterms
+        # Default stays Pipecat turn mode. AssemblyAI's own end of turn is the
+        # workflow's opt-in, and only for models Pipecat will actually run it on.
+        assemblyai_turns = stt_uses_assemblyai_end_of_turn(
+            user_config, turn_stop_strategy
+        )
         return AssemblyAISTTService(
             api_key=user_config.stt.api_key,
             settings=AssemblyAISTTSettings(**settings_kwargs),
             sample_rate=audio_config.transport_in_sample_rate,
+            **({} if not assemblyai_turns else {"vad_force_turn_endpoint": False}),
         )
     elif user_config.stt.provider == ServiceProviders.GLADIA.value:
         settings_kwargs = {"model": user_config.stt.model, **configurable_settings}

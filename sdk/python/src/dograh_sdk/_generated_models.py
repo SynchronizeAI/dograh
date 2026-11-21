@@ -752,6 +752,7 @@ class TurnStartStrategy(Enum):
 class TurnStopStrategy(Enum):
     transcription = 'transcription'
     turn_analyzer = 'turn_analyzer'
+    assemblyai = 'assemblyai'
 
 
 class ExternalPbxLeadHeader(RootModel[str]):

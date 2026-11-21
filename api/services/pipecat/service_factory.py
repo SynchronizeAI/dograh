@@ -658,7 +658,7 @@ def get_stt_settings_update(
 
 
 @_report_service_factory_failures(ErrorSource.STT, config_section="stt")
-def create_stt_service(
+def create_single_stt_service(
     user_config,
     audio_config: "AudioConfig",
     keyterms: list[str] | None = None,
@@ -937,6 +937,45 @@ def create_stt_service(
         raise HTTPException(
             status_code=400, detail=f"Invalid STT provider {user_config.stt.provider}"
         )
+
+
+def create_stt_service(
+    user_config,
+    audio_config: "AudioConfig",
+    keyterms: list[str] | None = None,
+    correlation_id: str | None = None,
+):
+    """Create an STT service, wrapping a backup when ``stt_fallback`` is set.
+
+    A workflow without the policy gets the same service ``create_single_stt_service``
+    has always returned.
+    """
+    from api.services.pipecat.fallback_stt import FallbackSTTService
+
+    primary = create_single_stt_service(
+        user_config, audio_config, keyterms, correlation_id
+    )
+    policy = getattr(user_config, "stt_fallback", None)
+    if policy is None or not policy.rules:
+        return primary
+    target_config = user_config.model_copy(
+        update={"stt": policy.rules[0].target, "stt_fallback": None}
+    )
+    try:
+        backup = create_single_stt_service(
+            target_config,
+            audio_config,
+            keyterms,
+            correlation_id,
+            register_campaign_errors=False,
+        )
+    except Exception as exc:
+        logger.warning(
+            f"STT fallback backup could not be constructed ({type(exc).__name__}); "
+            "continuing with primary only"
+        )
+        return primary
+    return FallbackSTTService(primary, backup)
 
 
 @_report_service_factory_failures(ErrorSource.TTS, config_section="tts")

@@ -1,0 +1,77 @@
+---
+title: Speech recognition (STT) fallback
+description: Optional backup recognizer when the primary speech-to-text provider fails during a call.
+---
+
+## Overview
+
+`stt_fallback` mirrors `tts_fallback`: one rule with the `error` condition selects a backup recognizer.
+
+On the first connection error the primary cannot recover from, the call switches to that recognizer and stays there until the call ends.
+
+The switch does not replay audio the primary missed.
+
+The policy is **off** when omitted or when `rules` is empty.
+
+A workflow without `stt_fallback` keeps today's recognizer and today's turn taking.
+
+It is ignored in **realtime** mode.
+
+A **Dograh-managed** primary or target is rejected (the request fails with a 422), because Dograh manages its own fallbacks.
+
+The backup must be a different provider than the primary, so a Deepgram outage does not take the backup with it.
+
+## JSON shape
+
+```json
+{
+  "stt_fallback": {
+    "version": 1,
+    "rules": [
+      {
+        "condition": { "type": "error" },
+        "target": {
+          "provider_connection_uuid": "<elevenlabs-connection-uuid>",
+          "settings": { "model": "scribe_v3_live", "language": "en" }
+        }
+      }
+    ]
+  }
+}
+```
+
+Set it on named model configurations, workflow overrides, and API-trigger overrides, next to `stt`.
+
+Use language `en` or `ko` to match the call.
+
+`scribe_v3_live` is ElevenLabs Scribe v3 Live on the ElevenLabs connection you already have.
+
+Resolved runs store the policy without credentials in the workflow snapshot.
+
+## Behaviour
+
+Pipecat's `ServiceSwitcher` routes audio to one recognizer at a time.
+
+Its stock `ServiceSwitcherStrategyFailover` moves only after the service is no longer usable, which a websocket reaches after three reconnects spaced 4-10 seconds apart.
+
+This policy stops those reconnects and connects the backup on the first connection error instead.
+
+There is no health check and no switch back to the primary.
+
+English Flux normally ends the turn itself.
+
+After a switch to Scribe, later turns end the same way a Korean Nova transcription does: voice activity plus the transcript, not a Flux end-of-turn event.
+
+A named model configuration without a recognizer fallback never stores or returns the `stt_fallback` key.
+
+An empty `rules` array disables an inherited policy.
+
+An override that sets `mode` describes a whole configuration and does not inherit one.
+
+Pre-call data fetch cannot change `stt_fallback`.
+
+Recognition is already running by the time that hook answers.
+
+Configure through the API today.
+
+The Models UI editor does not yet offer this field.

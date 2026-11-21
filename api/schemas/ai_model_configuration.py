@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pydantic import BaseModel, model_validator
 
-from api.schemas.llm_fallback import FallbackPolicy, TTSFallbackPolicy
+from api.schemas.llm_fallback import (
+    FallbackPolicy,
+    STTFallbackPolicy,
+    TTSFallbackPolicy,
+)
 from api.services.configuration.registry import (
     EmbeddingsConfig,
     LLMConfig,
@@ -17,6 +21,7 @@ class EffectiveAIModelConfiguration(BaseModel):
     llm: LLMConfig | None = None
     llm_fallback: FallbackPolicy[LLMConfig] | None = None
     stt: STTConfig | None = None
+    stt_fallback: STTFallbackPolicy[STTConfig] | None = None
     tts: TTSConfig | None = None
     tts_fallback: TTSFallbackPolicy[TTSConfig] | None = None
     embeddings: EmbeddingsConfig | None = None
@@ -53,6 +58,27 @@ class EffectiveAIModelConfiguration(BaseModel):
         ):
             raise ValueError(
                 "Dograh manages its own fallbacks and cannot be a fallback target"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def require_byok_stt_fallback(self):
+        if self.is_realtime or not self.stt_fallback or not self.stt_fallback.rules:
+            return self
+        if self.stt is None or self.stt.provider == ServiceProviders.DOGRAH:
+            raise ValueError("STT fallbacks require a non-Dograh primary STT")
+        if any(
+            rule.target.provider == ServiceProviders.DOGRAH
+            for rule in self.stt_fallback.rules
+        ):
+            raise ValueError(
+                "Dograh manages its own fallbacks and cannot be a fallback target"
+            )
+        if any(
+            rule.target.provider == self.stt.provider for rule in self.stt_fallback.rules
+        ):
+            raise ValueError(
+                "STT fallback target must use a different provider than the primary"
             )
         return self
 

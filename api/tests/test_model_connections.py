@@ -742,6 +742,13 @@ def tts_fallback_rule(row, **settings):
     }
 
 
+def stt_fallback_rule(row, **settings):
+    return {
+        "condition": {"type": "error"},
+        "target": selection(row, **settings),
+    }
+
+
 @pytest.mark.asyncio
 async def test_dograh_rejects_fallback_rules_but_allows_disabling_them(catalog):
     primary = connection()
@@ -1138,3 +1145,71 @@ async def test_dograh_cannot_be_a_fallback_target(catalog, mode, condition):
             1, api_override={"llm_fallback": policy}
         )
     assert exc.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_stt_fallback_resolves_a_different_provider_and_round_trips(catalog):
+    primary = connection("openai")
+    backup = connection("elevenlabs", keys="eleven-secret")
+    catalog(backup)
+    config = {
+        **pipeline(primary),
+        "stt_fallback": {
+            "version": 1,
+            "rules": [
+                stt_fallback_rule(backup, model="scribe_v3_live", language="ko")
+            ],
+        },
+    }
+    catalog(primary, default=True, configuration=config)
+    resolved = await service.resolve_model_configuration(1)
+    rule = resolved.effective.stt_fallback.rules[0]
+    assert rule.condition.type == "error"
+    assert rule.target.provider == "elevenlabs"
+    assert rule.target.model == "scribe_v3_live"
+    assert rule.target.language == "ko"
+    assert "eleven-secret" not in str(resolved.snapshot)
+    hydrated = await service.hydrate_model_configuration_snapshot(1, resolved.snapshot)
+    assert hydrated.stt_fallback.rules[0].target.model == "scribe_v3_live"
+    assert "api_key_index" not in str(service.public_snapshot(resolved.snapshot))
+
+
+@pytest.mark.asyncio
+async def test_stt_fallback_rejects_the_same_provider(catalog):
+    primary = connection("openai")
+    backup = connection("openai")
+    catalog(backup)
+    config = {
+        **pipeline(primary),
+        "stt_fallback": {"rules": [stt_fallback_rule(backup, model="whisper-1")]},
+    }
+    catalog(primary, default=True, configuration=config)
+    with pytest.raises(HTTPException, match="different provider") as exc:
+        await service.resolve_model_configuration(1)
+    assert exc.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_mode_override_does_not_inherit_stt_fallback(catalog):
+    primary = connection("openai")
+    backup = connection("elevenlabs")
+    catalog(backup)
+    config = {
+        **pipeline(primary),
+        "stt_fallback": {"rules": [stt_fallback_rule(backup, model="scribe_v3_live")]},
+    }
+    catalog(primary, default=True, configuration=config)
+    inherited = await service.resolve_model_configuration(
+        1, workflow_override={"stt": {"settings": {"model": "whisper-1"}}}
+    )
+    assert inherited.effective.stt_fallback.rules[0].target.provider == "elevenlabs"
+    replaced = await service.resolve_model_configuration(
+        1,
+        workflow_override={
+            "mode": "pipeline",
+            "llm": selection(primary),
+            "stt": selection(primary),
+            "tts": selection(primary),
+        },
+    )
+    assert replaced.effective.stt_fallback is None

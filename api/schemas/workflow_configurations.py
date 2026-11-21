@@ -148,8 +148,14 @@ class WorkflowConfigurationDefaults(BaseModel):
     smart_turn_stop_secs: float = DEFAULT_SMART_TURN_STOP_SECS
     turn_start_strategy: Literal["default", "min_words"] = DEFAULT_TURN_START_STRATEGY
     turn_start_min_words: int = Field(default=DEFAULT_TURN_START_MIN_WORDS, ge=1)
-    turn_stop_strategy: Literal["transcription", "turn_analyzer"] = (
-        DEFAULT_TURN_STOP_STRATEGY
+    turn_stop_strategy: Literal["transcription", "turn_analyzer", "assemblyai"] = Field(
+        default=DEFAULT_TURN_STOP_STRATEGY,
+        description=(
+            "How a cascade call decides the caller has finished speaking. "
+            "transcription waits on the transcript, turn_analyzer runs Smart Turn, "
+            "and assemblyai uses AssemblyAI's own end of turn when that speech "
+            "model supports it."
+        ),
     )
     dictionary: str = ""
     context_compaction_enabled: bool = DEFAULT_CONTEXT_COMPACTION_ENABLED

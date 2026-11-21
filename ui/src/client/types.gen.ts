@@ -6678,7 +6678,7 @@ export type WorkflowConfigurationDefaults = {
     /**
      * Turn Stop Strategy
      */
-    turn_stop_strategy?: 'transcription' | 'turn_analyzer';
+    turn_stop_strategy?: 'transcription' | 'turn_analyzer' | 'assemblyai';
     /**
      * Dictionary
      */

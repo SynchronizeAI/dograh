@@ -17,6 +17,7 @@ from api.schemas.workflow_configurations import (
     DEFAULT_SMART_TURN_STOP_SECS,
     DEFAULT_TURN_START_MIN_WORDS,
     DEFAULT_TURN_START_STRATEGY,
+    DEFAULT_TURN_STOP_STRATEGY,
     WorkflowConfigurationDefaults,
 )
 from api.services.call_concurrency import call_concurrency
@@ -65,13 +66,14 @@ from api.services.pipecat.recording_audio_cache import (
     warm_recording_cache,
 )
 from api.services.pipecat.service_factory import (
+    cascade_uses_external_turns,
     create_llm_service,
     create_llm_service_from_provider,
     create_realtime_llm_service,
     create_stt_service,
     get_llm_runtime_configuration,
+    stt_uses_assemblyai_end_of_turn,
     stt_uses_eager_end_of_turn,
-    stt_uses_external_turns,
 )
 from api.services.pipecat.termination_funnel_processor import (
     TerminationFunnelProcessor,
@@ -887,6 +889,9 @@ async def _run_pipeline_impl(
             audio_config,
             keyterms=keyterms,
             correlation_id=mps_correlation_id,
+            turn_stop_strategy=run_configs.get(
+                "turn_stop_strategy", DEFAULT_TURN_STOP_STRATEGY
+            ),
         )
         llm = None
         inference_llm = None
@@ -1044,7 +1049,19 @@ async def _run_pipeline_impl(
     else:
         # Provider turn endings stay authoritative even when a word threshold
         # controls when the caller can interrupt.
-        uses_external_turns = stt_uses_external_turns(user_config)
+        turn_stop_strategy = run_configs.get(
+            "turn_stop_strategy", DEFAULT_TURN_STOP_STRATEGY
+        )
+        if turn_stop_strategy == "assemblyai" and not stt_uses_assemblyai_end_of_turn(
+            user_config, turn_stop_strategy
+        ):
+            logger.warning(
+                f"[run {workflow_run_id}] turn_stop_strategy=assemblyai needs an "
+                "AssemblyAI Universal-3 streaming model; keeping transcription-based turns"
+            )
+        uses_external_turns = cascade_uses_external_turns(
+            user_config, turn_stop_strategy
+        )
         user_turn_strategies = _create_non_realtime_user_turn_strategies(
             run_configs,
             uses_external_turns=uses_external_turns,

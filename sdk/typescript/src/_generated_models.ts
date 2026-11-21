@@ -1528,7 +1528,7 @@ export interface components {
              * @default transcription
              * @enum {string}
              */
-            turn_stop_strategy: "transcription" | "turn_analyzer";
+            turn_stop_strategy: "transcription" | "turn_analyzer" | "assemblyai";
             /**
              * Dictionary
              * @default

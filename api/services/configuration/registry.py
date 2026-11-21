@@ -2427,8 +2427,15 @@ class HuggingFaceSTTConfiguration(BaseSTTConfiguration):
     )
 
 
-ASSEMBLYAI_STT_MODELS = ["u3-rt-pro"]
-ASSEMBLYAI_STT_LANGUAGES = ["en", "es", "de", "fr", "pt", "it"]
+# https://www.assemblyai.com/docs/streaming/select-the-speech-model
+# speech_model "assemblyai-stt-3-7-realtime-agent" is the Universal-3.7
+# voice-agent model. The streaming WebSocket API accepts it as that string.
+ASSEMBLYAI_REALTIME_AGENT_MODEL = "assemblyai-stt-3-7-realtime-agent"
+ASSEMBLYAI_STT_MODELS = ["u3-rt-pro", ASSEMBLYAI_REALTIME_AGENT_MODEL]
+ASSEMBLYAI_U3_LANGUAGES = ["en", "es", "de", "fr", "pt", "it"]
+# The 3.7 agent model accepts Korean (ko) in language_codes. u3-rt-pro does not.
+ASSEMBLYAI_37_LANGUAGES = [*ASSEMBLYAI_U3_LANGUAGES, "ko"]
+ASSEMBLYAI_STT_LANGUAGES = ASSEMBLYAI_37_LANGUAGES
 
 
 @register_stt(provider=ASSEMBLYAI_PROVIDER)
@@ -2436,13 +2443,25 @@ class AssemblyAISTTConfiguration(BaseSTTConfiguration):
     provider: Literal[ServiceProviders.ASSEMBLYAI] = ServiceProviders.ASSEMBLYAI
     model: str = Field(
         default="u3-rt-pro",
-        description="AssemblyAI realtime STT model.",
-        json_schema_extra={"examples": ASSEMBLYAI_STT_MODELS},
+        description=(
+            "AssemblyAI realtime STT model. "
+            "assemblyai-stt-3-7-realtime-agent is the Universal-3.7 voice-agent model."
+        ),
+        json_schema_extra={
+            "examples": ASSEMBLYAI_STT_MODELS,
+            "docs_url": "https://www.assemblyai.com/docs/streaming/select-the-speech-model",
+        },
     )
     language: str = Field(
         default="en",
         description="ISO 639-1 language code.",
-        json_schema_extra={"examples": ASSEMBLYAI_STT_LANGUAGES},
+        json_schema_extra={
+            "examples": ASSEMBLYAI_STT_LANGUAGES,
+            "model_options": {
+                "u3-rt-pro": ASSEMBLYAI_U3_LANGUAGES,
+                ASSEMBLYAI_REALTIME_AGENT_MODEL: ASSEMBLYAI_37_LANGUAGES,
+            },
+        },
     )
 
 

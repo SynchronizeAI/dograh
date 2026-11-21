@@ -606,12 +606,15 @@ function GeneralSection({
                             <SelectContent>
                                 <SelectItem value="transcription">Transcription-based</SelectItem>
                                 <SelectItem value="turn_analyzer">Smart Turn Analyzer</SelectItem>
+                                <SelectItem value="assemblyai">AssemblyAI end of turn</SelectItem>
                             </SelectContent>
                         </Select>
                         <p className="text-xs text-muted-foreground">
                             {turnStopStrategy === "transcription"
                                 ? "Best for short responses (1-2 word statements). Ends turn when transcription indicates completion."
-                                : "Best for longer responses with natural pauses. Uses ML model to detect end of turn."}
+                                : turnStopStrategy === "turn_analyzer"
+                                ? "Best for longer responses with natural pauses. Uses ML model to detect end of turn."
+                                : "Uses AssemblyAI's own end of turn when the speech model supports it. Other transcribers keep transcription-based detection."}
                         </p>
                     </div>
                     {turnStopStrategy === "turn_analyzer" && (

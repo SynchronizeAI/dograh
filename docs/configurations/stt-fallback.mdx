@@ -5,7 +5,7 @@ description: Optional backup recognizer when the primary speech-to-text provider
 
 ## Overview
 
-`stt_fallback` mirrors `tts_fallback`: one rule with the `error` condition selects a backup recognizer.
+`stt_fallback` accepts one rule with the `error` condition to select a backup recognizer.
 
 On the first connection error the primary cannot recover from, the call switches to that recognizer and stays there until the call ends.
 
@@ -42,7 +42,7 @@ The backup must be a different provider than the primary, so a Deepgram outage d
 
 Set it on named model configurations, workflow overrides, and API-trigger overrides, next to `stt`.
 
-Use language `en` or `ko` to match the call.
+Set the backup language to `en` or `ko` to match the call. If your workflows serve both languages, configure the matching backup language for each workflow.
 
 `scribe_v3_live` is ElevenLabs Scribe v3 Live on the ElevenLabs connection you already have.
 

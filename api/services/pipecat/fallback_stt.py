@@ -25,6 +25,7 @@ from pipecat.pipeline.service_switcher import ServiceSwitcher, ServiceSwitcherSt
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 _CONNECTION_MARKERS = (
+    "connection error",
     "connection closed",
     "error receiving messages",
     "reconnection",

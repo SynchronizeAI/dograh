@@ -944,6 +944,7 @@ def create_stt_service(
     audio_config: "AudioConfig",
     keyterms: list[str] | None = None,
     correlation_id: str | None = None,
+    turn_stop_strategy: str | None = None,
 ):
     """Create an STT service, wrapping a backup when ``stt_fallback`` is set.
 
@@ -953,7 +954,11 @@ def create_stt_service(
     from api.services.pipecat.fallback_stt import FallbackSTTService
 
     primary = create_single_stt_service(
-        user_config, audio_config, keyterms, correlation_id
+        user_config,
+        audio_config,
+        keyterms,
+        correlation_id,
+        turn_stop_strategy=turn_stop_strategy,
     )
     policy = getattr(user_config, "stt_fallback", None)
     if policy is None or not policy.rules:
@@ -967,6 +972,7 @@ def create_stt_service(
             audio_config,
             keyterms,
             correlation_id,
+            turn_stop_strategy=turn_stop_strategy,
             register_campaign_errors=False,
         )
     except Exception as exc:

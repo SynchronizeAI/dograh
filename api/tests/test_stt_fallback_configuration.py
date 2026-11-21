@@ -140,11 +140,15 @@ def test_rules_build_switcher():
         backup = FrameProcessor(name="backup")
         create.side_effect = [primary, backup]
         config = stt_configuration(error_target=_SCRIBE)
-        result = create_stt_service(config, None)
+        result = create_stt_service(
+            config, None, turn_stop_strategy="transcription"
+        )
     assert isinstance(result, FallbackSTTService)
     assert result.primary is primary
     assert result.backup is backup
     assert create.call_args_list[1].args[0].stt == config.stt_fallback.rules[0].target
+    assert create.call_args_list[0].kwargs["turn_stop_strategy"] == "transcription"
+    assert create.call_args_list[1].kwargs["turn_stop_strategy"] == "transcription"
     assert create.call_args_list[1].kwargs["register_campaign_errors"] is False
     assert result.primary is not None
 

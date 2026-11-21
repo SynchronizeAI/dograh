@@ -125,10 +125,16 @@ async def test_replaced_reconnect_does_not_replay_or_retry():
 
 
 @pytest.mark.asyncio
-async def test_deepgram_connection_loop_stops_on_first_failure(monkeypatch):
+async def test_deepgram_503_connection_error_switches_before_retry(monkeypatch):
     import pipecat.services.deepgram.stt as deepgram_stt
 
     attempts = 0
+
+    class ApiError(Exception):
+        status_code = 503
+
+        def __init__(self):
+            super().__init__("503 Service Unavailable")
 
     class UnavailableEndpoint:
         def connect(self, **_kwargs):
@@ -136,7 +142,7 @@ async def test_deepgram_connection_loop_stops_on_first_failure(monkeypatch):
                 async def __aenter__(self):
                     nonlocal attempts
                     attempts += 1
-                    raise ConnectionError("disposable endpoint unavailable")
+                    raise ApiError()
 
                 async def __aexit__(self, *_args):
                     return False
@@ -146,6 +152,7 @@ async def test_deepgram_connection_loop_stops_on_first_failure(monkeypatch):
     monkeypatch.setattr(
         deepgram_stt, "exponential_backoff_time", lambda *_args, **_kwargs: 0.01
     )
+    monkeypatch.setattr(deepgram_stt, "ApiError", ApiError)
     primary = DeepgramSTTService(api_key="disposable", sample_rate=16000)
     primary._client = SimpleNamespace(
         listen=SimpleNamespace(v1=SimpleNamespace(connect=UnavailableEndpoint().connect))

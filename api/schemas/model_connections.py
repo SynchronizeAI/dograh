@@ -12,7 +12,11 @@ from pydantic import (
     model_validator,
 )
 
-from api.schemas.llm_fallback import FallbackPolicy, TTSFallbackPolicy
+from api.schemas.llm_fallback import (
+    FallbackPolicy,
+    STTFallbackPolicy,
+    TTSFallbackPolicy,
+)
 
 CREDENTIAL_FIELDS = frozenset(
     {"api_key", "credentials", "aws_access_key", "aws_secret_key", "aws_session_token"}
@@ -79,6 +83,7 @@ class ModelConfigurationSpec(CatalogSchema):
     llm: ServiceSelection
     llm_fallback: FallbackPolicy[ServiceSelection] | None = None
     stt: ServiceSelection | None = None
+    stt_fallback: STTFallbackPolicy[ServiceSelection] | None = None
     tts: ServiceSelection | None = None
     tts_fallback: TTSFallbackPolicy[ServiceSelection] | None = None
     realtime: ServiceSelection | None = None
@@ -97,8 +102,12 @@ class ModelConfigurationSpec(CatalogSchema):
         # configuration without a voice fallback therefore never stores or
         # returns the key, so rolling back to that release can still read it.
         data = handler(self)
-        if data.get("tts_fallback") is None:
-            data.pop("tts_fallback", None)
+        # Same compatibility rule as ``tts_fallback``: a configuration without
+        # the policy never stores the key, so a build that rejects it can
+        # still read the row.
+        for key in ("tts_fallback", "stt_fallback"):
+            if data.get(key) is None:
+                data.pop(key, None)
         return data
 
 
@@ -108,6 +117,7 @@ class ModelConfigurationOverride(CatalogSchema):
     llm: ServiceOverride | None = None
     llm_fallback: FallbackPolicy[ServiceSelection] | None = None
     stt: ServiceOverride | None = None
+    stt_fallback: STTFallbackPolicy[ServiceSelection] | None = None
     tts: ServiceOverride | None = None
     tts_fallback: TTSFallbackPolicy[ServiceSelection] | None = None
     realtime: ServiceOverride | None = None

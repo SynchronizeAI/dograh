@@ -5,6 +5,8 @@ import type {
     NamedModelConfigurationResponse,
     ProviderConnectionResponse,
     ServiceSelection as ApiServiceSelection,
+    SttFallbackPolicyServiceSelection as ApiSttFallbackPolicy,
+    SttFallbackRuleServiceSelection as ApiSttFallbackRule,
     TtsFallbackPolicyServiceSelection as ApiTtsFallbackPolicy,
     TtsFallbackRuleServiceSelection as ApiTtsFallbackRule,
 } from "@/client/types.gen";
@@ -72,12 +74,15 @@ export type FallbackRule = Omit<ApiFallbackRule, "target"> & { target: ServiceSe
 export type FallbackPolicy = Omit<Required<ApiFallbackPolicy>, "rules"> & { rules: FallbackRule[] };
 export type TtsFallbackRule = Omit<ApiTtsFallbackRule, "target"> & { target: ServiceSelection };
 export type TtsFallbackPolicy = Omit<Required<ApiTtsFallbackPolicy>, "rules"> & { rules: TtsFallbackRule[] };
+export type SttFallbackRule = Omit<ApiSttFallbackRule, "target"> & { target: ServiceSelection };
+export type SttFallbackPolicy = Omit<Required<ApiSttFallbackPolicy>, "rules"> & { rules: SttFallbackRule[] };
 
-export type ConfigurationSpec = Omit<ApiConfigurationSpec, ServiceRole | "llm_fallback" | "tts_fallback"> &
+export type ConfigurationSpec = Omit<ApiConfigurationSpec, ServiceRole | "llm_fallback" | "tts_fallback" | "stt_fallback"> &
     Required<Pick<ApiConfigurationSpec, "version" | "mode">> & {
         llm: ServiceSelection;
         llm_fallback?: FallbackPolicy | null;
         tts_fallback?: TtsFallbackPolicy | null;
+        stt_fallback?: SttFallbackPolicy | null;
     } & Partial<Record<Exclude<ServiceRole, "llm">, ServiceSelection | null>>;
 
 

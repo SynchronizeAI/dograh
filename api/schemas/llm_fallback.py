@@ -51,3 +51,15 @@ class TTSFallbackPolicy(FallbackSchema, Generic[Target]):
 
     version: Literal[1] = 1
     rules: list[TTSFallbackRule[Target]] = Field(default_factory=list, max_length=1)
+
+
+class STTFallbackRule(FallbackSchema, Generic[Target]):
+    condition: ErrorCondition
+    target: Target
+
+
+class STTFallbackPolicy(FallbackSchema, Generic[Target]):
+    """One backup recognizer used from the primary's first unrecoverable error."""
+
+    version: Literal[1] = 1
+    rules: list[STTFallbackRule[Target]] = Field(default_factory=list, max_length=1)

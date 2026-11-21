@@ -7,11 +7,13 @@ from pipecat.transcriptions.language import Language
 from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
 from pydantic import ValidationError
 
+from api.schemas.ai_model_configuration import EffectiveAIModelConfiguration
 from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
 from api.services.configuration.registry import (
     ASSEMBLYAI_REALTIME_AGENT_MODEL,
     AssemblyAISTTConfiguration,
 )
+from api.services.pipecat.fallback_stt import FallbackSTTService
 from api.services.pipecat.service_factory import (
     cascade_uses_external_turns,
     create_stt_service,
@@ -21,7 +23,7 @@ from api.services.pipecat.service_factory import (
 AUDIO = SimpleNamespace(transport_in_sample_rate=16000)
 
 
-def _service(model, language="en", strategy=None):
+def _service(model, language="en", strategy="transcription"):
     config = AssemblyAISTTConfiguration(
         api_key="test-key", model=model, language=language
     )
@@ -91,6 +93,43 @@ def test_opt_in_sends_37_agent_model_and_lets_assemblyai_end_the_turn():
     assert service._settings.language_codes == [Language.KO]
     assert "min_turn_silence" not in query
     assert "max_turn_silence" not in query
+
+
+def test_assemblyai_end_of_turn_builds_with_stt_fallback():
+    config = EffectiveAIModelConfiguration.model_validate(
+        {
+            "stt": {
+                "provider": "assemblyai",
+                "api_key": "primary-key",
+                "model": ASSEMBLYAI_REALTIME_AGENT_MODEL,
+                "language": "ko",
+            },
+            "stt_fallback": {
+                "rules": [
+                    {
+                        "condition": {"type": "error"},
+                        "target": {
+                            "provider": "elevenlabs",
+                            "api_key": "backup-key",
+                            "model": "scribe_v3_live",
+                            "language": "ko",
+                        },
+                    }
+                ]
+            },
+        }
+    )
+
+    stt = create_stt_service(config, AUDIO, turn_stop_strategy="assemblyai")
+
+    assert isinstance(stt, FallbackSTTService)
+    assert stt.strategy.active_service is stt.primary
+    assert stt.primary._vad_force_turn_endpoint is False
+    assert isinstance(
+        stt.primary.service_metadata_frame().user_turn_strategies,
+        ExternalUserTurnStrategies,
+    )
+    assert stt.backup is not None
 
 
 def test_37_agent_without_opt_in_keeps_pipecat_turn_mode():

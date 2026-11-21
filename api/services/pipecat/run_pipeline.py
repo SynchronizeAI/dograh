@@ -308,6 +308,32 @@ def _create_non_realtime_user_turn_strategies(
     )
 
 
+def _bind_stt_fallback_turns(
+    stt,
+    user_aggregator,
+    greeting,
+    run_configs: dict,
+    *,
+    uses_external_turns: bool,
+) -> None:
+    """After Flux fails over, end turns the way a Nova transcription line does."""
+    from api.services.pipecat.fallback_stt import FallbackSTTService
+
+    if not uses_external_turns or not isinstance(stt, FallbackSTTService):
+        return
+    strategies = _create_non_realtime_user_turn_strategies(
+        run_configs, uses_external_turns=False
+    )
+    timeout = _resolve_user_turn_stop_timeout(run_configs, uses_external_turns=False)
+
+    async def _on_switched() -> None:
+        controller = user_aggregator.user_turn_controller
+        controller._user_turn_stop_timeout = timeout
+        await greeting.use_transcription_turns(strategies)
+
+    stt.on_switched = _on_switched
+
+
 def _create_realtime_user_turn_config(provider: str, model: str | None = None):
     """Return user turn strategies and optional local VAD for realtime providers."""
 
@@ -1114,6 +1140,13 @@ async def _run_pipeline_impl(
             )
         )
         engine.greeting.bind(user_context_aggregator)
+        _bind_stt_fallback_turns(
+            stt,
+            user_context_aggregator,
+            engine.greeting,
+            run_configs,
+            uses_external_turns=uses_external_turns,
+        )
 
     # Every cascade call runs the split pipeline: everything call-scoped stays
     # here and the generation stage (LLM through TTS) runs in a worker per

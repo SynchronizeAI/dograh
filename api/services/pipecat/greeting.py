@@ -105,6 +105,31 @@ class GreetingController:
         user.add_event_handler("on_after_process_frame", self._after_user_frame)
         user.add_event_handler("on_user_turn_stopped", self._turn_stopped)
 
+    async def use_transcription_turns(self, strategies: UserTurnStrategies) -> None:
+        """End later turns without a provider end-of-turn event.
+
+        Used when recognition leaves Flux for a transcriber that does not emit
+        one. A greeting that saved the Flux strategies restores this set
+        instead, so the call does not go back to waiting on Flux.
+        """
+        if self._normal_strategies is not None:
+            self._normal_strategies = strategies
+        user = self._user
+        if user is None:
+            return
+        controller = user.user_turn_controller
+        current = controller.user_turn_strategies
+        if (
+            self._greeting_strategy is not None
+            and current.start
+            and current.start[0] is self._greeting_strategy
+        ):
+            await controller.update_strategies(
+                UserTurnStrategies(start=list(current.start), stop=strategies.stop)
+            )
+            return
+        await controller.update_strategies(strategies)
+
     async def _update_strategies(self, user: LLMUserAggregator, frame: Frame) -> None:
         if isinstance(frame, StartFrame):
             return

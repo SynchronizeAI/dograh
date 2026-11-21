@@ -897,6 +897,7 @@ export interface components {
             llm?: components["schemas"]["ServiceOverride"] | null;
             llm_fallback?: components["schemas"]["FallbackPolicy_ServiceSelection_"] | null;
             stt?: components["schemas"]["ServiceOverride"] | null;
+            stt_fallback?: components["schemas"]["STTFallbackPolicy_ServiceSelection_"] | null;
             tts?: components["schemas"]["ServiceOverride"] | null;
             tts_fallback?: components["schemas"]["TTSFallbackPolicy_ServiceSelection_"] | null;
             realtime?: components["schemas"]["ServiceOverride"] | null;
@@ -1188,6 +1189,22 @@ export interface components {
              * Format: uuid
              */
             provider_connection_uuid: string;
+        };
+        /** STTFallbackPolicy[ServiceSelection] */
+        STTFallbackPolicy_ServiceSelection_: {
+            /**
+             * Version
+             * @default 1
+             * @constant
+             */
+            version: 1;
+            /** Rules */
+            rules?: components["schemas"]["STTFallbackRule_ServiceSelection_"][];
+        };
+        /** STTFallbackRule[ServiceSelection] */
+        STTFallbackRule_ServiceSelection_: {
+            condition: components["schemas"]["ErrorCondition"];
+            target: components["schemas"]["ServiceSelection"];
         };
         /** TTSFallbackPolicy[ServiceSelection] */
         TTSFallbackPolicy_ServiceSelection_: {
@@ -1674,6 +1691,8 @@ export type RecordingListResponseSchema = components['schemas']['RecordingListRe
 export type RecordingResponseSchema = components['schemas']['RecordingResponseSchema'];
 export type ServiceOverride = components['schemas']['ServiceOverride'];
 export type ServiceSelection = components['schemas']['ServiceSelection'];
+export type SttFallbackPolicyServiceSelection = components['schemas']['STTFallbackPolicy_ServiceSelection_'];
+export type SttFallbackRuleServiceSelection = components['schemas']['STTFallbackRule_ServiceSelection_'];
 export type TtsFallbackPolicyServiceSelection = components['schemas']['TTSFallbackPolicy_ServiceSelection_'];
 export type TtsFallbackRuleServiceSelection = components['schemas']['TTSFallbackRule_ServiceSelection_'];
 export type ToolDelayedAudioMessage = components['schemas']['ToolDelayedAudioMessage'];

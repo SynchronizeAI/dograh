@@ -533,6 +533,14 @@ class ServiceSelection(BaseModel):
     provider_connection_uuid: Annotated[UUID, Field(title='Provider Connection Uuid')]
 
 
+class STTFallbackRuleServiceSelection(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    condition: ErrorCondition
+    target: ServiceSelection
+
+
 class TTSFallbackRuleServiceSelection(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -1117,6 +1125,16 @@ class RecordingListResponseSchema(BaseModel):
     total: Annotated[int, Field(title='Total')]
 
 
+class STTFallbackPolicyServiceSelection(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    version: Annotated[Literal[1], Field(title='Version')] = 1
+    rules: Annotated[
+        list[STTFallbackRuleServiceSelection] | None, Field(max_length=1, title='Rules')
+    ] = None
+
+
 class TTSFallbackPolicyServiceSelection(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -1280,6 +1298,7 @@ class ModelConfigurationOverride(BaseModel):
     llm: ServiceOverride | None = None
     llm_fallback: FallbackPolicyServiceSelection | None = None
     stt: ServiceOverride | None = None
+    stt_fallback: STTFallbackPolicyServiceSelection | None = None
     tts: ServiceOverride | None = None
     tts_fallback: TTSFallbackPolicyServiceSelection | None = None
     realtime: ServiceOverride | None = None

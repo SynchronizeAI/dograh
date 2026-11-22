@@ -316,21 +316,24 @@ def _bind_stt_fallback_turns(
     *,
     uses_external_turns: bool,
 ) -> None:
-    """After Flux fails over, end turns the way a Nova transcription line does."""
+    """After external STT fails over, use a conservative silence timeout."""
     from api.services.pipecat.fallback_stt import FallbackSTTService
 
     if not uses_external_turns or not isinstance(stt, FallbackSTTService):
         return
-    fallback_run_configs = {
-        **run_configs,
-        "turn_stop_strategy": "turn_analyzer",
-        "smart_turn_stop_secs": max(
-            DEFAULT_SMART_TURN_STOP_SECS,
-            run_configs.get("smart_turn_stop_secs") or DEFAULT_SMART_TURN_STOP_SECS,
+    fallback_user_speech_timeout = max(
+        DEFAULT_SMART_TURN_STOP_SECS,
+        run_configs.get("smart_turn_stop_secs") or DEFAULT_SMART_TURN_STOP_SECS,
+    )
+    strategies = UserTurnStrategies(
+        start=_create_non_realtime_user_turn_start_strategies(
+            run_configs, uses_external_turns=False
         ),
-    }
-    strategies = _create_non_realtime_user_turn_strategies(
-        fallback_run_configs, uses_external_turns=False
+        stop=[
+            SpeechTimeoutUserTurnStopStrategy(
+                user_speech_timeout=fallback_user_speech_timeout
+            )
+        ],
     )
     timeout = _resolve_user_turn_stop_timeout(run_configs, uses_external_turns=False)
 

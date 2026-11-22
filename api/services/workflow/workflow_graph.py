@@ -128,6 +128,7 @@ class Node:
         self.extraction_prompt = getattr(data, "extraction_prompt", None)
         self.extraction_variables = getattr(data, "extraction_variables", None)
         self.add_global_prompt = getattr(data, "add_global_prompt", True)
+        self.respond_immediately = getattr(data, "respond_immediately", True)
         self.greeting = getattr(data, "greeting", None)
         self.greeting_type = getattr(data, "greeting_type", None)
         self.greeting_recording_id = getattr(data, "greeting_recording_id", None)

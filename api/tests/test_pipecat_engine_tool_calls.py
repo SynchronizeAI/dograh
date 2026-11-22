@@ -155,11 +155,17 @@ class TestPipecatEngineToolCalls:
             },
         ]
 
-        llm, context = await run_pipeline_with_tool_calls(
-            workflow=simple_workflow,
-            functions=functions,
-            num_text_steps=2,
-        )
+        with patch.object(
+            MockLLMService,
+            "register_function",
+            autospec=True,
+            side_effect=MockLLMService.register_function,
+        ) as register_function:
+            llm, context = await run_pipeline_with_tool_calls(
+                workflow=simple_workflow,
+                functions=functions,
+                num_text_steps=2,
+            )
 
         # Assert that the LLM generation was called a total of 2 times,
         # 1st time when StartNode was executed, and second time
@@ -170,7 +176,13 @@ class TestPipecatEngineToolCalls:
 
         # Assert that the context was updated with END_CALL_SYSTEM_PROMPT
         assert llm._settings.system_instruction == END_CALL_SYSTEM_PROMPT
-        assert llm._functions["end_call"].is_node_transition is True
+        # end_call was registered as a node transition, and entering the
+        # end node retired it.
+        assert any(
+            call.args[1] == "end_call" and call.kwargs.get("is_node_transition")
+            for call in register_function.call_args_list
+        )
+        assert "end_call" not in llm._functions
 
     @pytest.mark.asyncio
     async def test_parallel_builtin_and_transition_calls_through_engine_1(

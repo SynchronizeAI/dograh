@@ -1,3 +1,4 @@
+from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -471,7 +472,8 @@ class PipecatEngine:
                 # is done, we have updated context and functions
                 await self.set_node(transition_to_node, origin_visit_id=agent.visit_id)
 
-                is_end_node = agent.workflow.nodes[transition_to_node].is_end
+                next_node = agent.workflow.nodes[transition_to_node]
+                is_end_node = next_node.is_end
                 if is_end_node:
                     # Register before the tool result can trigger generation.
                     closing_speech = self.speech_playback.expect_response(
@@ -495,6 +497,9 @@ class PipecatEngine:
                 result = {"status": "done"}
 
                 properties = FunctionCallResultProperties(
+                    # Pipecat Flows' respond_immediately: a node set to wait
+                    # for the caller answers on the caller's next turn.
+                    run_llm=None if next_node.respond_immediately else False,
                     on_context_updated=on_context_updated,
                 )
 
@@ -977,6 +982,13 @@ class PipecatEngine:
         functions = await compose_functions_for_node(
             node=node, custom_tool_manager=manager
         )
+        # As in Pipecat Flows, a node's functions replace the previous node's:
+        # a handler the new node does not offer can no longer be called.
+        offered = {function.name for function in functions}
+        for function in agent.tools.standard_tools if agent.tools else ():
+            if function.name not in offered:
+                with suppress(KeyError):
+                    agent.llm.unregister_function(function.name)
         agent.tools = ToolsSchema(standard_tools=functions)
         agent.system_prompt = prompt.text
         if agent.recording_router is not None:

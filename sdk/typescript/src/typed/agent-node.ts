@@ -46,6 +46,10 @@ export interface AgentNode {
      */
     add_global_prompt?: boolean;
     /**
+     * When false, entering this node does not start a reply; the agent waits for the caller's next turn. Pair it with the incoming edge's transition speech so the caller hears a question first.
+     */
+    respond_immediately?: boolean;
+    /**
      * When true, runs an LLM extraction pass for this node.
      */
     extraction_enabled?: boolean;

@@ -524,9 +524,9 @@ class AgentNodeData(
         ui_type=PropertyType.boolean,
         display_name="Respond Immediately",
         description=(
-            "When false, entering this node does not start a reply; the agent "
-            "waits for the caller's next turn. Pair it with the incoming edge's "
-            "transition speech so the caller hears a question first."
+            "When false, the node waits for the caller only after the incoming "
+            "edge's transition speech is queued and, for recorded audio, has a "
+            "non-empty transcript; otherwise it responds as usual."
         ),
     )
 

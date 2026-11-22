@@ -292,11 +292,16 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
             and isinstance(frame, TTSSpeakFrame)
             and self.strategy.active_service is self.primary
         ):
-            self._pending_speak_flags = (
+            flags = (
                 frame.append_to_context,
                 frame.persist_to_logs,
                 frame.text_type,
             )
+            self._pending_speak_flags = flags
+            self._request_text = frame.text
+            self._request_context_id = None
+            self._request_audio_duration = 0.0
+            self._request_speak_flags = flags
         await super().process_frame(frame, direction)
 
     async def push_frame(

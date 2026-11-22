@@ -129,6 +129,8 @@ KoreaAITel supports inbound calls only. In Dograh, create a **한국AI통신**
 configuration with your **Account ID** and the **Webhook Signing Secret** from
 **Dashboard > 개발자 > 웹훅**. Add the phone number and assign its **Inbound
 workflow**. Dograh uses the signing secret to verify the VoiceML webhook.
+Repeated deliveries with the same KoreaAITel `CallId` reuse the existing
+workflow run instead of creating another one.
 
 In KoreaAITel, set that number's VoiceML webhook to:
 

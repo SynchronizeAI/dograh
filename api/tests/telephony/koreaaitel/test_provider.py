@@ -63,13 +63,15 @@ def test_parse_inbound_webhook():
     assert data.raw_data["ForwardedFrom"] == "0212345678"
 
 
-def test_parse_withheld_caller_is_blank():
+def test_parse_withheld_caller_is_blank_everywhere():
     data = KoreaAITelProvider.parse_inbound_webhook(
         {**WEBHOOK, "CallerIdRestricted": "true"}
     )
     assert data.from_number == ""
     assert data.to_number == "+827012340001"
-    assert data.raw_data["From"] == "01012345678"
+    assert data.raw_data["From"] == ""
+    assert data.raw_data["CallId"] == "CA9f8e"
+    assert data.raw_data["ForwardedFrom"] == "0212345678"
 
 
 def test_validate_account_id():

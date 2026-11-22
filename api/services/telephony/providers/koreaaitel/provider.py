@@ -103,6 +103,9 @@ class KoreaAITelProvider(TelephonyProvider):
         restricted = str(webhook_data.get("CallerIdRestricted", "")).lower() == "true"
         from_raw = "" if restricted else webhook_data.get("From", "")
         to_raw = webhook_data.get("To", "")
+        raw_data = dict(webhook_data)
+        if restricted:
+            raw_data["From"] = ""
         return NormalizedInboundData(
             provider=KoreaAITelProvider.PROVIDER_NAME,
             call_id=webhook_data.get("CallId", ""),
@@ -113,7 +116,7 @@ class KoreaAITelProvider(TelephonyProvider):
             account_id=webhook_data.get("AccountId"),
             from_country=_COUNTRY,
             to_country=_COUNTRY,
-            raw_data=webhook_data,  # keeps ForwardedFrom
+            raw_data=raw_data,
         )
 
     @staticmethod

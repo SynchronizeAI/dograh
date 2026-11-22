@@ -106,19 +106,19 @@ class UserConfigurationValidator:
 
         status_list.extend(self._validate_service(configuration.llm, "llm"))
         if configuration.llm_fallback is not None:
-            for index, rule in enumerate(configuration.llm_fallback.rules):
+            for index, llm_rule in enumerate(configuration.llm_fallback.rules):
                 status_list.extend(
-                    self._validate_service(rule.target, f"llm_fallback_{index + 1}")
+                    self._validate_service(llm_rule.target, f"llm_fallback_{index + 1}")
                 )
         if configuration.stt_fallback is not None and not configuration.is_realtime:
-            for index, rule in enumerate(configuration.stt_fallback.rules):
+            for index, stt_rule in enumerate(configuration.stt_fallback.rules):
                 status_list.extend(
-                    self._validate_service(rule.target, f"stt_fallback_{index + 1}")
+                    self._validate_service(stt_rule.target, f"stt_fallback_{index + 1}")
                 )
         if configuration.tts_fallback is not None and not configuration.is_realtime:
-            for index, rule in enumerate(configuration.tts_fallback.rules):
+            for index, tts_rule in enumerate(configuration.tts_fallback.rules):
                 status_list.extend(
-                    self._validate_service(rule.target, f"tts_fallback_{index + 1}")
+                    self._validate_service(tts_rule.target, f"tts_fallback_{index + 1}")
                 )
         if configuration.is_realtime:
             status_list.extend(

@@ -602,10 +602,9 @@ async def _resolve_spec(
         ):
             raise _invalid("STT fallbacks are unavailable in Dograh mode")
         if (
-            key.startswith("fallback_")
-            or key.startswith("tts_fallback_")
-            or key.startswith("stt_fallback_")
-        ) and row.provider == "dograh":
+            key.startswith(("fallback_", "tts_fallback_", "stt_fallback_"))
+            and row.provider == "dograh"
+        ):
             raise _invalid(
                 "Dograh manages its own fallbacks and cannot be a fallback target"
             )

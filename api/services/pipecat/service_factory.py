@@ -682,7 +682,9 @@ def create_single_stt_service(
     eager_enabled = stt_uses_eager_end_of_turn(user_config)
     # Keep the disabled constructor and wire parameters exactly as before,
     # even if a saved configuration retains a custom eager threshold.
-    eager_kwargs = {"enable_eager_end_of_turn": True} if eager_enabled else {}
+    eager_kwargs: dict[str, Any] = (
+        {"enable_eager_end_of_turn": True} if eager_enabled else {}
+    )
     eager_threshold = (
         getattr(user_config.stt, "eager_eot_threshold", 0.5) if eager_enabled else 0.5
     )
@@ -851,11 +853,14 @@ def create_single_stt_service(
         assemblyai_turns = stt_uses_assemblyai_end_of_turn(
             user_config, turn_stop_strategy
         )
+        assemblyai_turn_kwargs: dict[str, Any] = (
+            {} if not assemblyai_turns else {"vad_force_turn_endpoint": False}
+        )
         return AssemblyAISTTService(
             api_key=user_config.stt.api_key,
             settings=AssemblyAISTTSettings(**settings_kwargs),
             sample_rate=audio_config.transport_in_sample_rate,
-            **({} if not assemblyai_turns else {"vad_force_turn_endpoint": False}),
+            **assemblyai_turn_kwargs,
         )
     elif user_config.stt.provider == ServiceProviders.GLADIA.value:
         settings_kwargs = {"model": user_config.stt.model, **configurable_settings}
@@ -975,7 +980,8 @@ def create_stt_service(
             turn_stop_strategy=turn_stop_strategy,
             register_campaign_errors=False,
         )
-    except Exception as exc:
+    # Backup construction is best-effort; a failed backup leaves the primary usable.
+    except Exception as exc:  # noqa: BLE001
         logger.warning(
             f"STT fallback backup could not be constructed ({type(exc).__name__}); "
             "continuing with primary only"
@@ -1514,7 +1520,8 @@ def create_tts_service(
             tts_cache_enabled=tts_cache_enabled,
             register_campaign_errors=False,
         )
-    except Exception as exc:
+    # Backup construction is best-effort; a failed backup leaves the primary usable.
+    except Exception as exc:  # noqa: BLE001
         logger.warning(
             f"TTS fallback backup could not be constructed ({type(exc).__name__}); "
             "continuing with primary only"
@@ -1593,7 +1600,9 @@ def create_llm_service_from_provider(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     # None means omit the parameter, not send JSON null. This matters for
     # reasoning models and for providers with their own sampling defaults.
-    sampling_settings = {} if temperature is None else {"temperature": temperature}
+    sampling_settings: dict[str, Any] = (
+        {} if temperature is None else {"temperature": temperature}
+    )
 
     if provider in (
         ServiceProviders.OPENAI.value,

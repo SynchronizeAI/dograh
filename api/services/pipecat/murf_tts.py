@@ -202,7 +202,7 @@ class MurfTTSService(WebsocketTTSService):
             logger.error(f"{self} connection verification failed: {e}")
             return False
 
-    async def setup(self, setup: FrameProcessorSetup) -> None:
+    async def setup(self, setup: FrameProcessorSetup) -> None:  # type: ignore[override]
         await super().setup(setup)
         self._murf_settings["sample_rate"] = self.sample_rate
         # Connect while the pipeline is set up, not while it handles StartFrame:

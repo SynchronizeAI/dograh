@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
 from loguru import logger
@@ -46,11 +47,11 @@ class _SwitchOnFirstError(ServiceSwitcherStrategy):
     def __init__(self, services: list[FrameProcessor]):
         super().__init__(services)
         self._switched = False
-        self.prepare_switch = None
-        self.complete_switch = None
-        self.visit_over = None
+        self.prepare_switch: Callable[[ErrorFrame], Awaitable[None]] | None = None
+        self.complete_switch: Callable[[ErrorFrame], Awaitable[None]] | None = None
+        self.visit_over: Callable[[], bool] | None = None
 
-    async def handle_error(self, error: ErrorFrame) -> TTSService | None:
+    async def handle_error(self, error: ErrorFrame) -> FrameProcessor | None:
         if self._switched or (self.visit_over and self.visit_over()):
             return None
         primary, backup = self.services
@@ -196,10 +197,10 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
                     asyncio.shield(self._backup_connect_task),
                     timeout=_BACKUP_CONNECT_TIMEOUT_S,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("TTS fallback backup connect timed out during switch")
 
-    async def setup(self, setup: FrameProcessorSetup):
+    async def setup(self, setup: FrameProcessorSetup) -> None:  # type: ignore[override]
         await FrameProcessor.setup(self, setup)
         self._setup_finished()
         self._backup_setup = setup
@@ -227,9 +228,10 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
                 self.backup.setup(setup),
                 timeout=_BACKUP_CONNECT_TIMEOUT_S,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("TTS fallback backup lazy connect timed out")
-        except Exception as exc:
+        # Backup connection is best-effort; failure leaves the primary path in place.
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 f"TTS fallback backup lazy connect failed: {type(exc).__name__}"
             )
@@ -262,6 +264,6 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
             context_id = getattr(frame, "context_id", None)
             if isinstance(frame, TTSStartedFrame) and context_id:
                 self._open_primary_contexts[context_id] = frame
-            elif isinstance(frame, TTSStoppedFrame):
+            elif isinstance(frame, TTSStoppedFrame) and context_id is not None:
                 self._open_primary_contexts.pop(context_id, None)
         await super().push_frame(frame, direction)

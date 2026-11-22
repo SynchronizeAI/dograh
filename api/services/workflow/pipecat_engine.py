@@ -433,8 +433,10 @@ class PipecatEngine:
         transition_speech_recording_id: Optional[str] = None,
         *,
         agent: AgentRuntime | None = None,
+        source_node: Node | None = None,
     ):
         agent = agent or self.active_agent
+        source_node = source_node or agent.current_node
 
         async def transition_func(function_call_params: FunctionCallParams) -> None:
             """Inner function that handles the node change tool calls"""
@@ -445,6 +447,16 @@ class PipecatEngine:
             logger.info(f"Arguments: {function_call_params.arguments}")
 
             try:
+                if source_node is not None and agent.current_node is not source_node:
+                    await function_call_params.result_callback(
+                        {
+                            "status": "error",
+                            "error": "Transition is no longer available",
+                        },
+                        properties=FunctionCallResultProperties(run_llm=False),
+                    )
+                    return
+
                 # Perform variable extraction before transitioning to new node
                 await self._perform_variable_extraction_if_needed(
                     self.active_agent.current_node,
@@ -453,6 +465,7 @@ class PipecatEngine:
 
                 # Queue transition speech/audio before switching nodes
                 speech_type = transition_speech_type or "text"
+                speech_queued = False
                 if (
                     speech_type == "audio"
                     and transition_speech_recording_id
@@ -461,13 +474,18 @@ class PipecatEngine:
                     logger.info(
                         f"Playing transition audio: {transition_speech_recording_id}"
                     )
-                    await self.queue_speech(
+                    speech = await self.queue_speech(
                         recording_pk=int(transition_speech_recording_id),
                         append_to_context=True,
                         mute_user=True,
                     )
+                    speech_queued = speech.outcome not in (
+                        PlaybackOutcome.FAILED,
+                        PlaybackOutcome.SKIPPED,
+                        PlaybackOutcome.CLOSED,
+                    )
                 elif transition_speech:
-                    await self.queue_text_message(
+                    speech_queued = await self.queue_text_message(
                         transition_speech,
                         append_to_context=True,
                         mute_user=True,
@@ -505,7 +523,11 @@ class PipecatEngine:
                 properties = FunctionCallResultProperties(
                     # Pipecat Flows' respond_immediately: a node set to wait
                     # for the caller answers on the caller's next turn.
-                    run_llm=None if next_node.respond_immediately else False,
+                    run_llm=(
+                        False
+                        if speech_queued and not next_node.respond_immediately
+                        else None
+                    ),
                     on_context_updated=on_context_updated,
                 )
 
@@ -531,6 +553,7 @@ class PipecatEngine:
         transition_speech_type: Optional[str] = None,
         transition_speech_recording_id: Optional[str] = None,
         *,
+        source_node: Node,
         agent: AgentRuntime | None = None,
     ):
         agent = agent or self.active_agent
@@ -546,6 +569,7 @@ class PipecatEngine:
             transition_speech_type,
             transition_speech_recording_id,
             agent=agent,
+            source_node=source_node,
         )
 
         # Register function with LLM
@@ -968,6 +992,7 @@ class PipecatEngine:
                     edge.transition_speech,
                     edge.data.transition_speech_type,
                     edge.data.transition_speech_recording_id,
+                    source_node=node,
                     agent=agent,
                 )
         if node.tool_uuids and manager:

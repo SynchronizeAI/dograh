@@ -49,11 +49,12 @@ calls are cancelled and retried against the committed transcript; they do not
 execute before commit. A configured no-output LLM fallback timer starts at
 commit, so speculative waiting does not trigger an early hedge.
 
-`eager_eot_threshold` defaults to `0.5`. You can set it from `0.3` to `0.7`,
-inclusive; it cannot exceed the fixed committed-turn threshold of `0.7`.
-Lower values predict sooner and can spend more LLM requests on withdrawn
-guesses. To opt into the more aggressive `0.4` setting for one workflow, use
-this fragment of its `workflow_configurations`:
+`eager_eot_threshold` defaults to `0.5` and can be set from `0.3` to `0.7`.
+It must be lower than the committed-turn threshold, `eot_threshold`, which
+defaults to `0.7` and can be set from `0.5` to `0.9`. Lower eager thresholds
+predict sooner and can spend more LLM requests on withdrawn guesses. To opt
+into the more aggressive `0.4` setting for one workflow, use this fragment of
+its `workflow_configurations`:
 
 ```json
 {

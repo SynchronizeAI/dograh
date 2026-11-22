@@ -554,6 +554,13 @@ class OpenAILLMService(BaseChatLLMConfiguration):
         default="https://api.openai.com/v1",
         description="Override only if using an OpenAI-compatible API (e.g. local LLM, proxy).",
     )
+    # Pipecat's Chat Completions settings have no reasoning field; sent via extra.
+    reasoning_effort: str | None = Field(
+        default=None,
+        description="Reasoning effort for reasoning models (e.g. none, minimal, low). "
+        "Leave blank for the default.",
+        json_schema_extra={"examples": ["none", "minimal", "low", "medium", "high"]},
+    )
 
 
 @register_llm(provider=ATLASCLOUD_PROVIDER)

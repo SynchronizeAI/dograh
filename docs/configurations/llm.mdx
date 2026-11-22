@@ -17,6 +17,12 @@ If you don't find a model in the drop down, you can always add a model manually.
 
 ![Select Models from DropDown](../images/add_model_manually.png)
 
+## OpenAI reasoning effort
+
+On an OpenAI connection, including an OpenAI-compatible endpoint, set `reasoning_effort` in the LLM settings when the selected model supports it. Leave it blank to use the model's default, except GPT-5 models, for which Dograh sends `minimal` reasoning effort and `low` verbosity by default.
+
+A value you set overrides the GPT-5 reasoning effort while keeping low verbosity. Supported values depend on the selected model; check its API documentation before choosing one.
+
 ## OpenRouter provider routing
 
 By default OpenRouter spreads requests across every provider that serves a model, weighted toward the cheapest. For voice agents that can add noticeable latency, because each turn may land on a slower provider.

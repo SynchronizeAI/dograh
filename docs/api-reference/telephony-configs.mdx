@@ -21,6 +21,8 @@ One configuration in your organization can be marked as the **default outbound**
 
 Phone numbers are nested under a configuration:
 
+An `inbound_workflow_id` stores the number's inbound workflow assignment. Dograh updates provider-side webhook routing when the provider supports it; other providers require manual setup. Create and update phone-number responses include a `provider_sync` block with the result. See the [Inbound Calling guide](/integrations/telephony/inbound) for provider-specific setup.
+
 | Method | Endpoint | Quick Link |
 |---|---|---|
 | `GET` | `/organizations/telephony-configs/{config_id}/phone-numbers` | [List phone numbers](/api-reference/telephony-configs/phone-numbers/list) |

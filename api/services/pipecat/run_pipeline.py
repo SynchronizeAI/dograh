@@ -321,8 +321,9 @@ def _bind_stt_fallback_turns(
 
     if not uses_external_turns or not isinstance(stt, FallbackSTTService):
         return
+    fallback_run_configs = {**run_configs, "turn_stop_strategy": "turn_analyzer"}
     strategies = _create_non_realtime_user_turn_strategies(
-        run_configs, uses_external_turns=False
+        fallback_run_configs, uses_external_turns=False
     )
     timeout = _resolve_user_turn_stop_timeout(run_configs, uses_external_turns=False)
 

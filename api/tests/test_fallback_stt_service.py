@@ -26,11 +26,13 @@ from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.turns.user_stop import (
     ExternalUserTurnStopStrategy,
     SpeechTimeoutUserTurnStopStrategy,
+    TurnAnalyzerUserTurnStopStrategy,
 )
 from pipecat.turns.user_turn_controller import UserTurnController
 from pipecat.utils.asyncio.task_manager import TaskManager
 
 from api.services.pipecat.fallback_stt import FallbackSTTService
+from api.services.pipecat import run_pipeline as run_pipeline_module
 from api.services.pipecat.greeting import GreetingController
 from api.services.pipecat.run_pipeline import _bind_stt_fallback_turns
 from api.services.pipecat.termination_funnel_processor import (
@@ -304,13 +306,49 @@ async def test_flux_fallback_ends_turns_like_the_transcription_path():
 
     await stt.on_switched()
     assert isinstance(
-        controller.user_turn_strategies.stop[0], SpeechTimeoutUserTurnStopStrategy
+        controller.user_turn_strategies.stop[0], TurnAnalyzerUserTurnStopStrategy
     )
     assert greeting._normal_strategies is not flux
     assert isinstance(
-        greeting._normal_strategies.stop[0], SpeechTimeoutUserTurnStopStrategy
+        greeting._normal_strategies.stop[0], TurnAnalyzerUserTurnStopStrategy
     )
 
     await _speak_while_flux_still_reports_speech(controller)
     assert stopped == [1]
     await controller.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("turn_stop_strategy", "smart_turn_stop_secs"),
+    [("assemblyai", 1.4), ("transcription", 1.2), ("turn_analyzer", 1.7)],
+)
+async def test_external_stt_failover_uses_configured_smart_turn(
+    monkeypatch, turn_stop_strategy, smart_turn_stop_secs
+):
+    monkeypatch.setattr(
+        run_pipeline_module,
+        "LocalSmartTurnAnalyzerV3",
+        lambda *, params: params,
+    )
+    controller = SimpleNamespace(_user_turn_stop_timeout=None)
+    user_aggregator = SimpleNamespace(user_turn_controller=controller)
+    greeting = SimpleNamespace(use_transcription_turns=AsyncMock())
+    stt = FallbackSTTService(FakeSTT("primary"), FakeSTT("backup"))
+
+    _bind_stt_fallback_turns(
+        stt,
+        user_aggregator,
+        greeting,
+        {
+            "turn_stop_strategy": turn_stop_strategy,
+            "smart_turn_stop_secs": smart_turn_stop_secs,
+        },
+        uses_external_turns=True,
+    )
+    await stt.on_switched()
+
+    strategies = greeting.use_transcription_turns.await_args.args[0]
+    stop_strategy = strategies.stop[0]
+    assert isinstance(stop_strategy, TurnAnalyzerUserTurnStopStrategy)
+    assert stop_strategy._turn_analyzer.stop_secs == smart_turn_stop_secs

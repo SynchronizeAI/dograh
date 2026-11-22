@@ -2120,6 +2120,11 @@ def _flux_eot_threshold_field(schema):
     )
 
 
+def _validate_flux_eager_thresholds(eager_threshold: float, eot_threshold: float):
+    if eager_threshold >= eot_threshold:
+        raise ValueError("eager_eot_threshold must be lower than eot_threshold")
+
+
 def _flux_eot_timeout_field(schema):
     return Field(
         default=3000,
@@ -2182,8 +2187,8 @@ class DeepgramSTTConfiguration(BaseSTTConfiguration):
         le=0.7,
         description=(
             "Flux eager confidence threshold, used only when eager end of turn "
-            "is enabled. Lower values predict sooner; must not exceed Dograh's "
-            "committed end-of-turn threshold of 0.7."
+            "is enabled. Lower values predict sooner; must be below the "
+            "configured committed end-of-turn threshold."
         ),
         json_schema_extra=_deepgram_eager_field_schema,
     )
@@ -2208,6 +2213,11 @@ class DeepgramSTTConfiguration(BaseSTTConfiguration):
     @classmethod
     def validate_language_hints(cls, hints: list[str]) -> list[str]:
         return _validate_flux_language_hints(hints)
+
+    @model_validator(mode="after")
+    def validate_eager_threshold(self):
+        _validate_flux_eager_thresholds(self.eager_eot_threshold, self.eot_threshold)
+        return self
 
 
 @register_stt(provider=CARTESIA_PROVIDER)
@@ -2336,8 +2346,8 @@ class DograhSTTService(BaseSTTConfiguration):
         le=0.7,
         description=(
             "Flux eager confidence threshold, used only when eager end of turn "
-            "is enabled. Lower values predict sooner; must not exceed Dograh's "
-            "committed end-of-turn threshold of 0.7."
+            "is enabled. Lower values predict sooner; must be below the "
+            "configured committed end-of-turn threshold."
         ),
         json_schema_extra=_dograh_eager_field_schema,
     )
@@ -2348,6 +2358,11 @@ class DograhSTTService(BaseSTTConfiguration):
     @classmethod
     def validate_language_hints(cls, hints: list[str]) -> list[str]:
         return _validate_flux_language_hints(hints)
+
+    @model_validator(mode="after")
+    def validate_eager_threshold(self):
+        _validate_flux_eager_thresholds(self.eager_eot_threshold, self.eot_threshold)
+        return self
 
 
 @register_stt(provider=SARVAM_PROVIDER)

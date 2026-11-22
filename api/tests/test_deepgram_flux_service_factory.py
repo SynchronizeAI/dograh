@@ -157,7 +157,12 @@ def test_flux_eot_timeout_rejects_invalid_values(schema, timeout):
 )
 def test_flux_eot_settings_reach_service(schema, model, factory):
     config = schema(
-        api_key="test-key", model=model, eot_threshold=0.85, eot_timeout_ms=7000
+        api_key="test-key",
+        model=model,
+        enable_eager_end_of_turn=True,
+        eager_eot_threshold=0.4,
+        eot_threshold=0.85,
+        eot_timeout_ms=7000,
     )
     with patch(f"api.services.pipecat.service_factory.{factory}") as service:
         create_stt_service(
@@ -167,8 +172,37 @@ def test_flux_eot_settings_reach_service(schema, model, factory):
             ),
         )
     settings = service.call_args.kwargs["settings"]
+    assert service.call_args.kwargs["enable_eager_end_of_turn"] is True
+    assert settings.eager_eot_threshold == 0.4
     assert settings.eot_threshold == 0.85
     assert settings.eot_timeout_ms == 7000
+
+
+@pytest.mark.parametrize("schema", [DeepgramSTTConfiguration, DograhSTTService])
+@pytest.mark.parametrize("eager,committed", [(0.7, 0.5), (0.5, 0.5)])
+def test_flux_eager_threshold_must_be_below_commit_threshold(
+    schema, eager, committed
+):
+    with pytest.raises(ValueError, match="eager_eot_threshold must be lower than"):
+        schema(
+            api_key="test-key",
+            enable_eager_end_of_turn=True,
+            eager_eot_threshold=eager,
+            eot_threshold=committed,
+        )
+
+
+@pytest.mark.parametrize("schema", [DeepgramSTTConfiguration, DograhSTTService])
+@pytest.mark.parametrize(("eager", "committed"), [(0.4, 0.5), (0.5, 0.7)])
+def test_flux_eager_threshold_accepts_ordered_commit_thresholds(
+    schema, eager, committed
+):
+    config = schema(
+        api_key="test-key", eager_eot_threshold=eager, eot_threshold=committed
+    )
+
+    assert config.eager_eot_threshold == eager
+    assert config.eot_threshold == committed
 
 
 @pytest.mark.parametrize("schema", [DeepgramSTTConfiguration, DograhSTTService])

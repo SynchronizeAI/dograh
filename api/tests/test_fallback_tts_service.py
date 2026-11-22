@@ -33,7 +33,10 @@ from pipecat.utils.errors import ErrorCategory
 from pipecat.utils.run_context import org_id_var, run_id_var
 
 from api.services.pipecat import fallback_tts
-from api.services.pipecat.fallback_tts import FallbackTTSService
+from api.services.pipecat.fallback_tts import (
+    TTS_CONTEXT_ID_METADATA_KEY,
+    FallbackTTSService,
+)
 from api.services.pipecat.murf_tts import MurfTTSService
 from api.services.pipecat.termination_funnel_processor import is_terminal_error
 
@@ -355,6 +358,48 @@ async def test_failure_replays_context_when_stop_and_error_arrive_in_either_orde
     await eventually(
         lambda: harness.backup.received_texts == ["greeting disclosure"],
         what="the replayed greeting",
+    )
+    await harness.pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_error_context_id_selects_failed_request_over_older_stop():
+    primary = StreamingPrimary(name="PrimaryTTS")
+    harness = await build_harness(primary=primary)
+    await start(harness)
+    await harness.pipeline.queue_frame(TTSSpeakFrame("first request"))
+    await eventually(
+        lambda: primary.received_texts == ["first request"],
+        what="the first primary request",
+    )
+    await harness.pipeline.queue_frame(TTSSpeakFrame("failed request"))
+    await eventually(
+        lambda: primary.received_texts == ["first request", "failed request"],
+        what="the second primary request",
+    )
+    started = [
+        frame.context_id
+        for frame in harness.downstream.frames
+        if isinstance(frame, TTSStartedFrame)
+    ]
+    first_context_id, failed_context_id = started
+
+    await primary.push_frame(TTSStoppedFrame(context_id=first_context_id))
+    await eventually(
+        lambda: any(
+            isinstance(frame, TTSStoppedFrame)
+            and frame.context_id == first_context_id
+            for frame in harness.downstream.frames
+        ),
+        what="the first request to stop",
+    )
+    error = ErrorFrame(error="second request failed")
+    error.metadata[TTS_CONTEXT_ID_METADATA_KEY] = failed_context_id
+    await primary.push_error_frame(error)
+
+    await eventually(
+        lambda: harness.backup.received_texts == ["failed request"],
+        what="the replay of the failed request",
     )
     await harness.pipeline.cleanup()
 

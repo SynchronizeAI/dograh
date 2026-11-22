@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from pipecat.clocks.system_clock import SystemClock
-from pipecat.frames.frames import StartFrame, TTSStoppedFrame
+from pipecat.frames.frames import ErrorFrame, StartFrame, TTSStoppedFrame
 from pipecat.processors.frame_processor import FrameProcessorSetup
 from pipecat.utils.asyncio.task_manager import TaskManager
 from websockets.protocol import State
@@ -17,6 +17,7 @@ from api.services.configuration.registry import (
     ServiceProviders,
     ServiceType,
 )
+from api.services.pipecat.fallback_tts import TTS_CONTEXT_ID_METADATA_KEY
 from api.services.pipecat.murf_tts import MurfTTSService
 from api.services.pipecat.service_factory import (
     MURF_DEFAULT_BASE_URL,
@@ -170,10 +171,10 @@ async def test_murf_provider_error_closes_audio_context():
     await service.create_audio_context(context_id)
     events = []
 
-    async def push_error(**kwargs):
+    async def push_error(error):
         events.append("error")
 
-    service.push_error = AsyncMock(side_effect=push_error)
+    service.push_error_frame = AsyncMock(side_effect=push_error)
     service.stop_all_metrics = AsyncMock()
     service.push_frame = AsyncMock()
     append_to_audio_context = service.append_to_audio_context
@@ -193,8 +194,11 @@ async def test_murf_provider_error_closes_audio_context():
     assert any(isinstance(item, TTSStoppedFrame) for item in items)
     assert items[-1] is None
     assert events == ["error", "stopped"]
+    error = service.push_error_frame.await_args.args[0]
+    assert isinstance(error, ErrorFrame)
+    assert error.metadata[TTS_CONTEXT_ID_METADATA_KEY] == context_id
     service.stop_all_metrics.assert_awaited_once()
-    service.push_error.assert_awaited_once()
+    service.push_error_frame.assert_awaited_once()
     service.push_frame.assert_not_called()
 
 

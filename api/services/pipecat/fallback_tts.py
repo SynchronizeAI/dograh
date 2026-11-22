@@ -38,6 +38,7 @@ StrategyType = TypeVar("StrategyType", bound=ServiceSwitcherStrategy)
 
 _BACKUP_CONNECT_TIMEOUT_S = 3.0
 _NO_FALLBACK_AFTER_AUDIO_DURATION_S = 3.0
+TTS_CONTEXT_ID_METADATA_KEY = "dograh_tts_context_id"
 _TTS_SPEECH_FRAMES = (TTSStartedFrame, TTSAudioRawFrame, TTSTextFrame, TTSStoppedFrame)
 # Set on the primary's speech frames as it pushes them, so a frame is known to
 # come from the primary by where it was pushed and not by what it carries.
@@ -52,6 +53,7 @@ class _SpeakContext:
     text_type: TextType = TextType.SENTENCE
     audio_duration: float = 0.0
     text_emitted: bool = False
+    stopped: bool = False
 
 
 class _SwitchOnFirstError(ServiceSwitcherStrategy):
@@ -103,7 +105,7 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
         self._open_primary_contexts: dict[str, TTSStartedFrame] = {}
         self._processing_primary_speak: TTSSpeakFrame | None = None
         self._speak_contexts: dict[str, _SpeakContext] = {}
-        self._recently_stopped_speak_context: _SpeakContext | None = None
+        self._last_stopped_context_id: str | None = None
         self._visit_ending = False
         self._backup_setup: FrameProcessorSetup | None = None
         self._backup_connect_task: asyncio.Task | None = None
@@ -156,9 +158,10 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
             if speak_context is not None:
                 speak_context.text_emitted = True
         elif isinstance(frame, TTSStoppedFrame):
-            speak_context = self._speak_contexts.pop(frame.context_id, None)
+            speak_context = self._speak_contexts.get(frame.context_id)
             if speak_context is not None:
-                self._recently_stopped_speak_context = speak_context
+                speak_context.stopped = True
+                self._last_stopped_context_id = frame.context_id
 
     def _before_primary_process_frame(self, _primary, frame: Frame) -> None:
         self._processing_primary_speak = (
@@ -168,10 +171,14 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
     def _on_primary_tts_request(self, _primary, context_id: str, text: str) -> None:
         if self.strategy.active_service is not self.primary:
             return
-        self._recently_stopped_speak_context = None
+        for stopped_context_id, speak_context in tuple(self._speak_contexts.items()):
+            if speak_context.stopped and stopped_context_id != context_id:
+                self._speak_contexts.pop(stopped_context_id)
+                if self._last_stopped_context_id == stopped_context_id:
+                    self._last_stopped_context_id = None
         speak = self._processing_primary_speak
         if speak is not None:
-            self._speak_contexts.setdefault(
+            speak_context = self._speak_contexts.setdefault(
                 context_id,
                 _SpeakContext(
                     text=speak.text,
@@ -180,11 +187,13 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
                     text_type=speak.text_type,
                 ),
             )
+            speak_context.stopped = False
         else:
             speak_context = self._speak_contexts.get(context_id)
             if speak_context is None:
                 self._speak_contexts[context_id] = _SpeakContext(text=text)
             else:
+                speak_context.stopped = False
                 speak_context.text += text
 
     def _count_backup_unavailable(self) -> None:
@@ -248,11 +257,26 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
         )
         self._register_backup_campaign_handler()
         await self.primary.set_usable(False)
-        speak_context = self._recently_stopped_speak_context or next(
-            reversed(self._speak_contexts.values()), None
-        )
+        context_id = error.metadata.get(TTS_CONTEXT_ID_METADATA_KEY)
+        if isinstance(context_id, str):
+            speak_context = self._speak_contexts.get(context_id)
+        else:
+            speak_context = next(
+                (
+                    context
+                    for context in self._speak_contexts.values()
+                    if not context.stopped
+                ),
+                None,
+            )
+            if speak_context is None:
+                speak_context = (
+                    self._speak_contexts.get(self._last_stopped_context_id)
+                    if self._last_stopped_context_id is not None
+                    else None
+                ) or next(iter(self._speak_contexts.values()), None)
         self._speak_contexts.clear()
-        self._recently_stopped_speak_context = None
+        self._last_stopped_context_id = None
         self._processing_primary_speak = None
         if (
             speak_context is not None

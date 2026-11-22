@@ -50,6 +50,7 @@ from api.services.pipecat.run_pipeline import (
     _create_non_realtime_user_turn_start_strategies,
     _create_non_realtime_user_turn_stop_strategies,
     _create_non_realtime_user_turn_strategies,
+    _bind_stt_fallback_turns,
     _create_realtime_user_turn_config,
     _resolve_user_turn_stop_timeout,
 )
@@ -333,6 +334,42 @@ def test_non_realtime_can_use_turn_analyzer_stop_strategy(monkeypatch):
     assert len(strategies) == 1
     assert isinstance(strategies[0], TurnAnalyzerUserTurnStopStrategy)
     assert strategies[0]._turn_analyzer.stop_secs == 1.5
+
+
+async def test_assemblyai_failover_keeps_default_smart_turn_pause_window(monkeypatch):
+    from api.services.pipecat import fallback_stt
+
+    class Fallback:
+        on_switched = None
+
+    class Greeting:
+        async def use_transcription_turns(self, strategies):
+            self.strategies = strategies
+
+    monkeypatch.setattr(fallback_stt, "FallbackSTTService", Fallback)
+    monkeypatch.setattr(
+        run_pipeline_module,
+        "LocalSmartTurnAnalyzerV3",
+        lambda *, params: params,
+    )
+    stt = Fallback()
+    aggregator = SimpleNamespace(
+        user_turn_controller=SimpleNamespace(_user_turn_stop_timeout=None)
+    )
+    greeting = Greeting()
+
+    _bind_stt_fallback_turns(
+        stt,
+        aggregator,
+        greeting,
+        {"smart_turn_stop_secs": 1.4},
+        uses_external_turns=True,
+    )
+    await stt.on_switched()
+
+    stop_strategy = greeting.strategies.stop[0]
+    assert isinstance(stop_strategy, TurnAnalyzerUserTurnStopStrategy)
+    assert stop_strategy._turn_analyzer.stop_secs == 2.0
 
 
 def test_external_turn_stt_uses_longer_stop_timeout():

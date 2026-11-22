@@ -321,7 +321,14 @@ def _bind_stt_fallback_turns(
 
     if not uses_external_turns or not isinstance(stt, FallbackSTTService):
         return
-    fallback_run_configs = {**run_configs, "turn_stop_strategy": "turn_analyzer"}
+    fallback_run_configs = {
+        **run_configs,
+        "turn_stop_strategy": "turn_analyzer",
+        "smart_turn_stop_secs": max(
+            DEFAULT_SMART_TURN_STOP_SECS,
+            run_configs.get("smart_turn_stop_secs") or DEFAULT_SMART_TURN_STOP_SECS,
+        ),
+    }
     strategies = _create_non_realtime_user_turn_strategies(
         fallback_run_configs, uses_external_turns=False
     )

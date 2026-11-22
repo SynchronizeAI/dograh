@@ -2110,6 +2110,33 @@ def _dograh_eager_field_schema(schema: dict) -> None:
     schema["visible_for_languages"] = DEEPGRAM_FLUX_MULTILINGUAL_LANGUAGE_OPTIONS
 
 
+def _flux_eot_threshold_field(schema):
+    return Field(
+        default=0.7,
+        ge=0.5,
+        le=0.9,
+        description="Flux end-of-turn confidence threshold.",
+        json_schema_extra=schema,
+    )
+
+
+def _validate_flux_eager_thresholds(
+    enabled: bool, eager_threshold: float, eot_threshold: float
+):
+    if enabled and eager_threshold >= eot_threshold:
+        raise ValueError("eager_eot_threshold must be lower than eot_threshold")
+
+
+def _flux_eot_timeout_field(schema):
+    return Field(
+        default=3000,
+        ge=500,
+        le=10000,
+        description="Flux end-of-turn silence timeout in milliseconds.",
+        json_schema_extra=schema,
+    )
+
+
 @register_stt(provider=DEEPGRAM_PROVIDER)
 class DeepgramSTTConfiguration(BaseSTTConfiguration):
     provider: Literal[ServiceProviders.DEEPGRAM] = ServiceProviders.DEEPGRAM
@@ -2162,11 +2189,13 @@ class DeepgramSTTConfiguration(BaseSTTConfiguration):
         le=0.7,
         description=(
             "Flux eager confidence threshold, used only when eager end of turn "
-            "is enabled. Lower values predict sooner; must not exceed Dograh's "
-            "committed end-of-turn threshold of 0.7."
+            "is enabled. Lower values predict sooner; must be below the "
+            "configured committed end-of-turn threshold."
         ),
         json_schema_extra=_deepgram_eager_field_schema,
     )
+    eot_threshold: float = _flux_eot_threshold_field(_deepgram_eager_field_schema)
+    eot_timeout_ms: int = _flux_eot_timeout_field(_deepgram_eager_field_schema)
 
     base_url: str = Field(
         default=DEEPGRAM_DEFAULT_BASE_URL,
@@ -2186,6 +2215,15 @@ class DeepgramSTTConfiguration(BaseSTTConfiguration):
     @classmethod
     def validate_language_hints(cls, hints: list[str]) -> list[str]:
         return _validate_flux_language_hints(hints)
+
+    @model_validator(mode="after")
+    def validate_eager_threshold(self):
+        _validate_flux_eager_thresholds(
+            self.enable_eager_end_of_turn,
+            self.eager_eot_threshold,
+            self.eot_threshold,
+        )
+        return self
 
 
 @register_stt(provider=CARTESIA_PROVIDER)
@@ -2314,16 +2352,27 @@ class DograhSTTService(BaseSTTConfiguration):
         le=0.7,
         description=(
             "Flux eager confidence threshold, used only when eager end of turn "
-            "is enabled. Lower values predict sooner; must not exceed Dograh's "
-            "committed end-of-turn threshold of 0.7."
+            "is enabled. Lower values predict sooner; must be below the "
+            "configured committed end-of-turn threshold."
         ),
         json_schema_extra=_dograh_eager_field_schema,
     )
+    eot_threshold: float = _flux_eot_threshold_field(_dograh_eager_field_schema)
+    eot_timeout_ms: int = _flux_eot_timeout_field(_dograh_eager_field_schema)
 
     @field_validator("language_hints")
     @classmethod
     def validate_language_hints(cls, hints: list[str]) -> list[str]:
         return _validate_flux_language_hints(hints)
+
+    @model_validator(mode="after")
+    def validate_eager_threshold(self):
+        _validate_flux_eager_thresholds(
+            self.enable_eager_end_of_turn,
+            self.eager_eot_threshold,
+            self.eot_threshold,
+        )
+        return self
 
 
 @register_stt(provider=SARVAM_PROVIDER)

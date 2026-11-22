@@ -154,6 +154,7 @@ async def test_call_pipeline_awaits_the_fetch_its_inbound_webhook_started(
     assert requests[0].headers["Idempotency-Key"] == "dograh-pre-call-51"
     assert b'"from_number":"+15550001111"' in requests[0].content
 
+
 @pytest.mark.asyncio
 async def test_pipeline_fetches_once_when_webhook_started_nothing_in_this_process(
     monkeypatch,

@@ -5,7 +5,7 @@ Consolidated from split modules for easier maintenance.
 
 import json
 import uuid
-from typing import Optional
+from typing import Optional, cast
 
 from fastapi import (
     APIRouter,
@@ -538,7 +538,7 @@ async def _create_inbound_workflow_run(
     logger.info(
         f"Created inbound workflow run {workflow_run.id} for {provider} call {call_id}"
     )
-    return workflow_run.id, run_inputs.definition
+    return cast(int, workflow_run.id), run_inputs.definition
 
 
 async def _resolve_inbound_telephony_config(

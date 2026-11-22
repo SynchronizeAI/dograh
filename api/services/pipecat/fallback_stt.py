@@ -14,6 +14,7 @@ import asyncio
 import contextvars
 
 from loguru import logger
+from pipecat.services.assemblyai.stt import AssemblyAISTTService
 
 from api.errors.failure import (
     ErrorSource,
@@ -39,6 +40,12 @@ def _connection_failure(error: ErrorFrame) -> bool:
         return True
     text = (error.error or "").lower()
     return any(marker in text for marker in _CONNECTION_MARKERS)
+
+
+def _assemblyai_rejection(error: ErrorFrame) -> bool:
+    return isinstance(error.processor, AssemblyAISTTService) and error.error.endswith(
+        "Unknown message type: Error"
+    )
 
 
 def _stop_primary_reconnects(primary: FrameProcessor) -> None:
@@ -104,7 +111,9 @@ class _SwitchOnFirstUnrecoverableError(ServiceSwitcherStrategy):
             return None
         # A still-usable service's ordinary error is left alone. A connection
         # failure, or a service that has already given up, is the failover.
-        if primary.is_usable and not _connection_failure(error):
+        if primary.is_usable and not (
+            _connection_failure(error) or _assemblyai_rejection(error)
+        ):
             return None
         self._switched = True
         try:

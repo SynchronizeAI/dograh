@@ -496,7 +496,13 @@ async def _run_pipeline_telephony_impl(
     # only starts on answer, so a terminal run here is an answered call whose
     # hangup callback won the race, and pipeline finalization is what records
     # its outcome and fires its webhooks.
-    if await db_client.mark_workflow_run_running(workflow_run_id, organization_id):
+    admitted = await db_client.mark_workflow_run_running(
+        workflow_run_id, organization_id
+    )
+    if provider_name == WorkflowRunMode.KOREAAITEL.value and not admitted:
+        await websocket.close(code=4409, reason="Workflow run already admitted")
+        return
+    if admitted:
         logger.info(
             f"[run {workflow_run_id}] Set workflow run state to 'running' for {provider_name} provider"
         )

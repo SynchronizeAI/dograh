@@ -546,6 +546,90 @@ async def test_inbound_run_routes_exotel_without_account_id_by_called_number():
 
 
 @pytest.mark.asyncio
+async def test_koreaaitel_replayed_signed_webhook_reuses_run():
+    request = SimpleNamespace(
+        headers={"x-signature": "signed"}, url="https://api.example.com/inbound/run"
+    )
+    provider_class = SimpleNamespace(
+        PROVIDER_NAME="koreaaitel",
+        generate_validation_error_response=Mock(return_value="rejected"),
+    )
+    normalized_data = SimpleNamespace(
+        provider="koreaaitel",
+        direction="inbound",
+        to_number="+827012340001",
+        from_number="+821012345678",
+        to_country="KR",
+        from_country="KR",
+        account_id="AC1",
+        call_id="CA1",
+        raw_data={},
+    )
+    config = SimpleNamespace(
+        id=55, organization_id=11, name="KoreaAITel", credentials={"account_id": "AC1"}
+    )
+    phone_row = SimpleNamespace(id=77, inbound_workflow_id=33, address="07012340001")
+    workflow = SimpleNamespace(id=33, user_id=99)
+    existing_run = SimpleNamespace(id=999, workflow_id=33)
+    provider = SimpleNamespace(
+        verify_inbound_signature=AsyncMock(return_value=True),
+        start_inbound_stream=AsyncMock(side_effect=["first", "replayed", "new-call"]),
+    )
+
+    with (
+        patch(
+            "api.routes.telephony.parse_webhook_request",
+            new=AsyncMock(return_value=({}, "raw-body")),
+        ),
+        patch(
+            "api.routes.telephony._detect_provider",
+            new=AsyncMock(return_value=provider_class),
+        ),
+        patch(
+            "api.routes.telephony.normalize_webhook_data", return_value=normalized_data
+        ),
+        patch("api.routes.telephony.db_client") as mock_db,
+        patch(
+            "api.routes.telephony.get_telephony_provider_by_id",
+            new=AsyncMock(return_value=provider),
+        ),
+        patch(
+            "api.routes.telephony.get_backend_endpoints",
+            new=AsyncMock(return_value=("https://api", "wss://api")),
+        ),
+        patch("api.routes.telephony.call_concurrency") as concurrency,
+        patch("api.routes.telephony.authorize_workflow_run_start", new=AsyncMock()),
+        patch(
+            "api.routes.telephony._create_inbound_workflow_run",
+            new=AsyncMock(side_effect=[(999, None), (1000, None)]),
+        ) as create_run,
+    ):
+        mock_db.find_inbound_route_by_account = AsyncMock(
+            return_value=(config, phone_row)
+        )
+        mock_db.get_workflow = AsyncMock(return_value=workflow)
+        mock_db.get_workflow_run_by_call_id = AsyncMock(
+            side_effect=[None, existing_run, None]
+        )
+        concurrency.acquire_org_slot = AsyncMock(return_value=object())
+        concurrency.bind_workflow_run = AsyncMock()
+        concurrency.release_workflow_run_slot = AsyncMock()
+        concurrency.release_slot = AsyncMock()
+
+        assert await handle_inbound_run(request) == "first"
+        assert await handle_inbound_run(request) == "replayed"
+        normalized_data.call_id = "CA2"
+        assert await handle_inbound_run(request) == "new-call"
+
+    assert create_run.await_count == 2
+    assert concurrency.acquire_org_slot.await_count == 2
+    assert [
+        call.kwargs["workflow_run_id"]
+        for call in provider.start_inbound_stream.await_args_list
+    ] == [999, 999, 1000]
+
+
+@pytest.mark.asyncio
 async def test_inbound_run_rejects_when_concurrency_limit_reached():
     request = SimpleNamespace(headers={}, url="https://api.example.com/inbound/run")
     provider_class = SimpleNamespace(

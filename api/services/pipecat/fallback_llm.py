@@ -358,26 +358,9 @@ class FallbackLLMProcessor(LLMService):
                     attempt.first_byte = time.monotonic()
                     data.value = attempt.first_byte - metrics_started
                 elif isinstance(data, TTFATMetricsData):
-                    data.ttfat = time.monotonic() - metrics_started
-                    if metrics_started != race.started:
-                        if attempt.first_output is not None:
-                            data.ttfb = max(
-                                0,
-                                race.started + attempt.first_output - metrics_started,
-                            )
-                        elif attempt.first_byte is not None:
-                            data.ttfb = max(0, attempt.first_byte - metrics_started)
-                        else:
-                            # No output or first byte was recorded, so ttfb is
-                            # the service's own, measured from the speculation
-                            # start. Rebase it to the commit like the branches
-                            # above; it cannot exceed the committed ttfat.
-                            data.ttfb = min(
-                                data.ttfat,
-                                max(0, race.started + data.ttfb - metrics_started),
-                            )
-                    else:
-                        data.ttfb = attempt.first_output or data.ttfb
+                    data.ttfat = time.monotonic() - race.started
+                    data.ttfb = attempt.first_output or data.ttfb
+                    self._rebase_ttfat_metrics(data, attempt, race)
                     data.thinking_time = max(0, data.ttfat - data.ttfb)
             frame.data = [
                 data
@@ -415,6 +398,43 @@ class FallbackLLMProcessor(LLMService):
             self._emit(frame, direction, attempt)
         attempt.buffered.clear()
         race.changed.set()
+
+    def _rebase_buffered_metrics(self, race: _Race) -> None:
+        if race.hedge_started is None:
+            return
+        for attempt in race.attempts:
+            for frame, _ in attempt.buffered:
+                if not isinstance(frame, MetricsFrame):
+                    continue
+                for data in frame.data:
+                    if isinstance(data, TTFBMetricsData):
+                        data.value = max(
+                            0,
+                            race.started + data.value - race.hedge_started,
+                        )
+                    elif isinstance(data, TTFATMetricsData):
+                        self._rebase_ttfat_metrics(data, attempt, race)
+
+    @staticmethod
+    def _rebase_ttfat_metrics(
+        data: TTFATMetricsData, attempt: _Attempt, race: _Race
+    ) -> None:
+        if race.hedge_started is None or race.hedge_started == race.started:
+            return
+        data.ttfat = max(
+            0, race.started + data.ttfat - race.hedge_started
+        )
+        if attempt.first_output is not None:
+            data.ttfb = max(
+                0, race.started + attempt.first_output - race.hedge_started
+            )
+        elif attempt.first_byte is not None:
+            data.ttfb = max(0, attempt.first_byte - race.hedge_started)
+        else:
+            data.ttfb = min(
+                data.ttfat,
+                max(0, race.started + data.ttfb - race.hedge_started),
+            )
 
     async def _run_attempt(self, attempt: _Attempt, frame: LLMContextFrame) -> None:
         token = _attempt.set(attempt)
@@ -628,4 +648,5 @@ class FallbackLLMProcessor(LLMService):
             # Generation may start while the control frame flushes. Inspect
             # the race only after the gate has recorded the committed turn.
             race.hedge_started = time.monotonic()
+            self._rebase_buffered_metrics(race)
             race.changed.set()

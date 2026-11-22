@@ -844,6 +844,65 @@ async def test_committed_ttfat_measures_ttfb_from_the_commit(
 
 
 @pytest.mark.asyncio
+async def test_buffered_speculative_metrics_rebase_when_turn_commits(
+    harness, monkeypatch
+):
+    from pipecat.frames.frames import UserStoppedSpeakingFrame
+
+    now = [100.25]
+    monkeypatch.setattr(
+        fallback_llm, "time", SimpleNamespace(monotonic=lambda: now[0])
+    )
+    race = fallback_llm._Race(started=100.0)
+    attempts = [fallback_llm._Attempt(index=i, race=race) for i in range(2)]
+    race.attempts.extend(attempts)
+    harness.llm._active_race = race
+    harness.llm._latest[:] = attempts
+    harness.llm._speculation_gate.begin_speculation(True)
+
+    token = fallback_llm._attempt.set(attempts[0])
+    try:
+        ttfb = TTFBMetricsData(processor="test", model="gemini", value=0.0)
+        await harness.llm._receive(
+            0, MetricsFrame(data=[ttfb]), FrameDirection.DOWNSTREAM
+        )
+    finally:
+        fallback_llm._attempt.reset(token)
+
+    now[0] = 100.3
+    token = fallback_llm._attempt.set(attempts[1])
+    try:
+        ttfb = TTFBMetricsData(processor="test", model="gemini", value=0.0)
+        await harness.llm._receive(
+            1, MetricsFrame(data=[ttfb]), FrameDirection.DOWNSTREAM
+        )
+        now[0] = 100.4
+        ttfat = TTFATMetricsData(
+            processor="test",
+            model="gemini",
+            ttfb=0.0,
+            ttfat=0.0,
+            thinking_time=0.0,
+        )
+        await harness.llm._receive(
+            1, MetricsFrame(data=[ttfat]), FrameDirection.DOWNSTREAM
+        )
+    finally:
+        fallback_llm._attempt.reset(token)
+
+    now[0] = 100.5
+    await control(harness, UserStoppedSpeakingFrame())
+
+    assert race.hedge_started == pytest.approx(100.5)
+    assert attempts[0].buffered[0][0].data[0].value == pytest.approx(0)
+    assert attempts[1].buffered[0][0].data[0].value == pytest.approx(0)
+    ttfat = attempts[1].buffered[1][0].data[0]
+    assert ttfat.ttfat == pytest.approx(0)
+    assert ttfat.ttfb == pytest.approx(0)
+    assert ttfat.thinking_time == pytest.approx(0)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("use_backup", [False, True], ids=["primary", "backup"])
 async def test_speculative_tools_cancel_both_directions_without_execution(
     harness, monkeypatch, use_backup

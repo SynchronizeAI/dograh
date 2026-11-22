@@ -6,6 +6,7 @@ from typing import Any
 class WorkflowRunInputs:
     definition_id: int | None
     initial_context: dict[str, Any]
+    definition: object | None
     use_draft: bool = False
 
 
@@ -93,5 +94,6 @@ async def prepare_workflow_run_inputs(
             **default_context,
             **(initial_context or {}),
         },
+        definition=target_definition,
         use_draft=use_draft,
     )

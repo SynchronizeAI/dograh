@@ -38,6 +38,7 @@ async def test_prepare_inputs_uses_draft_and_merges_template_context():
     )
 
     assert run_inputs.definition_id == 88
+    assert run_inputs.definition is draft
     assert run_inputs.initial_context == {
         "name": "explicit",
         "draft_only": "kept",
@@ -49,14 +50,16 @@ async def test_prepare_inputs_uses_draft_and_merges_template_context():
 @pytest.mark.asyncio
 async def test_prepare_inputs_does_not_check_draft_or_merge_templates_by_default():
     workflow_client = SimpleNamespace(get_draft_version=AsyncMock())
+    workflow = _workflow()
 
     run_inputs = await prepare_workflow_run_inputs(
         workflow_client,
-        _workflow(),
+        workflow,
         initial_context={"name": "explicit"},
     )
 
     assert run_inputs.definition_id == 77
+    assert run_inputs.definition is workflow.released_definition
     assert run_inputs.initial_context == {"name": "explicit"}
     workflow_client.get_draft_version.assert_not_awaited()
 
@@ -64,16 +67,18 @@ async def test_prepare_inputs_does_not_check_draft_or_merge_templates_by_default
 @pytest.mark.asyncio
 async def test_prepare_inputs_falls_back_to_published_when_draft_missing():
     workflow_client = SimpleNamespace(get_draft_version=AsyncMock(return_value=None))
+    workflow = _workflow()
 
     run_inputs = await prepare_workflow_run_inputs(
         workflow_client,
-        _workflow(),
+        workflow,
         initial_context={"name": "explicit"},
         use_draft=True,
         include_template_context=True,
     )
 
     assert run_inputs.definition_id == 77
+    assert run_inputs.definition is workflow.released_definition
     assert run_inputs.initial_context == {
         "name": "explicit",
         "published_only": "kept",
@@ -98,6 +103,7 @@ async def test_prepare_inputs_uses_current_definition_when_released_missing():
     )
 
     assert run_inputs.definition_id == 66
+    assert run_inputs.definition is workflow.current_definition
     assert run_inputs.initial_context == {
         "name": "current",
         "current_only": "kept",

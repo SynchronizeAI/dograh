@@ -23,7 +23,6 @@ from api.errors.failure import (
 )
 from api.services.workflow.dto import ReactFlowDTO
 from api.services.workflow.initial_context import merge_external_initial_context
-from api.services.workflow.run_creation import published_definition
 from api.services.workflow.workflow_graph import WorkflowGraph
 from api.utils.credential_auth import build_auth_header
 
@@ -286,11 +285,13 @@ def start_pre_call_fetch(
     return task
 
 
-def start_inbound_pre_call_fetch(workflow, workflow_run_id: int, webhook) -> None:
+def start_inbound_pre_call_fetch(
+    workflow, run_definition, workflow_run_id: int, webhook
+) -> None:
     """Start an inbound run's fetch while the carrier connects its media stream."""
     try:
         graph = WorkflowGraph(
-            ReactFlowDTO.model_validate(published_definition(workflow).workflow_json),
+            ReactFlowDTO.model_validate(run_definition.workflow_json),
             skip_instance_constraints_for={"trigger"},
         )
     except Exception:  # noqa: BLE001 - the pipeline builds the graph and reports it

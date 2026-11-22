@@ -7,7 +7,7 @@ Pre-Call Data Fetch lets you enrich the call context and select model settings b
 
 ## How It Works
 
-1. Dograh resolves and saves the call's model setup from the organization default, the workflow override, and the API-trigger override, checks billing and quota, and connects the call.
+1. Dograh resolves and saves the call's model setup from the organization default, the workflow override, and the API-trigger override, then checks billing and quota before starting call setup.
 2. Dograh starts the request early for inbound calls arriving on the `/inbound/run` route, while the carrier connects the call's audio. Calls on the legacy `/inbound/{workflow_id}` route start the fetch when the call's pipeline is built. For outbound calls, Dograh sends the request after the callee answers. The caller hears a ringer if the request is still in flight once the call is connected.
 3. Your API returns context variables, model overrides, or both.
 4. Dograh merges the context, applies supported model overrides, and validates the result.
@@ -122,7 +122,7 @@ Use a voice supported by the selected TTS provider. You may return only `model_o
 
 Fetched model settings take precedence over workflow and API-trigger settings for the services the agent owns: `llm`, `llm_fallback`, `tts`, and `tts_fallback`. A service may also select a `provider_connection_uuid`, following the same-provider and different-provider rules of [API trigger overrides](/voice-agent/api-trigger#choosing-models-for-one-call), as long as it keeps the Dograh service key the call was authorized with.
 
-An inbound fetch can start while the carrier connects the call's media, but Dograh applies its model overrides after the call connects. These overrides cannot replace the run's selected configuration (`model_configuration_uuid`) or change `mode`, `stt`, `stt_fallback`, `realtime`, or `embeddings`. Set those on the workflow or the API trigger instead. Realtime (speech-to-speech) agents ignore `model_overrides` entirely.
+An inbound fetch can start while the carrier connects the call's media, but Dograh applies its model overrides after the call connects. The hook cannot select a named configuration (`model_configuration_uuid`) or change `mode`, `stt`, `stt_fallback`, `realtime`, or `embeddings`; set those on the workflow or API trigger. Realtime (speech-to-speech) agents ignore `model_overrides` entirely.
 
 Overrides cannot change credentials, connection endpoints, organization identity, or billing metadata. Unknown or unsupported fields, missing or unrelated UUIDs, incompatible indexed-document embeddings, and incompatible service selections are rejected: the rejection is logged against the run and the call continues on its already-selected models. Settings are validated locally without testing credentials against model providers. The resolved settings are saved for this run and do not modify your named configurations.
 

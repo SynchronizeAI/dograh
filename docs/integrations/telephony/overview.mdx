@@ -5,7 +5,10 @@ description: "Connect voice agents with telephony providers for inbound and outb
 
 ## Overview
 
-Dograh AI's telephony integration system provides a unified interface for connecting with various telephony providers. The same configuration powers both outbound calls (initiated from Dograh) and inbound calls (received on a phone number you own).
+Dograh AI's telephony integration system provides a unified interface for
+connecting with various telephony providers. Depending on the provider, a
+configuration can support outbound calls (initiated from Dograh), inbound
+calls (received on a phone number you own), or both.
 
 Dograh does not sell phone numbers or minutes. The phone service is always
 yours — there are two ways to bring it.
@@ -14,10 +17,10 @@ yours — there are two ways to bring it.
 
 <CardGroup cols={2}>
   <Card title="Use a telephony provider" icon="phone">
-    Open an account with Twilio, Plivo, Telnyx, Vonage or Vobiz, paste the
-    credentials into Dograh, and call using their numbers. **Start here if you
-    don't already run phone infrastructure.** Pick your provider from the list
-    below.
+    Open an account with a supported provider and connect its credentials and
+    numbers in Dograh. For KoreaAITel, see the
+    [inbound setup guide](./inbound#koreaaitel). **Start here if you don't
+    already run phone infrastructure.** Pick your provider from the list below.
   </Card>
   <Card title="Bring your own SIP" icon="server" href="/integrations/telephony/dograh-sip">
     Already have a SIP trunk or a PBX? Point it at Dograh and keep your existing
@@ -48,6 +51,9 @@ yours — there are two ways to bring it.
   </Card>
   <Card title="Vobiz" href="/integrations/telephony/vobiz">
     Cloud-based telephony with global reach and competitive pricing
+  </Card>
+  <Card title="한국AI통신" href="./inbound#koreaaitel">
+    Inbound setup details
   </Card>
   <Card title="WhatsApp" href="/integrations/telephony/whatsapp">
     Answer WhatsApp voice calls to your business number via the Business Calling API
@@ -84,7 +90,8 @@ A single org can hold multiple configurations (for example, separate Twilio sub-
 
 The telephony integration in Dograh AI supports:
 
-- **Outbound Calls**: Initiate calls to any phone number from a workflow or campaign
+- **Outbound Calls**: Initiate calls from a workflow or campaign through a
+  provider that supports outbound dialing
 - **Inbound Calls**: Route incoming calls to the right voice agent — see the [Inbound Calling guide](/integrations/telephony/inbound)
 - **Call Transfer**: Transfer an in-progress call to a human or another number (provider-dependent)
 - **Call Status Tracking**: Monitor call lifecycle events (initiated, ringing, answered, completed, failed)

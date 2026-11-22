@@ -2120,8 +2120,10 @@ def _flux_eot_threshold_field(schema):
     )
 
 
-def _validate_flux_eager_thresholds(eager_threshold: float, eot_threshold: float):
-    if eager_threshold >= eot_threshold:
+def _validate_flux_eager_thresholds(
+    enabled: bool, eager_threshold: float, eot_threshold: float
+):
+    if enabled and eager_threshold >= eot_threshold:
         raise ValueError("eager_eot_threshold must be lower than eot_threshold")
 
 
@@ -2216,7 +2218,11 @@ class DeepgramSTTConfiguration(BaseSTTConfiguration):
 
     @model_validator(mode="after")
     def validate_eager_threshold(self):
-        _validate_flux_eager_thresholds(self.eager_eot_threshold, self.eot_threshold)
+        _validate_flux_eager_thresholds(
+            self.enable_eager_end_of_turn,
+            self.eager_eot_threshold,
+            self.eot_threshold,
+        )
         return self
 
 
@@ -2361,7 +2367,11 @@ class DograhSTTService(BaseSTTConfiguration):
 
     @model_validator(mode="after")
     def validate_eager_threshold(self):
-        _validate_flux_eager_thresholds(self.eager_eot_threshold, self.eot_threshold)
+        _validate_flux_eager_thresholds(
+            self.enable_eager_end_of_turn,
+            self.eager_eot_threshold,
+            self.eot_threshold,
+        )
         return self
 
 

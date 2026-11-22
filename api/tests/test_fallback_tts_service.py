@@ -460,13 +460,11 @@ async def test_streamed_llm_text_does_not_reset_active_request_audio_duration():
 
     await harness.pipeline.queue_frame(LLMFullResponseStartFrame())
     await harness.pipeline.queue_frame(LLMTextFrame("The next "))
-    await harness.pipeline.queue_frame(LLMTextFrame("sentence is still streaming"))
+    await harness.pipeline.queue_frame(LLMTextFrame("sentence is still streaming "))
     await eventually(
-        lambda: any(
-            isinstance(f, LLMTextFrame) and f.text == "sentence is still streaming"
-            for f in harness.downstream.frames
-        ),
-        what="the next streamed sentence to reach downstream",
+        lambda: harness.tts._pending_llm_text
+        == "The next sentence is still streaming ",
+        what="the next streamed sentence to reach the fallback boundary",
     )
     assert harness.tts._request_context_id == context_id
     assert harness.tts._request_audio_duration > 3.0

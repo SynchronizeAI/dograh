@@ -18,6 +18,7 @@ from pipecat.frames.frames import (
     TTSSpeakFrame,
     TTSStartedFrame,
     TTSStoppedFrame,
+    TTSTextFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.processors.frame_processor import (
@@ -432,6 +433,66 @@ async def test_queued_speak_does_not_replace_the_earlier_failed_utterance():
         lambda: harness.backup.received_texts == ["first"],
         what="the replay of the first utterance",
     )
+    await harness.pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("primary_emits_text", [False, True])
+async def test_replay_suppresses_duplicate_context_and_logs_only_after_primary_text(
+    primary_emits_text, monkeypatch
+):
+    primary = StreamingPrimary(name="PrimaryTTS")
+    backup = RecordingBackup(name="BackupTTS")
+    queued_speaks = []
+    queue_backup_frame = backup.queue_frame
+
+    async def capture_backup_frame(frame, *args, **kwargs):
+        if isinstance(frame, TTSSpeakFrame):
+            queued_speaks.append(frame)
+        await queue_backup_frame(frame, *args, **kwargs)
+
+    monkeypatch.setattr(backup, "queue_frame", capture_backup_frame)
+    harness = await build_harness(primary=primary, backup=backup)
+    await start(harness)
+    await harness.pipeline.queue_frame(
+        TTSSpeakFrame(
+            "transition",
+            append_to_context=True,
+            persist_to_logs=True,
+        )
+    )
+    await eventually(
+        lambda: primary.received_texts == ["transition"],
+        what="the primary transition speech",
+    )
+    speak_context_id = next(
+        frame.context_id
+        for frame in harness.downstream.frames
+        if isinstance(frame, TTSStartedFrame)
+    )
+
+    if primary_emits_text:
+        text_frame = TTSTextFrame(
+            text="transition",
+            aggregated_by="sentence",
+            context_id=speak_context_id,
+        )
+        text_frame.append_to_context = True
+        text_frame.persist_to_logs = True
+        await primary.push_frame(text_frame)
+        await eventually(
+            lambda: any(frame is text_frame for frame in harness.downstream.frames),
+            what="the primary text frame",
+        )
+
+    await primary.push_error("synthesis failed", fatal=False)
+    await eventually(
+        lambda: backup.received_texts == ["transition"],
+        what="the replayed transition speech",
+    )
+    assert len(queued_speaks) == 1
+    assert queued_speaks[0].append_to_context is not primary_emits_text
+    assert queued_speaks[0].persist_to_logs is not primary_emits_text
     await harness.pipeline.cleanup()
 
 

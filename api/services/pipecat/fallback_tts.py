@@ -47,6 +47,7 @@ _FROM_PRIMARY = "tts_fallback_from_primary"
 class _SpeakContext:
     speak: TTSSpeakFrame
     audio_duration: float = 0.0
+    text_emitted: bool = False
 
 
 class _SwitchOnFirstError(ServiceSwitcherStrategy):
@@ -145,6 +146,10 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
                 speak_context.audio_duration += len(frame.audio) / (
                     frame.sample_rate * frame.num_channels * 2
                 )
+        elif isinstance(frame, TTSTextFrame):
+            speak_context = self._speak_contexts.get(frame.context_id)
+            if speak_context is not None:
+                speak_context.text_emitted = True
         elif isinstance(frame, TTSStoppedFrame):
             self._speak_contexts.pop(frame.context_id, None)
 
@@ -230,8 +235,12 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
             await self.backup.queue_frame(
                 TTSSpeakFrame(
                     speak.text,
-                    append_to_context=speak.append_to_context,
-                    persist_to_logs=speak.persist_to_logs,
+                    append_to_context=(
+                        speak.append_to_context and not speak_context.text_emitted
+                    ),
+                    persist_to_logs=(
+                        speak.persist_to_logs and not speak_context.text_emitted
+                    ),
                     text_type=speak.text_type,
                 )
             )

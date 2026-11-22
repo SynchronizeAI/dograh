@@ -7,7 +7,7 @@ description: Optional backup recognizer when the primary speech-to-text provider
 
 `stt_fallback` accepts one rule with the `error` condition to select a backup recognizer.
 
-On the first connection error the primary cannot recover from, the call switches to that recognizer and stays there until the call ends.
+On the first connection error the primary cannot recover from, the call switches to that recognizer and stays there until the call ends. An AssemblyAI session rejection also triggers a switch if Pipecat reports its `Error` message as `Unknown message type: Error`, before the websocket closes.
 
 The switch does not replay audio the primary missed.
 
@@ -17,7 +17,7 @@ Without this policy, fallback handling leaves the configured recognizer and turn
 
 It is ignored in **realtime** mode.
 
-A **Dograh-managed** primary or target is rejected (the request fails with a 422), because Dograh manages its own fallbacks.
+For pipeline calls, a **Dograh-managed** primary or target is rejected (the request fails with a 422), because Dograh manages its own fallbacks.
 
 The backup must be a different provider than the primary, so a Deepgram outage does not take the backup with it.
 

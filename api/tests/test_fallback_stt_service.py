@@ -2,6 +2,7 @@
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from pipecat.clocks.system_clock import SystemClock
@@ -15,7 +16,12 @@ from pipecat.frames.frames import (
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
-from pipecat.processors.frame_processor import FrameProcessor, FrameProcessorSetup
+from pipecat.processors.frame_processor import (
+    FrameDirection,
+    FrameProcessor,
+    FrameProcessorSetup,
+)
+from pipecat.services.assemblyai.stt import AssemblyAISTTService
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.turns.user_stop import (
     ExternalUserTurnStopStrategy,
@@ -27,6 +33,9 @@ from pipecat.utils.asyncio.task_manager import TaskManager
 from api.services.pipecat.fallback_stt import FallbackSTTService
 from api.services.pipecat.greeting import GreetingController
 from api.services.pipecat.run_pipeline import _bind_stt_fallback_turns
+from api.services.pipecat.termination_funnel_processor import (
+    TerminationFunnelProcessor,
+)
 
 
 class FakeSTT(FrameProcessor):
@@ -56,9 +65,9 @@ def _audio(payload: bytes) -> InputAudioRawFrame:
     return InputAudioRawFrame(audio=payload, sample_rate=16000, num_channels=1)
 
 
-async def _pipeline(primary, backup):
+async def _pipeline(primary, backup, *processors):
     stt = FallbackSTTService(primary, backup)
-    pipeline = Pipeline([stt])
+    pipeline = Pipeline([stt, *processors])
     manager = TaskManager()
     await pipeline.setup(
         FrameProcessorSetup(
@@ -182,6 +191,48 @@ async def test_ordinary_error_does_not_switch():
     assert stt.strategy.active_service is primary
     assert stt.fallback_metrics == {"switched": 0}
     assert isinstance(ErrorFrame(error="one bad frame"), ErrorFrame)
+    await pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_assemblyai_error_message_then_close_fails_over_without_termination():
+    primary = AssemblyAISTTService(api_key="disposable", sample_rate=16000)
+    primary._connect = AsyncMock()
+    backup = FakeSTT("backup")
+    funnel = TerminationFunnelProcessor()
+    terminations = []
+
+    async def record_termination(reason, error):
+        terminations.append((reason, error))
+
+    funnel.set_termination_handler(record_termination)
+    stt, pipeline = await _pipeline(primary, backup, funnel)
+
+    with pytest.raises(ValueError, match="Unknown message type: Error") as parsed:
+        primary._parse_message({"type": "Error", "error": "session rejected"})
+    assert primary.is_usable
+    await primary.push_frame(
+        ErrorFrame(
+            error=f"Unknown error occurred: {parsed.value}",
+            processor=primary,
+            exception=parsed.value,
+        ),
+        FrameDirection.UPSTREAM,
+    )
+    await asyncio.sleep(0.05)
+
+    assert stt.strategy.active_service is backup
+    assert stt.fallback_metrics == {"switched": 1}
+
+    await primary.push_error(
+        "AssemblyAI websocket closed with code 3006",
+        exception=ConnectionError("websocket close code 3006"),
+    )
+    await asyncio.sleep(0.05)
+
+    assert stt.strategy.active_service is backup
+    assert stt.fallback_metrics == {"switched": 1}
+    assert terminations == []
     await pipeline.cleanup()
 
 

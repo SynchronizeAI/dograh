@@ -18,6 +18,8 @@ from pipecat.frames.frames import (
     EndFrame,
     ErrorFrame,
     Frame,
+    LLMFullResponseStartFrame,
+    LLMTextFrame,
     TTSAudioRawFrame,
     TTSSpeakFrame,
     TTSStartedFrame,
@@ -90,6 +92,7 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
         self._request_audio_duration = 0.0
         self._request_speak_flags: tuple | None = None
         self._pending_speak_flags: tuple | None = None
+        self._pending_llm_text = ""
         # Contexts of the primary's speech whose Started frame went downstream
         # and whose Stopped frame has not; the switch closes them (see
         # _close_primary_contexts).
@@ -147,6 +150,7 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
             self._request_audio_duration = 0.0
             self._request_speak_flags = self._pending_speak_flags
             self._pending_speak_flags = None
+            self._pending_llm_text = ""
 
     def _count_backup_unavailable(self) -> None:
         if self._backup_unavailable_logged:
@@ -226,6 +230,7 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
         self._request_context_id = None
         self._request_speak_flags = None
         self._pending_speak_flags = None
+        self._pending_llm_text = ""
 
     async def _ensure_backup_connected(self) -> None:
         if self._backup_connected.is_set():
@@ -302,6 +307,35 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
             self._request_context_id = None
             self._request_audio_duration = 0.0
             self._request_speak_flags = flags
+            self._pending_llm_text = ""
+        elif (
+            direction == FrameDirection.DOWNSTREAM
+            and self.strategy.active_service is self.primary
+            and isinstance(frame, LLMFullResponseStartFrame)
+        ):
+            # TTS can fail while the LLM frames are still being handled, before
+            # the primary emits on_tts_request. Start a fresh candidate so a
+            # previous explicit speak cannot be replayed for this response.
+            self._request_text = ""
+            self._request_context_id = None
+            self._request_audio_duration = 0.0
+            self._request_speak_flags = None
+            self._pending_speak_flags = None
+            self._pending_llm_text = ""
+        elif (
+            direction == FrameDirection.DOWNSTREAM
+            and self.strategy.active_service is self.primary
+            and isinstance(frame, LLMTextFrame)
+        ):
+            # Keep text available for an error that arrives before TTS's request
+            # callback. Once synthesis starts, that callback replaces this
+            # candidate with the provider-ready sentence.
+            self._pending_llm_text += frame.text
+            self._request_text = self._pending_llm_text
+            self._request_context_id = None
+            self._request_audio_duration = 0.0
+            self._request_speak_flags = None
+            self._pending_speak_flags = None
         await super().process_frame(frame, direction)
 
     async def push_frame(

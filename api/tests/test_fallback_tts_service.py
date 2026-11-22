@@ -110,6 +110,18 @@ class SecondRequestFailingPrimary(RecordingPrimary):
         yield None
 
 
+class ImmediateLLMFailurePrimary(RecordingPrimary):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.failed_llm_request = False
+
+    async def process_frame(self, frame, direction):
+        if isinstance(frame, LLMTextFrame) and not self.failed_llm_request:
+            self.failed_llm_request = True
+            await self.push_error("synthesis failed", fatal=False)
+        await super().process_frame(frame, direction)
+
+
 class RecordingBackup(MockTTSService):
     """A backup that connects after its base setup, as websocket services do."""
 
@@ -322,6 +334,41 @@ async def test_llm_request_uses_default_flags_after_explicit_speak():
         lambda: backup.received_texts == ["An ordinary sentence."],
         what="the backup to speak the LLM sentence",
     )
+    assert len(backup.speak_frames) == 1
+    replay = backup.speak_frames[0]
+    defaults = TTSSpeakFrame("")
+    assert replay.append_to_context == defaults.append_to_context
+    assert replay.persist_to_logs == defaults.persist_to_logs
+    assert replay.text_type == defaults.text_type
+    await harness.pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_immediate_llm_failure_replays_current_sentence_after_transition():
+    primary = ImmediateLLMFailurePrimary(name="PrimaryTTS")
+    backup = CapturingBackup(name="BackupTTS")
+    harness = await build_harness(
+        primary=primary,
+        backup=backup,
+        spoken_text=True,
+    )
+    await start(harness)
+    await harness.pipeline.queue_frame(TTSSpeakFrame("Transition speech"))
+    await eventually(
+        lambda: any(
+            isinstance(frame, TTSStoppedFrame)
+            for frame in harness.downstream.frames
+        ),
+        what="the transition speech to complete",
+    )
+    await harness.pipeline.queue_frame(LLMFullResponseStartFrame())
+    await harness.pipeline.queue_frame(LLMTextFrame("An ordinary sentence."))
+    await harness.pipeline.queue_frame(LLMFullResponseEndFrame())
+    await eventually(
+        lambda: harness.tts.fallback_metrics["switched"] == 1,
+        what="the provider switch",
+    )
+    assert backup.received_texts == ["An ordinary sentence."]
     assert len(backup.speak_frames) == 1
     replay = backup.speak_frames[0]
     defaults = TTSSpeakFrame("")

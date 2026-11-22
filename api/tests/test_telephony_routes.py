@@ -773,14 +773,18 @@ async def test_concurrent_koreaaitel_deliveries_create_one_run(
         start_inbound_stream=AsyncMock(side_effect=["first", "replay"]),
     )
     runs = {}
+    lookup_sessions = []
+    create_sessions = []
     next_run_id = iter([700, 701])
 
-    async def get_run_by_call_id(call_id, provider):
+    async def get_run_by_call_id(call_id, provider, session=None):
         await asyncio.sleep(0)
+        lookup_sessions.append(session)
         return runs.get((provider, call_id))
 
     async def create_run(*args, **kwargs):
         normalized = args[4]
+        create_sessions.append(kwargs["session"])
         await asyncio.sleep(0.02)
         run_id = next(next_run_id)
         runs[(args[3], normalized.call_id)] = SimpleNamespace(
@@ -790,6 +794,10 @@ async def test_concurrent_koreaaitel_deliveries_create_one_run(
             workflow=SimpleNamespace(organization_id=args[2]),
         )
         return run_id, None
+
+    async def authorize_run(**_kwargs):
+        assert not create_sessions[-1].in_transaction()
+        return SimpleNamespace(has_quota=True, error_message="")
 
     with (
         patch(
@@ -816,9 +824,7 @@ async def test_concurrent_koreaaitel_deliveries_create_one_run(
         ),
         patch(
             "api.routes.telephony.authorize_workflow_run_start",
-            new=AsyncMock(
-                return_value=SimpleNamespace(has_quota=True, error_message="")
-            ),
+            new=AsyncMock(side_effect=authorize_run),
         ) as authorize_run,
         patch("api.routes.telephony.call_concurrency") as concurrency,
         patch(
@@ -851,6 +857,9 @@ async def test_concurrent_koreaaitel_deliveries_create_one_run(
     assert authorize_run.await_count == 1
     assert concurrency.acquire_org_slot.await_count == 1
     assert len(runs) == 1
+    assert len(create_sessions) == 1
+    assert any(session is create_sessions[0] for session in lookup_sessions)
+    assert lookup_sessions[0] is not lookup_sessions[1]
     assert {
         call.kwargs["workflow_run_id"]
         for call in provider_instance.start_inbound_stream.await_args_list

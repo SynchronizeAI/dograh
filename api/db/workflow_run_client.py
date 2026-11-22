@@ -1,9 +1,10 @@
 import json
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from sqlalchemy import Float, cast, func, text
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -39,16 +40,17 @@ class WorkflowRunClient(BaseDBClient):
     @asynccontextmanager
     async def workflow_run_replay_lock(
         self, provider: str, call_id: str
-    ) -> AsyncIterator[None]:
+    ) -> AsyncIterator[AsyncSession]:
         lock_key = json.dumps([provider, call_id], separators=(",", ":"))
         async with self.async_session() as session:
-            await session.execute(
-                text(
-                    "SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"
-                ),
-                {"lock_key": lock_key},
-            )
-            yield
+            async with session.begin():
+                await session.execute(
+                    text(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"
+                    ),
+                    {"lock_key": lock_key},
+                )
+                yield session
 
     async def create_workflow_run(
         self,
@@ -67,9 +69,14 @@ class WorkflowRunClient(BaseDBClient):
         use_draft: bool = False,
         campaign_traffic_split: dict | None = None,
         model_configuration_overrides: dict | None = None,
+        session: AsyncSession | None = None,
     ) -> WorkflowRunModel:
         """Create a run."""
-        async with self.async_session() as session:
+        owns_session = session is None
+        session_context = (
+            self.async_session() if owns_session else nullcontext(session)
+        )
+        async with session_context as session:
             workflow_query = (
                 select(WorkflowModel)
                 .options(joinedload(WorkflowModel.user))
@@ -127,9 +134,13 @@ class WorkflowRunClient(BaseDBClient):
             )
             session.add(new_run)
             try:
-                await session.commit()
+                if owns_session:
+                    await session.commit()
+                else:
+                    await session.flush()
             except Exception as e:
-                await session.rollback()
+                if owns_session:
+                    await session.rollback()
                 raise e
             await session.refresh(new_run)
         return new_run
@@ -618,7 +629,10 @@ class WorkflowRunClient(BaseDBClient):
             return result.scalars().first()
 
     async def get_workflow_run_by_call_id(
-        self, call_id: str, provider: str | None = None
+        self,
+        call_id: str,
+        provider: str | None = None,
+        session: AsyncSession | None = None,
     ) -> Optional[WorkflowRunModel]:
         """Find workflow run by call_id stored in gathered_context.
 
@@ -629,7 +643,10 @@ class WorkflowRunClient(BaseDBClient):
         Returns:
             The WorkflowRunModel if found, None otherwise
         """
-        async with self.async_session() as session:
+        session_context = (
+            self.async_session() if session is None else nullcontext(session)
+        )
+        async with session_context as session:
             # Use JSON text extraction to find matching call_id
             # This leverages the idx_workflow_runs_call_id index
             query = (

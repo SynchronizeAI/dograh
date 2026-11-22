@@ -117,6 +117,17 @@ class RecordingBackup(MockTTSService):
             await self.set_usable(False)
 
 
+class CapturingBackup(RecordingBackup):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.speak_frames = []
+
+    async def queue_frame(self, frame, *args, **kwargs):
+        if isinstance(frame, TTSSpeakFrame):
+            self.speak_frames.append(frame)
+        await super().queue_frame(frame, *args, **kwargs)
+
+
 class StreamingPrimary(RecordingPrimary):
     """Like a websocket provider: run_tts only sends the request, the audio comes
     later through the audio context, and the context stays open until it is
@@ -234,6 +245,32 @@ async def test_greeting_is_replayed_once_after_early_primary_failure():
         what="the backup to speak the greeting once",
     )
     assert harness.tts.fallback_metrics["switched"] == 1
+    await harness.pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_replayed_speak_frame_preserves_context_and_log_flags():
+    primary = FailingPrimary(name="PrimaryTTS")
+    backup = CapturingBackup(name="BackupTTS")
+    harness = await build_harness(primary=primary, backup=backup)
+    await start(harness)
+    await harness.pipeline.queue_frame(
+        TTSSpeakFrame(
+            "Transition speech",
+            append_to_context=True,
+            persist_to_logs=False,
+            text_type="transition",
+        )
+    )
+    await eventually(
+        lambda: backup.received_texts == ["Transition speech"],
+        what="the backup to speak the replay",
+    )
+    assert len(backup.speak_frames) == 1
+    replay = backup.speak_frames[0]
+    assert replay.append_to_context is True
+    assert replay.persist_to_logs is False
+    assert replay.text_type == "transition"
     await harness.pipeline.cleanup()
 
 

@@ -88,6 +88,7 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
         self._request_text = ""
         self._request_context_id: str | None = None
         self._request_audio_duration = 0.0
+        self._request_speak_flags: tuple | None = None
         # Contexts of the primary's speech whose Started frame went downstream
         # and whose Stopped frame has not; the switch closes them (see
         # _close_primary_contexts).
@@ -206,9 +207,21 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
         self._register_backup_campaign_handler()
         await self.primary.set_usable(False)
         if self._request_text and self._request_audio_duration < _NO_FALLBACK_AFTER_AUDIO_DURATION_S:
-            await self.backup.queue_frame(TTSSpeakFrame(self._request_text))
+            flags = self._request_speak_flags
+            replay = (
+                TTSSpeakFrame(self._request_text)
+                if flags is None
+                else TTSSpeakFrame(
+                    self._request_text,
+                    append_to_context=flags[0],
+                    persist_to_logs=flags[1],
+                    text_type=flags[2],
+                )
+            )
+            await self.backup.queue_frame(replay)
         self._request_text = ""
         self._request_context_id = None
+        self._request_speak_flags = None
 
     async def _ensure_backup_connected(self) -> None:
         if self._backup_connected.is_set():
@@ -270,6 +283,16 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         if isinstance(frame, (EndFrame, CancelFrame)):
             self._visit_ending = True
+        if (
+            direction == FrameDirection.DOWNSTREAM
+            and isinstance(frame, TTSSpeakFrame)
+            and self.strategy.active_service is self.primary
+        ):
+            self._request_speak_flags = (
+                frame.append_to_context,
+                frame.persist_to_logs,
+                frame.text_type,
+            )
         await super().process_frame(frame, direction)
 
     async def push_frame(

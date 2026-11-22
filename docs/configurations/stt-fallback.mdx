@@ -7,7 +7,7 @@ description: Optional backup recognizer when the primary speech-to-text provider
 
 `stt_fallback` accepts one rule with the `error` condition to select a backup recognizer.
 
-On the first connection error the primary cannot recover from, the call switches to that recognizer and stays there until the call ends.
+On a primary connection error, the call switches to that recognizer immediately. Other errors switch when they make the primary unusable. It stays there until the call ends.
 
 The switch does not replay audio the primary missed.
 
@@ -54,7 +54,7 @@ Pipecat's `ServiceSwitcher` routes audio to one recognizer at a time.
 
 Its stock `ServiceSwitcherStrategyFailover` moves only after the service is no longer usable, which a websocket reaches after three reconnects spaced 4-10 seconds apart.
 
-This policy stops those reconnects and connects the backup on the first connection error instead.
+This policy disables those reconnects and moves to the backup on the first connection error.
 
 There is no health check and no switch back to the primary.
 

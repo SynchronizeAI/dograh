@@ -11,6 +11,7 @@ from pipecat.clocks.system_clock import SystemClock
 from pipecat.frames.frames import (
     EndFrame,
     ErrorFrame,
+    LLMFullResponseStartFrame,
     StartFrame,
     TextFrame,
     TTSAudioRawFrame,
@@ -328,6 +329,109 @@ async def test_failure_after_three_seconds_does_not_replay_sentence():
     await asyncio.sleep(0.1)
     assert primary.received_texts == ["already heard"]
     assert harness.backup.received_texts == []
+    await harness.pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_recording_clip_audio_does_not_count_toward_speak_replay_limit():
+    primary = StreamingPrimary(name="PrimaryTTS")
+    harness = await build_harness(primary=primary)
+    await start(harness)
+    await harness.pipeline.queue_frame(TTSSpeakFrame("greeting"))
+    await eventually(
+        lambda: primary.received_texts == ["greeting"], what="the primary greeting"
+    )
+    speak_context_id = next(
+        frame.context_id
+        for frame in harness.downstream.frames
+        if isinstance(frame, TTSStartedFrame)
+    )
+    await primary.append_to_audio_context(
+        speak_context_id,
+        TTSAudioRawFrame(
+            b"\x00\x00" * int(primary.sample_rate * 2.8),
+            primary.sample_rate,
+            1,
+            context_id=speak_context_id,
+        ),
+    )
+    await eventually(
+        lambda: any(
+            isinstance(frame, TTSAudioRawFrame)
+            and frame.context_id == speak_context_id
+            for frame in harness.downstream.frames
+        ),
+        what="the greeting audio",
+    )
+
+    clip_context_id = "recording-clip"
+    for frame in (
+        TTSStartedFrame(context_id=clip_context_id),
+        TTSAudioRawFrame(
+            b"\x00\x00" * int(primary.sample_rate * 0.3),
+            primary.sample_rate,
+            1,
+            context_id=clip_context_id,
+        ),
+        TTSStoppedFrame(context_id=clip_context_id),
+    ):
+        await primary.push_frame(frame)
+    await eventually(
+        lambda: len(frames_of(harness, clip_context_id)) == 3,
+        what="the recording clip frames",
+    )
+
+    await primary.push_error("synthesis failed", fatal=False)
+    await eventually(
+        lambda: harness.backup.received_texts == ["greeting"],
+        what="the replayed greeting",
+    )
+    await harness.pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_queued_speak_does_not_replace_the_earlier_failed_utterance():
+    primary = StreamingPrimary(name="PrimaryTTS")
+    harness = await build_harness(primary=primary)
+    await start(harness)
+    await harness.pipeline.queue_frame(LLMFullResponseStartFrame())
+    await harness.pipeline.queue_frame(TTSSpeakFrame("first"))
+    await eventually(
+        lambda: primary.received_texts == ["first"], what="the first primary utterance"
+    )
+    first_context_id = next(
+        frame.context_id
+        for frame in harness.downstream.frames
+        if isinstance(frame, TTSStartedFrame)
+    )
+    await primary.append_to_audio_context(
+        first_context_id,
+        TTSAudioRawFrame(
+            b"\x00\x00" * int(primary.sample_rate * 2.8),
+            primary.sample_rate,
+            1,
+            context_id=first_context_id,
+        ),
+    )
+    await eventually(
+        lambda: any(
+            isinstance(frame, TTSAudioRawFrame)
+            and frame.context_id == first_context_id
+            for frame in harness.downstream.frames
+        ),
+        what="the first utterance audio",
+    )
+
+    await harness.pipeline.queue_frame(TTSSpeakFrame("second"))
+    await eventually(
+        lambda: primary.received_texts == ["first", "second"],
+        what="the queued primary utterance",
+    )
+    await primary.push_error("synthesis failed", fatal=False)
+    await eventually(
+        lambda: harness.backup.received_texts == ["first"],
+        what="the replay of the first utterance",
+    )
     await harness.pipeline.cleanup()
 
 

@@ -94,6 +94,22 @@ class FailingPrimary(RecordingPrimary):
         yield None
 
 
+class SecondRequestFailingPrimary(RecordingPrimary):
+    async def run_tts(self, text, context_id):
+        self.received_texts.append(text)
+        if len(self.received_texts) == 1:
+            yield TTSAudioRawFrame(
+                b"\x00\x00" * 160,
+                self.sample_rate,
+                1,
+                context_id=context_id,
+            )
+            yield None
+            return
+        await self.push_error("synthesis failed", fatal=False)
+        yield None
+
+
 class RecordingBackup(MockTTSService):
     """A backup that connects after its base setup, as websocket services do."""
 
@@ -271,6 +287,47 @@ async def test_replayed_speak_frame_preserves_context_and_log_flags():
     assert replay.append_to_context is True
     assert replay.persist_to_logs is False
     assert replay.text_type == "transition"
+    await harness.pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_llm_request_uses_default_flags_after_explicit_speak():
+    primary = SecondRequestFailingPrimary(name="PrimaryTTS")
+    backup = CapturingBackup(name="BackupTTS")
+    harness = await build_harness(
+        primary=primary,
+        backup=backup,
+        spoken_text=True,
+    )
+    await start(harness)
+    await harness.pipeline.queue_frame(
+        TTSSpeakFrame(
+            "Transition speech",
+            append_to_context=True,
+            persist_to_logs=False,
+            text_type="transition",
+        )
+    )
+    await eventually(
+        lambda: any(
+            isinstance(frame, TTSStoppedFrame)
+            for frame in harness.downstream.frames
+        ),
+        what="the explicit speech to complete",
+    )
+    await harness.pipeline.queue_frame(LLMFullResponseStartFrame())
+    await harness.pipeline.queue_frame(LLMTextFrame("An ordinary sentence."))
+    await harness.pipeline.queue_frame(LLMFullResponseEndFrame())
+    await eventually(
+        lambda: backup.received_texts == ["An ordinary sentence."],
+        what="the backup to speak the LLM sentence",
+    )
+    assert len(backup.speak_frames) == 1
+    replay = backup.speak_frames[0]
+    defaults = TTSSpeakFrame("")
+    assert replay.append_to_context == defaults.append_to_context
+    assert replay.persist_to_logs == defaults.persist_to_logs
+    assert replay.text_type == defaults.text_type
     await harness.pipeline.cleanup()
 
 

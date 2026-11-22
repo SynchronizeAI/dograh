@@ -89,6 +89,7 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
         self._request_context_id: str | None = None
         self._request_audio_duration = 0.0
         self._request_speak_flags: tuple | None = None
+        self._pending_speak_flags: tuple | None = None
         # Contexts of the primary's speech whose Started frame went downstream
         # and whose Stopped frame has not; the switch closes them (see
         # _close_primary_contexts).
@@ -144,6 +145,8 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
             self._request_context_id = context_id
             self._request_text = text
             self._request_audio_duration = 0.0
+            self._request_speak_flags = self._pending_speak_flags
+            self._pending_speak_flags = None
 
     def _count_backup_unavailable(self) -> None:
         if self._backup_unavailable_logged:
@@ -222,6 +225,7 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
         self._request_text = ""
         self._request_context_id = None
         self._request_speak_flags = None
+        self._pending_speak_flags = None
 
     async def _ensure_backup_connected(self) -> None:
         if self._backup_connected.is_set():
@@ -288,7 +292,7 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
             and isinstance(frame, TTSSpeakFrame)
             and self.strategy.active_service is self.primary
         ):
-            self._request_speak_flags = (
+            self._pending_speak_flags = (
                 frame.append_to_context,
                 frame.persist_to_logs,
                 frame.text_type,

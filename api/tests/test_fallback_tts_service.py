@@ -122,6 +122,25 @@ class StreamingPrimary(RecordingPrimary):
         self.context_closed.set()
 
 
+class FailingPrimary(RecordingPrimary):
+    def __init__(self, *, audio_seconds=0.0, **kwargs):
+        super().__init__(**kwargs)
+        self.audio_seconds = audio_seconds
+
+    async def run_tts(self, text, context_id):
+        self.received_texts.append(text)
+        if self.audio_seconds:
+            samples = int(self.audio_seconds * self.sample_rate)
+            yield TTSAudioRawFrame(
+                b"\x00\x00" * samples,
+                self.sample_rate,
+                1,
+                context_id=context_id,
+            )
+            await asyncio.sleep(0.1)
+        await self.push_error("synthesis failed", fatal=False)
+        yield None
+
 class TwoHalvesBackup(RecordingBackup):
     """Speaks one utterance in two halves, the test holding the gap between them."""
 
@@ -278,6 +297,37 @@ async def test_setup_error_switches_before_greeting():
     assert "greeting" in harness.backup.received_texts
     assert not harness.upstream.errors
     assert harness.primary.is_usable is False
+    await harness.pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_failure_before_audio_replays_current_sentence_on_backup_once():
+    primary = FailingPrimary(name="PrimaryTTS")
+    harness = await build_harness(primary=primary)
+    await start(harness)
+    await harness.pipeline.queue_frame(TTSSpeakFrame("greeting disclosure"))
+    await eventually(
+        lambda: harness.backup.received_texts == ["greeting disclosure"],
+        what="the replayed greeting",
+    )
+    assert primary.received_texts == ["greeting disclosure"]
+    assert harness.tts.fallback_metrics["switched"] == 1
+    await harness.pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_failure_after_three_seconds_does_not_replay_sentence():
+    primary = FailingPrimary(name="PrimaryTTS", audio_seconds=3.1)
+    harness = await build_harness(primary=primary)
+    await start(harness)
+    await harness.pipeline.queue_frame(TTSSpeakFrame("already heard"))
+    await eventually(
+        lambda: harness.tts.fallback_metrics["switched"] == 1,
+        what="the provider switch",
+    )
+    await asyncio.sleep(0.1)
+    assert primary.received_texts == ["already heard"]
+    assert harness.backup.received_texts == []
     await harness.pipeline.cleanup()
 
 
@@ -606,7 +656,13 @@ async def test_primary_context_is_closed_at_the_switch_and_its_late_close_stays_
     )
     x = next(c for kind, c in lifecycle(harness) if kind == "TTSStartedFrame")
     await primary.append_to_audio_context(
-        x, TTSAudioRawFrame(b"\x00\x01" * 160, primary.sample_rate, 1, context_id=x)
+        x,
+        TTSAudioRawFrame(
+            b"\x00\x01" * int(primary.sample_rate * 3.1),
+            primary.sample_rate,
+            1,
+            context_id=x,
+        ),
     )
     await eventually(
         lambda: any(isinstance(f, TTSAudioRawFrame) for f in frames_of(harness, x)),
@@ -694,6 +750,15 @@ async def test_recording_clip_queued_behind_the_primary_stays_out_of_the_backup_
         what="the primary's context to start",
     )
     x = next(c for kind, c in lifecycle(harness) if kind == "TTSStartedFrame")
+    await primary.append_to_audio_context(
+        x,
+        TTSAudioRawFrame(
+            b"\x00\x01" * int(primary.sample_rate * 3.1),
+            primary.sample_rate,
+            1,
+            context_id=x,
+        ),
+    )
 
     clip = "recording-clip"
     for frame in (

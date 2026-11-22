@@ -3,7 +3,7 @@ title: "Overview"
 description: "Configure telephony providers and manage phone numbers"
 ---
 
-A **telephony configuration** binds an organization to a telephony provider (Twilio, Vonage, Plivo, Telnyx, etc.) along with the credentials needed to place and receive calls. Each configuration owns a set of phone numbers; campaigns and inbound routing pin to a specific configuration.
+A **telephony configuration** binds an organization to a telephony provider (Twilio, Vonage, Plivo, Telnyx, etc.) along with the credentials needed for the call directions that provider supports. Each configuration owns a set of phone numbers; campaigns and inbound routing pin to a specific configuration.
 
 One configuration in your organization can be marked as the **default outbound** — campaigns and ad-hoc calls that omit `telephony_configuration_id` fall back to it.
 

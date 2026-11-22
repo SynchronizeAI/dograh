@@ -1,5 +1,5 @@
 import asyncio
-from typing import Optional
+from typing import Callable, Optional
 
 from fastapi import HTTPException
 from loguru import logger
@@ -412,11 +412,16 @@ async def run_pipeline_telephony(
     transport_kwargs: dict,
 ) -> None:
     """Run a pipeline for any telephony provider."""
-    # Register before any async setup so deploy drains see calls that are still
-    # resolving DB/config/transport state.
-    register_worker_active_call(workflow_run_id)
+    active_call_registered = False
+
+    def register_active_call() -> None:
+        nonlocal active_call_registered
+        register_worker_active_call(workflow_run_id)
+        active_call_registered = True
+
+    admitted = None
     try:
-        await _run_pipeline_telephony_impl(
+        admitted = await _run_pipeline_telephony_impl(
             websocket,
             provider_name=provider_name,
             workflow_id=workflow_id,
@@ -424,12 +429,15 @@ async def run_pipeline_telephony(
             organization_id=organization_id,
             call_id=call_id,
             transport_kwargs=transport_kwargs,
+            on_admitted=register_active_call,
         )
     finally:
-        try:
-            await call_concurrency.unregister_active_call(workflow_run_id)
-        finally:
-            unregister_worker_active_call(workflow_run_id)
+        if admitted is not False:
+            try:
+                await call_concurrency.unregister_active_call(workflow_run_id)
+            finally:
+                if active_call_registered:
+                    unregister_worker_active_call(workflow_run_id)
 
 
 async def _run_pipeline_telephony_impl(
@@ -441,7 +449,8 @@ async def _run_pipeline_telephony_impl(
     organization_id: int,
     call_id: str,
     transport_kwargs: dict,
-) -> None:
+    on_admitted: Callable[[], None],
+) -> bool | None:
     """Run a pipeline for any telephony provider.
 
     Replaces the previous per-provider run_pipeline_<x> functions. The
@@ -488,18 +497,20 @@ async def _run_pipeline_telephony_impl(
     if workflow_run.workflow_id != workflow_id:
         raise HTTPException(status_code=400, detail="workflow_run_workflow_mismatch")
 
-    # Marked here, once the stream has started, rather than when the socket
-    # connects: some carriers open the socket while the callee is still
-    # ringing, and the status callback reads 'initialized' as "the pipeline
-    # never started" when deciding whether an unanswered call needs its
-    # post-call integrations. A lost claim still runs the pipeline: a stream
-    # only starts on answer, so a terminal run here is an answered call whose
-    # hangup callback won the race, and pipeline finalization is what records
-    # its outcome and fires its webhooks.
-    if await db_client.mark_workflow_run_running(workflow_run_id, organization_id):
-        logger.info(
-            f"[run {workflow_run_id}] Set workflow run state to 'running' for {provider_name} provider"
+    if not await db_client.mark_workflow_run_running(
+        workflow_run_id, organization_id
+    ):
+        logger.warning(
+            f"[run {workflow_run_id}] Rejected duplicate or terminal media stream"
         )
+        await websocket.close(
+            code=4409, reason="Workflow run already claimed or completed"
+        )
+        return False
+    on_admitted()
+    logger.info(
+        f"[run {workflow_run_id}] Set workflow run state to 'running' for {provider_name} provider"
+    )
 
     telephony_configuration_id = None
     if workflow_run.initial_context:

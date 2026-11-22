@@ -61,6 +61,7 @@ from api.utils.telephony_helper import (
     normalize_webhook_data,
     numbers_match,
     parse_webhook_request,
+    redact_webhook_data,
 )
 
 router = APIRouter(prefix="/telephony")
@@ -1157,6 +1158,7 @@ async def handle_inbound_fallback(request: Request):
 
     webhook_data, _ = await parse_webhook_request(request)
     headers = dict(request.headers)
+    logged_webhook_data = redact_webhook_data(webhook_data)
 
     # Detect provider
     provider_class = await _detect_provider(webhook_data, headers)
@@ -1169,7 +1171,7 @@ async def handle_inbound_fallback(request: Request):
             or webhook_data.get("call_uuid")
         )
         logger.info(
-            f"[fallback] Received {provider_class.PROVIDER_NAME} callback for call {call_id}: {json.dumps(webhook_data)}"
+            f"[fallback] Received {provider_class.PROVIDER_NAME} callback for call {call_id}: {json.dumps(logged_webhook_data)}"
         )
 
         return provider_class.generate_error_response(
@@ -1179,7 +1181,7 @@ async def handle_inbound_fallback(request: Request):
     else:
         # Unknown provider - return generic XML
         logger.info(
-            f"[fallback] Received unknown provider callback: {json.dumps(webhook_data)} and request headers: {json.dumps(headers)}"
+            f"[fallback] Received unknown provider callback: {json.dumps(logged_webhook_data)} and request headers: {json.dumps(headers)}"
         )
 
         return generic_hangup_response()
@@ -1205,7 +1207,7 @@ async def handle_inbound_telephony(
 
     try:
         webhook_data, raw_body = await parse_webhook_request(request)
-        logger.info(f"Inbound call data: {dict(webhook_data)}")
+        logger.info(f"Inbound call data: {redact_webhook_data(webhook_data)}")
         headers = dict(request.headers)
 
         # Detect provider and normalize data

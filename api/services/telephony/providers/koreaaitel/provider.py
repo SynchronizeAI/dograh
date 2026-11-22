@@ -23,6 +23,7 @@ from api.services.telephony.base import (
     TelephonyProvider,
 )
 from api.utils.telephony_address import normalize_telephony_address
+from api.utils.telephony_helper import redact_webhook_data
 
 if TYPE_CHECKING:
     from fastapi import WebSocket
@@ -103,9 +104,7 @@ class KoreaAITelProvider(TelephonyProvider):
         restricted = str(webhook_data.get("CallerIdRestricted", "")).lower() == "true"
         from_raw = "" if restricted else webhook_data.get("From", "")
         to_raw = webhook_data.get("To", "")
-        raw_data = dict(webhook_data)
-        if "CallToken" in raw_data:
-            raw_data["CallToken"] = "[REDACTED]"
+        raw_data = redact_webhook_data(webhook_data)
         if restricted:
             raw_data["From"] = ""
         return NormalizedInboundData(

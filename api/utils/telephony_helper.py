@@ -128,6 +128,13 @@ def normalize_webhook_data(provider_class, webhook_data, headers=None):
     return parse_method(webhook_data)
 
 
+def redact_webhook_data(webhook_data: dict) -> dict:
+    redacted = dict(webhook_data)
+    if "CallToken" in redacted:
+        redacted["CallToken"] = "[REDACTED]"
+    return redacted
+
+
 def generic_hangup_response():
     """Return a generic hangup response for unknown/error cases"""
     return HTMLResponse(

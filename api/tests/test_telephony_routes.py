@@ -9,9 +9,16 @@ from fastapi.testclient import TestClient
 
 from api.enums import WorkflowRunMode, WorkflowRunState
 from api.errors.telephony_errors import TelephonyError
-from api.routes.telephony import _handle_telephony_websocket, handle_inbound_run, router
+from api.routes.telephony import (
+    _handle_telephony_websocket,
+    handle_inbound_fallback,
+    handle_inbound_run,
+    handle_inbound_telephony,
+    router,
+)
 from api.services.auth.depends import get_user
 from api.services.call_concurrency import CallConcurrencyLimitError
+from api.services.telephony.providers.koreaaitel.provider import KoreaAITelProvider
 
 
 def _make_test_app() -> FastAPI:
@@ -59,6 +66,87 @@ def _stub_outbound_setup_lookup(mock_db, *, provider: str = "twilio"):
     # Twilio has no trunks; the guard skips the query, but a stub keeps the
     # helper usable for SIP providers too.
     mock_db.list_trunks_for_config = AsyncMock(return_value=[])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_detected", [True, False])
+async def test_inbound_fallback_redacts_call_token_before_logging(
+    provider_detected,
+):
+    webhook_data = {
+        "CallId": "call-log",
+        "AccountId": "AC123",
+        "From": "01012345678",
+        "CallToken": "secret-capability",
+    }
+    request = SimpleNamespace(headers={})
+    detected_provider = KoreaAITelProvider if provider_detected else None
+
+    with (
+        patch(
+            "api.routes.telephony.parse_webhook_request",
+            new=AsyncMock(return_value=(webhook_data, "raw-body")),
+        ),
+        patch(
+            "api.routes.telephony._detect_provider",
+            new=AsyncMock(return_value=detected_provider),
+        ),
+        patch("api.routes.telephony.logger.info") as log_info,
+    ):
+        await handle_inbound_fallback(request)
+
+    logged_payload = "\n".join(str(call.args) for call in log_info.call_args_list)
+    assert "secret-capability" not in logged_payload
+    assert '"CallToken": "[REDACTED]"' in logged_payload
+    assert '"CallId": "call-log"' in logged_payload
+    assert '"From": "01012345678"' in logged_payload
+    assert webhook_data["CallToken"] == "secret-capability"
+
+
+@pytest.mark.asyncio
+async def test_legacy_inbound_redacts_call_token_before_logging():
+    webhook_data = {
+        "CallId": "call-log",
+        "AccountId": "AC123",
+        "From": "01012345678",
+        "To": "07012345678",
+        "Direction": "inbound",
+        "CallToken": "secret-capability",
+    }
+    request = SimpleNamespace(
+        headers={}, url="https://api.example.test/telephony/inbound/33"
+    )
+
+    with (
+        patch(
+            "api.routes.telephony.parse_webhook_request",
+            new=AsyncMock(return_value=(webhook_data, "raw-body")),
+        ),
+        patch(
+            "api.routes.telephony._detect_provider",
+            new=AsyncMock(return_value=KoreaAITelProvider),
+        ),
+        patch(
+            "api.routes.telephony._validate_inbound_request",
+            new=AsyncMock(
+                return_value=(
+                    False,
+                    TelephonyError.SIGNATURE_VALIDATION_FAILED,
+                    {},
+                    None,
+                )
+            ),
+        ),
+        patch("api.routes.telephony.logger.info") as log_info,
+    ):
+        await handle_inbound_telephony(33, request)
+
+    logged_messages = "\n".join(str(call.args) for call in log_info.call_args_list)
+    assert "secret-capability" not in logged_messages
+    assert "CallToken': '[REDACTED]'" in logged_messages
+    assert "CallId': 'call-log'" in logged_messages
+    assert "From': '01012345678'" in logged_messages
+    assert webhook_data["CallToken"] == "secret-capability"
 
 
 def _provider():

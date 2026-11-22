@@ -600,7 +600,6 @@ def _setup_koreaaitel_webhook(monkeypatch, existing_runs, new_run_ids):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("replay", [True, False])
-@pytest.mark.asyncio
 async def test_koreaaitel_webhook_replay_and_call_id_isolation(monkeypatch, replay):
     run = SimpleNamespace(id=999, workflow_id=33)
     found, new_ids = ([None, run], [999]) if replay else ([None, None], [999, 1000])

@@ -908,29 +908,55 @@ async def test_primary_context_is_closed_at_the_switch_and_its_late_close_stays_
         TTSAudioRawFrame,
         TTSStoppedFrame,
     ]
+    await eventually(
+        lambda: backup.received_texts == ["first"],
+        what="the lost sentence to be replayed once",
+    )
 
     await harness.pipeline.queue_frame(TTSSpeakFrame("second"))
     await eventually(
+        lambda: backup.received_texts == ["first"],
+        what="the replay to reach the backup",
+    )
+    replay_id = next(c for kind, c in lifecycle(harness) if c != x)
+    await eventually(
         lambda: any(
-            isinstance(f, TTSAudioRawFrame) and f.context_id != x
+            isinstance(f, TTSAudioRawFrame) and f.context_id == replay_id
             for f in harness.downstream.frames
         ),
-        what="the first half of the backup's utterance",
+        what="the replay's first audio half",
     )
-    y = next(c for kind, c in lifecycle(harness) if c != x)
 
-    # The primary's context ends now, mid-way through Y.
+    # The primary's context ends now, mid-way through the replay.
     await primary.remove_audio_context(x)
     await asyncio.wait_for(primary.context_closed.wait(), timeout=10)
     backup.second_half.set()
     await eventually(
+        lambda: backup.received_texts == ["first", "second"],
+        what="the next backup utterance to end",
+    )
+    await eventually(
+        lambda: len(
+            [c for kind, c in lifecycle(harness) if kind == "TTSStartedFrame" and c != x]
+        )
+        == 2,
+        what="the replay and next backup contexts to start",
+    )
+    y = [
+        c
+        for kind, c in lifecycle(harness)
+        if kind == "TTSStartedFrame" and c != x
+    ][1]
+    await eventually(
         lambda: ("TTSStoppedFrame", y) in lifecycle(harness),
-        what="the backup's utterance to end",
+        what="the next backup utterance to end",
     )
 
     assert lifecycle(harness) == [
         ("TTSStartedFrame", x),
         ("TTSStoppedFrame", x),
+        ("TTSStartedFrame", replay_id),
+        ("TTSStoppedFrame", replay_id),
         ("TTSStartedFrame", y),
         ("TTSStoppedFrame", y),
     ]
@@ -939,6 +965,16 @@ async def test_primary_context_is_closed_at_the_switch_and_its_late_close_stays_
         i
         for i, f in enumerate(frames)
         if isinstance(f, TTSStoppedFrame) and f.context_id == x
+    )
+    started_replay = next(
+        i
+        for i, f in enumerate(frames)
+        if isinstance(f, TTSStartedFrame) and f.context_id == replay_id
+    )
+    stopped_replay = next(
+        i
+        for i, f in enumerate(frames)
+        if isinstance(f, TTSStoppedFrame) and f.context_id == replay_id
     )
     started_y = next(
         i
@@ -950,15 +986,17 @@ async def test_primary_context_is_closed_at_the_switch_and_its_late_close_stays_
         for i, f in enumerate(frames)
         if isinstance(f, TTSStoppedFrame) and f.context_id == y
     )
-    assert stopped_x < started_y
+    assert stopped_x < started_replay
     audio = [
         (i, f.context_id)
         for i, f in enumerate(frames)
         if isinstance(f, TTSAudioRawFrame)
     ]
-    assert [c for _, c in audio] == [x, y, y]
+    assert [c for _, c in audio] == [x, replay_id, replay_id, y, y]
     assert audio[0][0] < stopped_x
+    assert all(started_replay < i < stopped_replay for i, c in audio if c == replay_id)
     assert all(started_y < i < stopped_y for i, c in audio if c == y)
+    assert backup.received_texts == ["first", "second"]
     await harness.pipeline.cleanup()
 
 
@@ -1000,15 +1038,21 @@ async def test_recording_clip_queued_behind_the_primary_stays_out_of_the_backup_
     assert harness.tts.strategy.active_service is backup
     await harness.pipeline.queue_frame(TTSSpeakFrame("second"))
     await eventually(
+        lambda: backup.received_texts == ["first"],
+        what="the replay to reach the backup",
+    )
+    replay_id = next(
+        c for kind, c in lifecycle(harness) if c not in (x, clip)
+    )
+    await eventually(
         lambda: any(
-            isinstance(f, TTSAudioRawFrame) and f.context_id != x
+            isinstance(f, TTSAudioRawFrame) and f.context_id == replay_id
             for f in harness.downstream.frames
         ),
-        what="the first half of the backup's utterance",
+        what="the replay's first audio half",
     )
-    y = next(c for kind, c in lifecycle(harness) if c not in (x, clip))
 
-    # The primary's context ends mid-way through Y and releases the clip.
+    # The primary's context ends mid-way through the replay and releases the clip.
     await primary.remove_audio_context(x)
     await eventually(
         lambda: any(
@@ -1019,17 +1063,40 @@ async def test_recording_clip_queued_behind_the_primary_stays_out_of_the_backup_
     )
     backup.second_half.set()
     await eventually(
+        lambda: backup.received_texts == ["first", "second"],
+        what="the next backup utterance to start",
+    )
+    await eventually(
+        lambda: len(
+            [
+                c
+                for kind, c in lifecycle(harness)
+                if kind == "TTSStartedFrame" and c not in (x, clip)
+            ]
+        )
+        == 2,
+        what="the replay and next backup contexts to start",
+    )
+    y = [
+        c
+        for kind, c in lifecycle(harness)
+        if kind == "TTSStartedFrame" and c not in (x, clip)
+    ][1]
+    await eventually(
         lambda: ("TTSStoppedFrame", y) in lifecycle(harness),
-        what="the backup's utterance to end",
+        what="the next backup utterance to end",
     )
 
     assert frames_of(harness, clip) == []
     assert lifecycle(harness) == [
         ("TTSStartedFrame", x),
         ("TTSStoppedFrame", x),
+        ("TTSStartedFrame", replay_id),
+        ("TTSStoppedFrame", replay_id),
         ("TTSStartedFrame", y),
         ("TTSStoppedFrame", y),
     ]
+    assert backup.received_texts == ["first", "second"]
     await harness.pipeline.cleanup()
 
 

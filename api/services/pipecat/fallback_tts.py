@@ -18,7 +18,10 @@ from pipecat.frames.frames import (
     EndFrame,
     ErrorFrame,
     Frame,
+    LLMFullResponseStartFrame,
+    LLMTextFrame,
     TTSAudioRawFrame,
+    TTSSpeakFrame,
     TTSStartedFrame,
     TTSStoppedFrame,
     TTSTextFrame,
@@ -34,6 +37,7 @@ from pipecat.services.tts_service import TTSService
 StrategyType = TypeVar("StrategyType", bound=ServiceSwitcherStrategy)
 
 _BACKUP_CONNECT_TIMEOUT_S = 3.0
+_NO_FALLBACK_AFTER_AUDIO_DURATION_S = 3.0
 _TTS_SPEECH_FRAMES = (TTSStartedFrame, TTSAudioRawFrame, TTSTextFrame, TTSStoppedFrame)
 # Set on the primary's speech frames as it pushes them, so a frame is known to
 # come from the primary by where it was pushed and not by what it carries.
@@ -83,6 +87,12 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
         super().__init__(services=[primary, backup], strategy_type=_SwitchOnFirstError)
         self.primary = primary
         self.backup = backup
+        self._request_text = ""
+        self._request_context_id: str | None = None
+        self._request_audio_duration = 0.0
+        self._request_speak_flags: tuple | None = None
+        self._pending_speak_flags: tuple | None = None
+        self._pending_llm_text = ""
         # Contexts of the primary's speech whose Started frame went downstream
         # and whose Stopped frame has not; the switch closes them (see
         # _close_primary_contexts).
@@ -101,6 +111,7 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
         self.strategy.prepare_switch = self._prepare_switch
         self.strategy.complete_switch = self._complete_switch
         self.strategy.visit_over = lambda: self._visit_ending
+        primary.add_event_handler("on_tts_request", self._on_primary_tts_request)
         primary.add_event_handler("on_before_push_frame", self._mark_primary_frame)
         backup.add_event_handler("on_usable_changed", self._on_backup_usable_changed)
         backup.add_event_handler("on_error", self._on_backup_error)
@@ -124,6 +135,22 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
         # synchronous, so the mark is there before the frame reaches push_frame.
         if isinstance(frame, _TTS_SPEECH_FRAMES):
             frame.metadata[_FROM_PRIMARY] = True
+        if (
+            isinstance(frame, TTSAudioRawFrame)
+            and frame.context_id == self._request_context_id
+        ):
+            self._request_audio_duration += len(frame.audio) / (
+                frame.sample_rate * frame.num_channels * 2
+            )
+
+    def _on_primary_tts_request(self, _primary, context_id: str, text: str) -> None:
+        if self.strategy.active_service is self.primary:
+            self._request_context_id = context_id
+            self._request_text = text
+            self._request_audio_duration = 0.0
+            self._request_speak_flags = self._pending_speak_flags
+            self._pending_speak_flags = None
+            self._pending_llm_text = ""
 
     def _count_backup_unavailable(self) -> None:
         if self._backup_unavailable_logged:
@@ -186,6 +213,31 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
         )
         self._register_backup_campaign_handler()
         await self.primary.set_usable(False)
+        if self._request_context_id is not None or self._request_text:
+            replay_text = self._request_text
+            replay_audio_duration = self._request_audio_duration
+            flags = self._request_speak_flags
+        else:
+            replay_text = self._pending_llm_text
+            replay_audio_duration = 0.0
+            flags = None
+        if replay_text and replay_audio_duration < _NO_FALLBACK_AFTER_AUDIO_DURATION_S:
+            replay = (
+                TTSSpeakFrame(replay_text)
+                if flags is None
+                else TTSSpeakFrame(
+                    replay_text,
+                    append_to_context=flags[0],
+                    persist_to_logs=flags[1],
+                    text_type=flags[2],
+                )
+            )
+            await self.backup.queue_frame(replay)
+        self._request_text = ""
+        self._request_context_id = None
+        self._request_speak_flags = None
+        self._pending_speak_flags = None
+        self._pending_llm_text = ""
 
     async def _ensure_backup_connected(self) -> None:
         if self._backup_connected.is_set():
@@ -247,6 +299,44 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         if isinstance(frame, (EndFrame, CancelFrame)):
             self._visit_ending = True
+        if (
+            direction == FrameDirection.DOWNSTREAM
+            and isinstance(frame, TTSSpeakFrame)
+            and self.strategy.active_service is self.primary
+        ):
+            flags = (
+                frame.append_to_context,
+                frame.persist_to_logs,
+                frame.text_type,
+            )
+            self._pending_speak_flags = flags
+            self._request_text = frame.text
+            self._request_context_id = None
+            self._request_audio_duration = 0.0
+            self._request_speak_flags = flags
+            self._pending_llm_text = ""
+        elif (
+            direction == FrameDirection.DOWNSTREAM
+            and self.strategy.active_service is self.primary
+            and isinstance(frame, LLMFullResponseStartFrame)
+        ):
+            if self._request_context_id is None:
+                self._request_text = ""
+                self._request_audio_duration = 0.0
+                self._request_speak_flags = None
+            self._pending_speak_flags = None
+            self._pending_llm_text = ""
+        elif (
+            direction == FrameDirection.DOWNSTREAM
+            and self.strategy.active_service is self.primary
+            and isinstance(frame, LLMTextFrame)
+        ):
+            self._pending_llm_text += frame.text
+            if self._request_context_id is None:
+                self._request_text = ""
+                self._request_audio_duration = 0.0
+                self._request_speak_flags = None
+            self._pending_speak_flags = None
         await super().process_frame(frame, direction)
 
     async def push_frame(
@@ -264,4 +354,9 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
                 self._open_primary_contexts[context_id] = frame
             elif isinstance(frame, TTSStoppedFrame):
                 self._open_primary_contexts.pop(context_id, None)
+                if context_id and context_id == self._request_context_id:
+                    self._request_text = ""
+                    self._request_context_id = None
+                    self._request_audio_duration = 0.0
+                    self._request_speak_flags = None
         await super().push_frame(frame, direction)

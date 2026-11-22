@@ -11,6 +11,9 @@ from pipecat.clocks.system_clock import SystemClock
 from pipecat.frames.frames import (
     EndFrame,
     ErrorFrame,
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
+    LLMTextFrame,
     StartFrame,
     TextFrame,
     TTSAudioRawFrame,
@@ -19,6 +22,7 @@ from pipecat.frames.frames import (
     TTSStoppedFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
+from pipecat.processors.filters.spoken_text_processor import SpokenTextProcessor
 from pipecat.processors.frame_processor import (
     FrameDirection,
     FrameProcessor,
@@ -69,6 +73,55 @@ class RecordingPrimary(MockTTSService):
             await self.push_error("handshake failed", exception=http_error(402))
 
 
+class FailingPrimary(RecordingPrimary):
+    def __init__(self, *, audio_seconds=0.0, **kwargs):
+        kwargs.setdefault("pause_frame_processing", False)
+        super().__init__(**kwargs)
+        self.audio_seconds = audio_seconds
+
+    async def run_tts(self, text, context_id):
+        self.received_texts.append(text)
+        await asyncio.sleep(0)
+        if self.audio_seconds:
+            yield TTSAudioRawFrame(
+                b"\x00\x00" * int(self.audio_seconds * self.sample_rate),
+                self.sample_rate,
+                1,
+                context_id=context_id,
+            )
+            await asyncio.sleep(0.1)
+        await self.push_error("synthesis failed", fatal=False)
+        yield None
+
+
+class SecondRequestFailingPrimary(RecordingPrimary):
+    async def run_tts(self, text, context_id):
+        self.received_texts.append(text)
+        if len(self.received_texts) == 1:
+            yield TTSAudioRawFrame(
+                b"\x00\x00" * 160,
+                self.sample_rate,
+                1,
+                context_id=context_id,
+            )
+            yield None
+            return
+        await self.push_error("synthesis failed", fatal=False)
+        yield None
+
+
+class ImmediateLLMFailurePrimary(RecordingPrimary):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.failed_llm_request = False
+
+    async def process_frame(self, frame, direction):
+        if isinstance(frame, LLMTextFrame) and not self.failed_llm_request:
+            self.failed_llm_request = True
+            await self.push_error("synthesis failed", fatal=False)
+        await super().process_frame(frame, direction)
+
+
 class RecordingBackup(MockTTSService):
     """A backup that connects after its base setup, as websocket services do."""
 
@@ -90,6 +143,17 @@ class RecordingBackup(MockTTSService):
         if self.fail_auth_in_setup:
             await self.push_error("unauthorized", exception=http_error(401))
             await self.set_usable(False)
+
+
+class CapturingBackup(RecordingBackup):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.speak_frames = []
+
+    async def queue_frame(self, frame, *args, **kwargs):
+        if isinstance(frame, TTSSpeakFrame):
+            self.speak_frames.append(frame)
+        await super().queue_frame(frame, *args, **kwargs)
 
 
 class StreamingPrimary(RecordingPrimary):
@@ -143,6 +207,7 @@ class TwoHalvesBackup(RecordingBackup):
 
 def make_harness(
     *,
+    spoken_text=False,
     fail_in_setup=False,
     slow_backup_setup=0.0,
     backup_connect_gate=None,
@@ -162,7 +227,11 @@ def make_harness(
         backup.connect_error = backup_connect_error
     tts = FallbackTTSService(primary, backup)
     upstream, downstream = Capture(), Capture()
-    pipeline = Pipeline([upstream, tts, downstream])
+    processors = [upstream]
+    if spoken_text:
+        processors.append(SpokenTextProcessor())
+    processors.extend([tts, downstream])
+    pipeline = Pipeline(processors)
     manager = TaskManager()
     processor_setup = FrameProcessorSetup(
         clock=SystemClock(),
@@ -191,6 +260,223 @@ async def build_harness(**options):
     harness = make_harness(**options)
     await harness.setup()
     return harness
+
+
+@pytest.mark.asyncio
+async def test_greeting_is_replayed_once_after_early_primary_failure():
+    primary = FailingPrimary(name="PrimaryTTS")
+    harness = await build_harness(primary=primary)
+    await start(harness)
+    await harness.pipeline.queue_frame(TTSSpeakFrame("AI and recording disclosure"))
+    await eventually(
+        lambda: harness.backup.received_texts == ["AI and recording disclosure"],
+        what="the backup to speak the greeting once",
+    )
+    assert harness.tts.fallback_metrics["switched"] == 1
+    await harness.pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_replayed_speak_frame_preserves_context_and_log_flags():
+    primary = FailingPrimary(name="PrimaryTTS")
+    backup = CapturingBackup(name="BackupTTS")
+    harness = await build_harness(primary=primary, backup=backup)
+    await start(harness)
+    await harness.pipeline.queue_frame(
+        TTSSpeakFrame(
+            "Transition speech",
+            append_to_context=True,
+            persist_to_logs=False,
+            text_type="transition",
+        )
+    )
+    await eventually(
+        lambda: backup.received_texts == ["Transition speech"],
+        what="the backup to speak the replay",
+    )
+    assert len(backup.speak_frames) == 1
+    replay = backup.speak_frames[0]
+    assert replay.append_to_context is True
+    assert replay.persist_to_logs is False
+    assert replay.text_type == "transition"
+    await harness.pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_llm_request_uses_default_flags_after_explicit_speak():
+    primary = SecondRequestFailingPrimary(name="PrimaryTTS")
+    backup = CapturingBackup(name="BackupTTS")
+    harness = await build_harness(
+        primary=primary,
+        backup=backup,
+        spoken_text=True,
+    )
+    await start(harness)
+    await harness.pipeline.queue_frame(
+        TTSSpeakFrame(
+            "Transition speech",
+            append_to_context=True,
+            persist_to_logs=False,
+            text_type="transition",
+        )
+    )
+    await eventually(
+        lambda: any(
+            isinstance(frame, TTSStoppedFrame)
+            for frame in harness.downstream.frames
+        ),
+        what="the explicit speech to complete",
+    )
+    await harness.pipeline.queue_frame(LLMFullResponseStartFrame())
+    await harness.pipeline.queue_frame(LLMTextFrame("An ordinary sentence."))
+    await harness.pipeline.queue_frame(LLMFullResponseEndFrame())
+    await eventually(
+        lambda: backup.received_texts == ["An ordinary sentence."],
+        what="the backup to speak the LLM sentence",
+    )
+    assert len(backup.speak_frames) == 1
+    replay = backup.speak_frames[0]
+    defaults = TTSSpeakFrame("")
+    assert replay.append_to_context == defaults.append_to_context
+    assert replay.persist_to_logs == defaults.persist_to_logs
+    assert replay.text_type == defaults.text_type
+    await harness.pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_immediate_llm_failure_replays_current_sentence_after_transition():
+    primary = ImmediateLLMFailurePrimary(name="PrimaryTTS")
+    backup = CapturingBackup(name="BackupTTS")
+    harness = await build_harness(
+        primary=primary,
+        backup=backup,
+        spoken_text=True,
+    )
+    await start(harness)
+    await harness.pipeline.queue_frame(TTSSpeakFrame("Transition speech"))
+    await eventually(
+        lambda: any(
+            isinstance(frame, TTSStoppedFrame)
+            for frame in harness.downstream.frames
+        ),
+        what="the transition speech to complete",
+    )
+    await harness.pipeline.queue_frame(LLMFullResponseStartFrame())
+    await harness.pipeline.queue_frame(LLMTextFrame("An ordinary sentence."))
+    await harness.pipeline.queue_frame(LLMFullResponseEndFrame())
+    await eventually(
+        lambda: harness.tts.fallback_metrics["switched"] == 1,
+        what="the provider switch",
+    )
+    assert backup.received_texts == ["An ordinary sentence."]
+    assert len(backup.speak_frames) == 1
+    replay = backup.speak_frames[0]
+    defaults = TTSSpeakFrame("")
+    assert replay.append_to_context == defaults.append_to_context
+    assert replay.persist_to_logs == defaults.persist_to_logs
+    assert replay.text_type == defaults.text_type
+    await harness.pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_ordinary_llm_sentence_is_replayed_after_early_primary_failure():
+    primary = FailingPrimary(name="PrimaryTTS")
+    harness = await build_harness(primary=primary, spoken_text=True)
+    await start(harness)
+    await harness.pipeline.queue_frame(LLMFullResponseStartFrame())
+    await harness.pipeline.queue_frame(LLMTextFrame("An ordinary sentence."))
+    await harness.pipeline.queue_frame(LLMFullResponseEndFrame())
+    await eventually(
+        lambda: harness.backup.received_texts == ["An ordinary sentence."],
+        what="the backup to speak the LLM sentence once",
+    )
+    assert harness.tts.fallback_metrics["switched"] == 1
+    await harness.pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_primary_failure_after_three_seconds_does_not_replay():
+    primary = FailingPrimary(name="PrimaryTTS", audio_seconds=3.1)
+    harness = await build_harness(primary=primary)
+    await start(harness)
+    await harness.pipeline.queue_frame(TTSSpeakFrame("Already heard sentence."))
+    await eventually(
+        lambda: sum(
+            len(frame.audio) / (frame.sample_rate * frame.num_channels * 2)
+            for frame in harness.downstream.frames
+            if isinstance(frame, TTSAudioRawFrame)
+        )
+        > 3.0,
+        what="more than three seconds of primary audio to reach downstream",
+    )
+    await eventually(
+        lambda: harness.tts.fallback_metrics["switched"] == 1,
+        what="the provider switch",
+    )
+    assert harness.backup.received_texts == []
+    await harness.pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_streamed_llm_text_does_not_reset_active_request_audio_duration():
+    primary = StreamingPrimary(name="PrimaryTTS")
+    backup = CapturingBackup(name="BackupTTS")
+    harness = await build_harness(
+        primary=primary,
+        backup=backup,
+        spoken_text=True,
+    )
+    await start(harness)
+    await eventually(harness.tts._backup_connected.is_set, what="the backup connect")
+
+    await harness.pipeline.queue_frame(TTSSpeakFrame("First sentence"))
+    await eventually(
+        lambda: any(isinstance(f, TTSStartedFrame) for f in harness.downstream.frames),
+        what="the primary request to start",
+    )
+    context_id = next(
+        f.context_id
+        for f in harness.downstream.frames
+        if isinstance(f, TTSStartedFrame)
+    )
+    await primary.append_to_audio_context(
+        context_id,
+        TTSAudioRawFrame(
+            b"\x00\x00" * int(3.1 * primary.sample_rate),
+            primary.sample_rate,
+            1,
+            context_id=context_id,
+        ),
+    )
+    await eventually(
+        lambda: sum(
+            len(f.audio) / (f.sample_rate * f.num_channels * 2)
+            for f in harness.downstream.frames
+            if isinstance(f, TTSAudioRawFrame) and f.context_id == context_id
+        )
+        > 3.0,
+        what="more than three seconds of the first sentence to reach downstream",
+    )
+
+    await harness.pipeline.queue_frame(LLMFullResponseStartFrame())
+    await harness.pipeline.queue_frame(LLMTextFrame("The next "))
+    await harness.pipeline.queue_frame(LLMTextFrame("sentence is still streaming "))
+    await eventually(
+        lambda: harness.tts._pending_llm_text
+        == "The next sentence is still streaming ",
+        what="the next streamed sentence to reach the fallback boundary",
+    )
+    assert harness.tts._request_context_id == context_id
+    assert harness.tts._request_audio_duration > 3.0
+
+    await primary.push_error("stream failed", fatal=False)
+    await eventually(
+        lambda: harness.tts.strategy.active_service is backup
+        and not harness.tts._pending_llm_text,
+        what="the provider switch",
+    )
+    assert backup.speak_frames == []
+    await harness.pipeline.cleanup()
 
 
 async def eventually(predicate, *, timeout=3.0, what="the condition"):

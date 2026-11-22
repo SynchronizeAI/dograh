@@ -143,6 +143,34 @@ class TestContextUpdateBeforeNextCompletion:
     """Test that context is properly updated before the next LLM completion."""
 
     @pytest.mark.asyncio
+    async def test_transition_speech_is_added_to_llm_context(
+        self, three_node_workflow: WorkflowGraph
+    ):
+        transition_speech = "Is there anything else I can help with?"
+        three_node_workflow.edges[0].transition_speech = transition_speech
+        mock_steps = [
+            MockLLMService.create_function_call_chunks(
+                function_name="collect_info", arguments={}, tool_call_id="call_enter"
+            ),
+            MockLLMService.create_function_call_chunks(
+                function_name="end_call", arguments={}, tool_call_id="call_end"
+            ),
+            MockLLMService.create_text_chunks("Goodbye!"),
+        ]
+
+        llm, _ = await run_pipeline_and_capture_context(
+            workflow=three_node_workflow, mock_steps=mock_steps
+        )
+
+        agent_context = llm.get_context_at_step(1)
+        assert agent_context is not None
+        assert any(
+            message.get("role") == "assistant"
+            and message.get("content") == transition_speech
+            for message in agent_context["messages"]
+        )
+
+    @pytest.mark.asyncio
     async def test_single_transition_updates_context_before_next_completion(
         self, three_node_workflow: WorkflowGraph
     ):

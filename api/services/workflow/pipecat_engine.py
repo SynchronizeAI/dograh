@@ -462,10 +462,16 @@ class PipecatEngine:
                         f"Playing transition audio: {transition_speech_recording_id}"
                     )
                     await self.queue_speech(
-                        recording_pk=int(transition_speech_recording_id), mute_user=True
+                        recording_pk=int(transition_speech_recording_id),
+                        append_to_context=True,
+                        mute_user=True,
                     )
                 elif transition_speech:
-                    await self.queue_text_message(transition_speech, mute_user=True)
+                    await self.queue_text_message(
+                        transition_speech,
+                        append_to_context=True,
+                        mute_user=True,
+                    )
 
                 # Set context for the new node, so that when the function call result
                 # frame is received by LLMContextAggregator and an LLM generation

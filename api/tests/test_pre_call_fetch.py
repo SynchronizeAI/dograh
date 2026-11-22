@@ -1,8 +1,12 @@
+import copy
+from types import SimpleNamespace
+
 import httpx
 import pytest
 
 from api.services.pipecat import pre_call_fetch as service
 from api.services.pipecat.pre_call_fetch import _extract_initial_context
+from api.tests.conftest import DEFAULT_WORKFLOW_DEFINITION
 
 
 @pytest.mark.asyncio
@@ -82,6 +86,113 @@ async def test_hook_timeout_preserves_best_effort_context_policy(monkeypatch):
     )
     assert result.outcome == "unavailable"
     assert result.model_overrides is None
+
+
+@pytest.mark.asyncio
+async def test_call_pipeline_awaits_the_fetch_its_inbound_webhook_started(
+    monkeypatch,
+):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"initial_context": {"customer": "Jane"}})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        service.httpx,
+        "AsyncClient",
+        lambda **_: real_client(transport=httpx.MockTransport(handler)),
+    )
+    pinned_workflow_json = copy.deepcopy(DEFAULT_WORKFLOW_DEFINITION)
+    start = pinned_workflow_json["nodes"][0]
+    start["data"]["pre_call_fetch_mode"] = "inbound"
+    start["data"]["pre_call_fetch_url"] = "https://hook.example/lookup"
+    start["data"]["pre_call_fetch_credential_uuid"] = "pinned-credential"
+    current_workflow_json = copy.deepcopy(DEFAULT_WORKFLOW_DEFINITION)
+    current_workflow_json["nodes"][0]["data"].update(
+        pre_call_fetch_mode="inbound",
+        pre_call_fetch_url="https://hook.example/current-definition",
+        pre_call_fetch_credential_uuid="current-credential",
+    )
+    workflow = SimpleNamespace(
+        id=7,
+        organization_id=1,
+        released_definition=SimpleNamespace(workflow_json=current_workflow_json),
+    )
+    run_definition = SimpleNamespace(workflow_json=pinned_workflow_json)
+    graph = service.WorkflowGraph(
+        service.ReactFlowDTO.model_validate(pinned_workflow_json),
+        skip_instance_constraints_for={"trigger"},
+    )
+    credential_lookups = []
+
+    async def get_credential(credential_uuid, organization_id):
+        credential_lookups.append((credential_uuid, organization_id))
+        return SimpleNamespace(uuid=credential_uuid)
+
+    monkeypatch.setattr(service.db_client, "get_credential_by_uuid", get_credential)
+    monkeypatch.setattr(
+        service,
+        "build_auth_header",
+        lambda credential: {"X-Credential": credential.uuid},
+    )
+    request = {"call_context_vars": {}, "workflow_id": 7, "organization_id": 1}
+
+    webhook = SimpleNamespace(from_number="+15550001111", to_number="+15550002222")
+    service.start_inbound_pre_call_fetch(workflow, run_definition, 51, webhook)
+    # The pipeline takes over the running fetch instead of sending its own.
+    task = service.start_pre_call_fetch(
+        graph.nodes["1"], "inbound", workflow_run_id=51, **request
+    )
+    assert task is not None
+    assert (await task).initial_context == {"customer": "Jane"}
+    assert len(requests) == 1
+    assert str(requests[0].url) == "https://hook.example/lookup"
+    assert credential_lookups == [("pinned-credential", 1)]
+    assert requests[0].headers["X-Credential"] == "pinned-credential"
+    assert requests[0].headers["Idempotency-Key"] == "dograh-pre-call-51"
+    assert b'"from_number":"+15550001111"' in requests[0].content
+
+
+@pytest.mark.asyncio
+async def test_pipeline_fetches_once_when_webhook_started_nothing_in_this_process(
+    monkeypatch,
+):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"initial_context": {"customer": "Jane"}})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        service.httpx,
+        "AsyncClient",
+        lambda **_: real_client(transport=httpx.MockTransport(handler)),
+    )
+    workflow_json = copy.deepcopy(DEFAULT_WORKFLOW_DEFINITION)
+    workflow_json["nodes"][0]["data"].update(
+        pre_call_fetch_mode="inbound",
+        pre_call_fetch_url="https://hook.example/lookup",
+    )
+    graph = service.WorkflowGraph(
+        service.ReactFlowDTO.model_validate(workflow_json),
+        skip_instance_constraints_for={"trigger"},
+    )
+    request = {
+        "call_context_vars": {"caller_number": "+15550001111"},
+        "workflow_id": 7,
+        "organization_id": 1,
+    }
+    task = service.start_pre_call_fetch(
+        graph.nodes["1"], "inbound", workflow_run_id=52, **request
+    )
+    assert task is not None
+    assert (await task).initial_context == {"customer": "Jane"}
+    assert len(requests) == 1
+    assert str(requests[0].url) == "https://hook.example/lookup"
+    assert requests[0].headers["Idempotency-Key"] == "dograh-pre-call-52"
 
 
 class TestExtractInitialContext:

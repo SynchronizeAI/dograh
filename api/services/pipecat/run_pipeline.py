@@ -52,7 +52,7 @@ from api.services.pipecat.pipeline_builder import (
     create_pipeline_task,
 )
 from api.services.pipecat.pipeline_metrics_aggregator import PipelineMetricsAggregator
-from api.services.pipecat.pre_call_fetch import execute_pre_call_fetch_result
+from api.services.pipecat.pre_call_fetch import start_pre_call_fetch
 from api.services.pipecat.processors.answer_supervisor import AnswerSupervisor
 from api.services.pipecat.realtime_feedback_events import (
     build_node_transition_event,
@@ -831,34 +831,22 @@ async def _run_pipeline_impl(
     )
 
     # Pre-call fetch: started before anything else is built so it overlaps the
-    # rest of setup. The caller hears a ringer if it is still pending once the
-    # pipeline is up, and the first agent is built from its result.
-    pre_call_fetch_task = None
+    # rest of setup, unless the inbound webhook already started it. The caller
+    # hears a ringer if it is still pending once the pipeline is up, and the
+    # first agent is built from its result.
     start_node = workflow_graph.nodes.get(workflow_graph.start_node_id)
     call_direction = getattr(workflow_run, "call_type", None)
     if hasattr(call_direction, "value"):
         call_direction = call_direction.value
     call_direction = call_direction or merged_call_context_vars.get("direction")
-    if (
-        start_node
-        and start_node.should_run_pre_call_fetch(call_direction)
-        and start_node.pre_call_fetch_url
-    ):
-        logger.info(
-            f"Pre-call fetch enabled for {call_direction or 'unknown'} workflow "
-            f"run {workflow_run_id}, "
-            f"firing request to {start_node.pre_call_fetch_url}"
-        )
-        pre_call_fetch_task = asyncio.create_task(
-            execute_pre_call_fetch_result(
-                url=start_node.pre_call_fetch_url,
-                credential_uuid=start_node.pre_call_fetch_credential_uuid,
-                call_context_vars=merged_call_context_vars,
-                workflow_id=workflow_id,
-                workflow_run_id=workflow_run_id,
-                organization_id=workflow.organization_id,
-            )
-        )
+    pre_call_fetch_task = start_pre_call_fetch(
+        start_node,
+        call_direction,
+        workflow_run_id=workflow_run_id,
+        call_context_vars=merged_call_context_vars,
+        workflow_id=workflow_id,
+        organization_id=workflow.organization_id,
+    )
 
     from api.services.managed_model_services import (
         MPS_CORRELATION_ID_CONTEXT_KEY,

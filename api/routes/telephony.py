@@ -5,7 +5,7 @@ Consolidated from split modules for easier maintenance.
 
 import json
 import uuid
-from typing import Optional
+from typing import Optional, cast
 
 from fastapi import (
     APIRouter,
@@ -31,6 +31,7 @@ from api.services.call_concurrency import (
     WorkflowRunSlotAlreadyBoundError,
     call_concurrency,
 )
+from api.services.pipecat.pre_call_fetch import start_inbound_pre_call_fetch
 from api.services.quota_service import authorize_workflow_run_start
 from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
@@ -482,8 +483,8 @@ async def _create_inbound_workflow_run(
     normalized_data,
     telephony_configuration_id: int,
     from_phone_number_id: Optional[int] = None,
-) -> int:
-    """Create workflow run for inbound call and return run ID"""
+) -> tuple[int, object | None]:
+    """Create an inbound workflow run and return its pinned definition."""
     call_id = normalized_data.call_id
     numeric_suffix = int(str(uuid.uuid4()).replace("-", "")[:8], 16) % 100000000
     workflow_run_name = f"WR-TEL-IN-{numeric_suffix:08d}"
@@ -537,7 +538,7 @@ async def _create_inbound_workflow_run(
     logger.info(
         f"Created inbound workflow run {workflow_run.id} for {provider} call {call_id}"
     )
-    return workflow_run.id
+    return cast(int, workflow_run.id), run_inputs.definition
 
 
 async def _resolve_inbound_telephony_config(
@@ -949,7 +950,7 @@ async def handle_inbound_run(request: Request):
         try:
             # 5. Create workflow run + authorize quota before returning provider
             # stream instructions.
-            workflow_run_id = await _create_inbound_workflow_run(
+            workflow_run_id, run_definition = await _create_inbound_workflow_run(
                 workflow_id,
                 user_id,
                 config.organization_id,
@@ -985,12 +986,16 @@ async def handle_inbound_run(request: Request):
                 workflow_run_id,
             )
 
-            return await provider_instance.start_inbound_stream(
+            response = await provider_instance.start_inbound_stream(
                 websocket_url=websocket_url,
                 workflow_run_id=workflow_run_id,
                 normalized_data=normalized_data,
                 backend_endpoint=backend_endpoint,
             )
+            start_inbound_pre_call_fetch(
+                workflow, run_definition, workflow_run_id, normalized_data
+            )
+            return response
         except WorkflowRunSlotAlreadyBoundError:
             return provider_class.generate_validation_error_response(
                 TelephonyError.CONCURRENT_CALL_LIMIT
@@ -1121,7 +1126,7 @@ async def handle_inbound_telephony(
         workflow_run_id = None
         try:
             # Create workflow run.
-            workflow_run_id = await _create_inbound_workflow_run(
+            workflow_run_id, _ = await _create_inbound_workflow_run(
                 workflow_id,
                 workflow_context["user_id"],
                 organization_id,

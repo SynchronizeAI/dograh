@@ -121,7 +121,9 @@ async def play_audio(
             app-level logs buffer by observers. Defaults to False.
     """
     context_id = str(uuid.uuid4())
-    await queue_frame(TTSStartedFrame(context_id=context_id))
+    await queue_frame(
+        TTSStartedFrame(context_id=context_id, append_to_context=append_to_context)
+    )
     if transcript:
         tts_text = TTSTextFrame(
             text=transcript, aggregated_by="recording", context_id=context_id

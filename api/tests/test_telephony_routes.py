@@ -520,7 +520,7 @@ async def test_inbound_run_routes_exotel_without_account_id_by_called_number():
         patch("api.routes.telephony.call_concurrency") as mock_concurrency,
         patch(
             "api.routes.telephony._create_inbound_workflow_run",
-            new=AsyncMock(return_value=999),
+            new=AsyncMock(return_value=(999, None)),
         ),
     ):
         mock_db.find_inbound_route_by_account = AsyncMock()

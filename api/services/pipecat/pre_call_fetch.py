@@ -4,6 +4,7 @@ Executes an HTTP request before a voice call starts to enrich the
 call context with data from external systems (CRM, ERP, etc.).
 """
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -20,10 +21,17 @@ from api.errors.failure import (
     log_failure,
     redact_failure_message,
 )
+from api.services.workflow.dto import ReactFlowDTO
 from api.services.workflow.initial_context import merge_external_initial_context
+from api.services.workflow.workflow_graph import WorkflowGraph
 from api.utils.credential_auth import build_auth_header
 
 PRE_CALL_FETCH_TIMEOUT_SECONDS = 10
+
+# Fetches the inbound webhook started, by run, until the call's pipeline takes
+# them over. One whose stream never reaches this process is dropped.
+_STARTED_FETCH_TTL_SECONDS = 60
+_started_fetches: dict[int, "asyncio.Task[PreCallFetchResult]"] = {}
 
 
 @dataclass(frozen=True)
@@ -249,3 +257,59 @@ async def execute_pre_call_fetch_result(
             workflow_id=workflow_id,
         )
         return PreCallFetchResult()
+
+
+def start_pre_call_fetch(
+    start_node, direction: str | None, *, workflow_run_id: int, **request
+) -> "asyncio.Task[PreCallFetchResult] | None":
+    """Take the run's fetch the inbound webhook started, else start one."""
+    task = _started_fetches.pop(workflow_run_id, None)
+    if (
+        task is None
+        and start_node
+        and start_node.should_run_pre_call_fetch(direction)
+        and start_node.pre_call_fetch_url
+    ):
+        logger.info(
+            f"Pre-call fetch enabled for {direction or 'unknown'} workflow run "
+            f"{workflow_run_id}, firing request to {start_node.pre_call_fetch_url}"
+        )
+        task = asyncio.create_task(
+            execute_pre_call_fetch_result(
+                url=start_node.pre_call_fetch_url,
+                credential_uuid=start_node.pre_call_fetch_credential_uuid,
+                workflow_run_id=workflow_run_id,
+                **request,
+            )
+        )
+    return task
+
+
+def start_inbound_pre_call_fetch(
+    workflow, run_definition, workflow_run_id: int, webhook
+) -> None:
+    """Start an inbound run's fetch while the carrier connects its media stream."""
+    try:
+        graph = WorkflowGraph(
+            ReactFlowDTO.model_validate(run_definition.workflow_json),
+            skip_instance_constraints_for={"trigger"},
+        )
+    except Exception:  # noqa: BLE001 - the pipeline builds the graph and reports it
+        logger.warning(f"Pre-call fetch not started early for run {workflow_run_id}")
+        return
+    task = start_pre_call_fetch(
+        graph.nodes.get(graph.start_node_id),
+        "inbound",
+        workflow_run_id=workflow_run_id,
+        call_context_vars={
+            "caller_number": webhook.from_number,
+            "called_number": webhook.to_number,
+        },
+        workflow_id=workflow.id,
+        organization_id=workflow.organization_id,
+    )
+    if task is not None:
+        _started_fetches[workflow_run_id] = task
+        asyncio.get_running_loop().call_later(
+            _STARTED_FETCH_TTL_SECONDS, _started_fetches.pop, workflow_run_id, None
+        )

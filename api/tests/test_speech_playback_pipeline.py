@@ -9,11 +9,17 @@ from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
     Frame,
+    FunctionCallInProgressFrame,
+    FunctionCallResultFrame,
+    FunctionCallsStartedFrame,
     InterruptionFrame,
+    LLMContextFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     ProposedUserStartedSpeakingFrame,
+    SpeechBoundaryFrame,
     TTSAudioRawFrame,
+    TTSSpeakFrame,
     TTSStartedFrame,
     TTSStoppedFrame,
 )
@@ -21,10 +27,12 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
+    LLMAssistantAggregator,
     LLMUserAggregator,
     LLMUserAggregatorParams,
 )
 from pipecat.processors.frame_processor import FrameProcessor
+from pipecat.services.llm_service import FunctionCallFromLLM
 from pipecat.tests.mock_transport import MockOutputTransport
 from pipecat.tests.mock_tts_service import MockTTSService
 from pipecat.transports.base_transport import TransportParams
@@ -92,8 +100,24 @@ class HeldResponseBoundaries(FrameProcessor):
             await self.push_frame(frame, direction)
 
 
+class Recorder(FrameProcessor):
+    def __init__(self):
+        super().__init__()
+        self.frames = []
+        self.context_pushed = asyncio.Event()
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        self.frames.append(frame)
+        if isinstance(frame, LLMContextFrame):
+            self.context_pushed.set()
+        await self.push_frame(frame, direction)
+
+
 class PlaybackHarness:
-    def __init__(self, *, hold_boundaries=False, timestamped_tts=False):
+    def __init__(
+        self, *, hold_boundaries=False, timestamped_tts=False, assistant=False
+    ):
         self.engine = PipecatEngine(workflow=None, call_context_vars={})
         # A timestamped TTS releases a response's end when its audio finishes.
         self.tts = ControlledTTS(push_text_frames=not timestamped_tts)
@@ -116,6 +140,11 @@ class PlaybackHarness:
             self.boundaries.hold = True
             processors.append(self.boundaries)
         processors.append(self.output)
+        # Records what the output plays and the assistant aggregator's requests.
+        self.recorder = Recorder()
+        self.assistant = LLMAssistantAggregator(LLMContext())
+        if assistant:
+            processors.extend([self.recorder, self.assistant])
         self.worker = PipelineWorker(Pipeline(processors), enable_rtvi=False)
         self.engine.call_worker = self.worker
         # Configured speech enters the generation stage, as in a child worker.
@@ -673,3 +702,51 @@ async def test_announcement_rechecks_eligibility_after_audio_preparation(playbac
     assert speech.outcome is PlaybackOutcome.SKIPPED
     assert not playback.engine.speech_playback.pending
     assert not playback.output.writing.is_set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("playback", [{"assistant": True}], indirect=True)
+@pytest.mark.parametrize("source", ["text", "recording"])
+async def test_tool_answer_runs_while_its_waiting_line_plays(playback, source):
+    call = {"function_name": "check", "tool_call_id": "1", "arguments": {}}
+    await playback.tts.queue_frame(
+        FunctionCallsStartedFrame([FunctionCallFromLLM(**call, context=None)])
+    )
+    await playback.tts.queue_frame(
+        FunctionCallInProgressFrame(**call, cancel_on_interruption=True)
+    )
+    async with asyncio.timeout(1):
+        while "1" not in playback.assistant._function_calls_in_progress:
+            await asyncio.sleep(0.01)
+    playback.output.release.clear()
+    line = await playback.queue(source, "Let me check.", timeout=5)
+    await asyncio.wait_for(playback.output.writing.wait(), 1)
+
+    await playback.tts.queue_frame(FunctionCallResultFrame(**call, result={"slots": 2}))
+    # The answer is requested while the waiting line still plays...
+    await asyncio.wait_for(playback.recorder.context_pushed.wait(), 1)
+    assert not line.done
+
+    # ...and plays after the line, which is not cut.
+    await playback.tts.queue_frame(TTSSpeakFrame("Two slots are open."))
+    playback.output.release.set()
+    assert await asyncio.wait_for(line.wait(), 1)
+    frames = playback.recorder.frames
+
+    def first(match):
+        return next((i for i, f in enumerate(frames) if match(f)), None)
+
+    def answer(f):
+        return isinstance(f, TTSStartedFrame) and f.append_to_context
+
+    def line_end(f):
+        return (
+            isinstance(f, SpeechBoundaryFrame)
+            and f.speech_id == line.id
+            and not f.beginning
+        )
+
+    async with asyncio.timeout(1):
+        while first(answer) is None:
+            await asyncio.sleep(0.01)
+    assert first(line_end) < first(answer)

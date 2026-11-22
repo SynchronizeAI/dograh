@@ -148,7 +148,10 @@ async def test_inbound_metadata_survives_run_creation_and_tuner_delivery(provide
     }
     normalized = registry.get(provider_name).provider_cls.parse_inbound_webhook(webhook)
     workflow = SimpleNamespace(id=33, organization_id=11)
-    run_inputs = SimpleNamespace(definition_id=77, use_draft=False)
+    definition = SimpleNamespace(id=77, workflow_json={})
+    run_inputs = SimpleNamespace(
+        definition_id=77, definition=definition, use_draft=False
+    )
     create_run = AsyncMock(return_value=SimpleNamespace(id=42))
     with (
         patch(
@@ -161,7 +164,7 @@ async def test_inbound_metadata_survives_run_creation_and_tuner_delivery(provide
         ),
         patch("api.routes.telephony.db_client.create_workflow_run", create_run),
     ):
-        run_id = await asyncio.wait_for(
+        run_id, pinned_definition = await asyncio.wait_for(
             _create_inbound_workflow_run(
                 workflow_id=33,
                 user_id=7,
@@ -175,6 +178,7 @@ async def test_inbound_metadata_survives_run_creation_and_tuner_delivery(provide
 
     stored = create_run.await_args.kwargs
     assert run_id == 42
+    assert pinned_definition is definition
     assert stored["gathered_context"]["call_id"] == "carrier-id"
     assert stored["organization_id"] == 11
     assert stored["initial_context"]["telephony_configuration_id"] == 55

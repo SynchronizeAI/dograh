@@ -8,7 +8,7 @@ Pre-Call Data Fetch lets you enrich the call context and select model settings b
 ## How It Works
 
 1. Dograh resolves and saves the call's model setup from the organization default, the workflow override, and the API-trigger override, checks billing and quota, and connects the call.
-2. As soon as the call is connected, Dograh sends a **POST** request to your endpoint. The caller hears a ringer while the request is in flight. For outbound calls this happens after the callee answers.
+2. Dograh starts the request early for inbound calls arriving on the `/inbound/run` route, while the carrier connects the call's audio. Calls on the legacy `/inbound/{workflow_id}` route start the fetch when the call's pipeline is built. For outbound calls, Dograh sends the request after the callee answers. The caller hears a ringer if the request is still in flight once the call is connected.
 3. Your API returns context variables, model overrides, or both.
 4. Dograh merges the context, applies supported model overrides, and validates the result.
 5. The agent starts and plays its greeting.
@@ -49,7 +49,7 @@ Dograh sends a `POST` request with the following JSON payload:
 
 The `Content-Type` header is `application/json`. If you configured a credential, its authentication header is included. Caller and callee numbers are supplied when known at the time the call connects.
 
-The request includes an `Idempotency-Key` header such as `dograh-pre-call-456`. Dograh sends the request once per call. Make your endpoint idempotent using this key if it performs writes or other side effects.
+The request includes an `Idempotency-Key` header such as `dograh-pre-call-456`. Dograh normally sends one request per call. If the call's media stream is handled by a different process, or reaches the pipeline before the inbound webhook returns, Dograh sends a second request with the same key. Make your endpoint idempotent using this key if it performs writes or other side effects.
 
 ## Expected Response Format
 

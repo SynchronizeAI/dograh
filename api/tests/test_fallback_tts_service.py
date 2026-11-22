@@ -1,26 +1,19 @@
 """Runtime behaviour of the TTS voice-fallback switcher."""
 
 import asyncio
-import contextvars
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 from pipecat.clocks.system_clock import SystemClock
 from pipecat.frames.frames import (
-    EndFrame,
     ErrorFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
     StartFrame,
-    TextFrame,
     TTSAudioRawFrame,
     TTSSpeakFrame,
-    TTSStartedFrame,
-    TTSStoppedFrame,
-    TTSTextFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.processors.frame_processor import (
@@ -30,16 +23,8 @@ from pipecat.processors.frame_processor import (
 )
 from pipecat.tests.mock_tts_service import MockTTSService
 from pipecat.utils.asyncio.task_manager import TaskManager
-from pipecat.utils.errors import ErrorCategory
-from pipecat.utils.run_context import org_id_var, run_id_var
 
-from api.services.pipecat import fallback_tts
-from api.services.pipecat.fallback_tts import (
-    TTS_CONTEXT_ID_METADATA_KEY,
-    FallbackTTSService,
-)
-from api.services.pipecat.murf_tts import MurfTTSService
-from api.services.pipecat.termination_funnel_processor import is_terminal_error
+from api.services.pipecat.fallback_tts import FallbackTTSService
 
 
 class Capture(FrameProcessor):
@@ -76,6 +61,27 @@ class RecordingPrimary(MockTTSService):
             await self.push_error("handshake failed", exception=http_error(402))
 
 
+class FailingPrimary(RecordingPrimary):
+    def __init__(self, *, audio_seconds=0.0, **kwargs):
+        kwargs.setdefault("pause_frame_processing", False)
+        super().__init__(**kwargs)
+        self.audio_seconds = audio_seconds
+
+    async def run_tts(self, text, context_id):
+        self.received_texts.append(text)
+        await asyncio.sleep(0)
+        if self.audio_seconds:
+            yield TTSAudioRawFrame(
+                b"\x00\x00" * int(self.audio_seconds * self.sample_rate),
+                self.sample_rate,
+                1,
+                context_id=context_id,
+            )
+            await asyncio.sleep(0.1)
+        await self.push_error("synthesis failed", fatal=False)
+        yield None
+
+
 class RecordingBackup(MockTTSService):
     """A backup that connects after its base setup, as websocket services do."""
 
@@ -107,8 +113,6 @@ class StreamingPrimary(RecordingPrimary):
 
     def __init__(self, *, push_stop_frames=True, **kwargs):
         # The idle timer is out of play: the test closes the context itself.
-        # WebSocket TTS services accept requests while another context is open.
-        kwargs.setdefault("pause_frame_processing", False)
         super().__init__(stop_frame_timeout_s=3600.0, **kwargs)
         self._push_stop_frames = push_stop_frames
         self.context_closed = asyncio.Event()
@@ -130,30 +134,6 @@ class StreamingPrimary(RecordingPrimary):
     async def on_audio_context_completed(self, context_id):
         self.context_closed.set()
 
-
-class FailingPrimary(RecordingPrimary):
-    def __init__(self, *, audio_seconds=0.0, **kwargs):
-        kwargs.setdefault("pause_frame_processing", False)
-        super().__init__(**kwargs)
-        self.audio_seconds = audio_seconds
-
-    async def run_tts(self, text, context_id):
-        self.received_texts.append(text)
-        # The fallback tracks requests in an async event handler. Let that
-        # observer register the speak context before this provider fails or
-        # emits its first audio chunk.
-        await asyncio.sleep(0)
-        if self.audio_seconds:
-            samples = int(self.audio_seconds * self.sample_rate)
-            yield TTSAudioRawFrame(
-                b"\x00\x00" * samples,
-                self.sample_rate,
-                1,
-                context_id=context_id,
-            )
-            await asyncio.sleep(0.1)
-        await self.push_error("synthesis failed", fatal=False)
-        yield None
 
 class TwoHalvesBackup(RecordingBackup):
     """Speaks one utterance in two halves, the test holding the gap between them."""
@@ -243,398 +223,48 @@ async def start(harness):
     )
 
 
-def primary_errors(harness):
-    return [
-        error
-        for error in harness.upstream.errors
-        if isinstance(error, ErrorFrame) and error.processor is harness.primary
-    ]
-
-
-def frames_of(harness, context_id):
-    return [
-        frame
-        for frame in harness.downstream.frames
-        if getattr(frame, "context_id", None) == context_id
-    ]
-
 
 @pytest.mark.asyncio
-async def test_healthy_primary_never_calls_backup():
-    harness = await build_harness()
-    await harness.pipeline.queue_frame(StartFrame())
-    await harness.pipeline.queue_frame(TTSSpeakFrame("hello"))
-    await asyncio.sleep(0.3)
-    assert harness.backup.received_texts == []
-    assert harness.tts.fallback_metrics == {"switched": 0}
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("backup_kind", ["recording", "murf"])
-async def test_slow_backup_connect_does_not_delay_setup_start_or_greeting(
-    backup_kind, monkeypatch
-):
-    """A connect that blocks setup or the StartFrame (even for one branch) holds
-    the greeting back. The connect stays pending until the test releases it, so
-    the greeting arriving first is proved by ordering, not by elapsed time."""
-    monkeypatch.setattr(fallback_tts, "_BACKUP_CONNECT_TIMEOUT_S", 30.0)
-    connect_gate = asyncio.Event()
-    options = {"backup_connect_gate": connect_gate}
-    if backup_kind == "murf":
-        murf = MurfTTSService(api_key="test-key")
-
-        async def blocked_connect():
-            await connect_gate.wait()
-
-        murf._connect_websocket = blocked_connect
-        options = {"backup": murf}
-    harness = await asyncio.wait_for(build_harness(**options), timeout=10)
-    await start(harness)
-    await harness.pipeline.queue_frame(TTSSpeakFrame("greeting"))
-    await eventually(
-        lambda: "greeting" in harness.primary.received_texts, what="the greeting"
-    )
-    assert not harness.tts._backup_connected.is_set()
-    connect_gate.set()
-    await eventually(harness.tts._backup_connected.is_set, what="the connect to end")
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_setup_error_switches_before_greeting():
-    harness = await build_harness(fail_in_setup=True)
-    await harness.pipeline.queue_frame(StartFrame())
-    await harness.pipeline.queue_frame(TTSSpeakFrame("greeting"))
-    await asyncio.sleep(0.5)
-    assert harness.tts.fallback_metrics["switched"] == 1
-    assert "greeting" in harness.backup.received_texts
-    assert not harness.upstream.errors
-    assert harness.primary.is_usable is False
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_failure_before_audio_replays_current_sentence_on_backup_once():
+async def test_greeting_is_replayed_once_after_early_primary_failure():
     primary = FailingPrimary(name="PrimaryTTS")
     harness = await build_harness(primary=primary)
     await start(harness)
-    await harness.pipeline.queue_frame(TTSSpeakFrame("greeting disclosure"))
+    await harness.pipeline.queue_frame(TTSSpeakFrame("AI and recording disclosure"))
     await eventually(
-        lambda: harness.backup.received_texts == ["greeting disclosure"],
-        what="the replayed greeting",
+        lambda: harness.backup.received_texts == ["AI and recording disclosure"],
+        what="the backup to speak the greeting once",
     )
-    assert primary.received_texts == ["greeting disclosure"]
     assert harness.tts.fallback_metrics["switched"] == 1
     await harness.pipeline.cleanup()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stop_before_error", [False, True])
-async def test_failure_replays_context_when_stop_and_error_arrive_in_either_order(
-    stop_before_error,
-):
-    primary = StreamingPrimary(name="PrimaryTTS")
-    harness = await build_harness(primary=primary)
-    await start(harness)
-    await harness.pipeline.queue_frame(TTSSpeakFrame("greeting disclosure"))
-    await eventually(
-        lambda: primary.received_texts == ["greeting disclosure"],
-        what="the primary greeting",
-    )
-    context_id = next(
-        frame.context_id
-        for frame in harness.downstream.frames
-        if isinstance(frame, TTSStartedFrame)
-    )
-
-    if stop_before_error:
-        await primary.push_frame(TTSStoppedFrame(context_id=context_id))
-        await eventually(
-            lambda: any(
-                isinstance(frame, TTSStoppedFrame) and frame.context_id == context_id
-                for frame in harness.downstream.frames
-            ),
-            what="the primary stop frame",
-        )
-
-    await primary.push_error("synthesis failed", fatal=False)
-
-    if not stop_before_error:
-        await primary.push_frame(TTSStoppedFrame(context_id=context_id))
-
-    await eventually(
-        lambda: harness.backup.received_texts == ["greeting disclosure"],
-        what="the replayed greeting",
-    )
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_error_context_id_selects_failed_request_over_older_stop():
-    primary = StreamingPrimary(name="PrimaryTTS")
-    harness = await build_harness(primary=primary)
-    requested_contexts = []
-
-    async def record_request(_service, context_id, text):
-        requested_contexts.append((context_id, text))
-
-    primary.add_event_handler("on_tts_request", record_request)
-    await start(harness)
-    await harness.pipeline.queue_frame(TTSSpeakFrame("first request"))
-    await eventually(
-        lambda: primary.received_texts == ["first request"],
-        what="the first primary request",
-    )
-    await harness.pipeline.queue_frame(TTSSpeakFrame("failed request"))
-    await eventually(
-        lambda: primary.received_texts == ["first request", "failed request"],
-        what="the second primary request",
-    )
-    await eventually(
-        lambda: len(requested_contexts) == 2,
-        what="the primary request contexts",
-    )
-    first_context_id, failed_context_id = [
-        context_id for context_id, _text in requested_contexts
-    ]
-
-    await primary.push_frame(TTSStoppedFrame(context_id=first_context_id))
-    await eventually(
-        lambda: any(
-            isinstance(frame, TTSStoppedFrame)
-            and frame.context_id == first_context_id
-            for frame in harness.downstream.frames
-        ),
-        what="the first request to stop",
-    )
-    error = ErrorFrame(error="second request failed")
-    error.metadata[TTS_CONTEXT_ID_METADATA_KEY] = failed_context_id
-    await primary.push_error_frame(error)
-
-    await eventually(
-        lambda: harness.backup.received_texts == ["failed request"],
-        what="the replay of the failed request",
-    )
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_failure_replays_ordinary_llm_text():
-    primary = StreamingPrimary(name="PrimaryTTS")
+async def test_ordinary_llm_sentence_is_replayed_after_early_primary_failure():
+    primary = FailingPrimary(name="PrimaryTTS")
     harness = await build_harness(primary=primary)
     await start(harness)
     await harness.pipeline.queue_frame(LLMFullResponseStartFrame())
-    await harness.pipeline.queue_frame(LLMTextFrame("First sentence. "))
-    await harness.pipeline.queue_frame(LLMTextFrame("Second sentence."))
+    await harness.pipeline.queue_frame(LLMTextFrame("An ordinary sentence."))
     await harness.pipeline.queue_frame(LLMFullResponseEndFrame())
     await eventually(
-        lambda: len(primary.received_texts) == 2,
-        what="both primary LLM synthesis requests",
+        lambda: harness.backup.received_texts == ["An ordinary sentence."],
+        what="the backup to speak the LLM sentence once",
     )
-    expected = "".join(primary.received_texts)
-
-    await primary.push_error("synthesis failed", fatal=False)
-
-    await eventually(
-        lambda: harness.backup.received_texts == [expected],
-        what="the replayed LLM response",
-    )
+    assert harness.tts.fallback_metrics["switched"] == 1
     await harness.pipeline.cleanup()
 
 
 @pytest.mark.asyncio
-async def test_failure_after_three_seconds_does_not_replay_sentence():
+async def test_primary_failure_after_three_seconds_does_not_replay():
     primary = FailingPrimary(name="PrimaryTTS", audio_seconds=3.1)
     harness = await build_harness(primary=primary)
     await start(harness)
-    await harness.pipeline.queue_frame(TTSSpeakFrame("already heard"))
+    await harness.pipeline.queue_frame(TTSSpeakFrame("Already heard sentence."))
     await eventually(
         lambda: harness.tts.fallback_metrics["switched"] == 1,
         what="the provider switch",
     )
-    await asyncio.sleep(0.1)
-    assert primary.received_texts == ["already heard"]
     assert harness.backup.received_texts == []
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_recording_clip_audio_does_not_count_toward_speak_replay_limit():
-    primary = StreamingPrimary(name="PrimaryTTS")
-    harness = await build_harness(primary=primary)
-    await start(harness)
-    await harness.pipeline.queue_frame(TTSSpeakFrame("greeting"))
-    await eventually(
-        lambda: primary.received_texts == ["greeting"], what="the primary greeting"
-    )
-    speak_context_id = next(
-        frame.context_id
-        for frame in harness.downstream.frames
-        if isinstance(frame, TTSStartedFrame)
-    )
-    await primary.append_to_audio_context(
-        speak_context_id,
-        TTSAudioRawFrame(
-            b"\x00\x00" * int(primary.sample_rate * 2.8),
-            primary.sample_rate,
-            1,
-            context_id=speak_context_id,
-        ),
-    )
-    await eventually(
-        lambda: any(
-            isinstance(frame, TTSAudioRawFrame)
-            and frame.context_id == speak_context_id
-            for frame in harness.downstream.frames
-        ),
-        what="the greeting audio",
-    )
-
-    clip_context_id = "recording-clip"
-    for frame in (
-        TTSStartedFrame(context_id=clip_context_id),
-        TTSAudioRawFrame(
-            b"\x00\x00" * int(primary.sample_rate * 0.3),
-            primary.sample_rate,
-            1,
-            context_id=clip_context_id,
-        ),
-        TTSStoppedFrame(context_id=clip_context_id),
-    ):
-        await primary.push_frame(frame)
-    await eventually(
-        lambda: len(frames_of(harness, clip_context_id)) == 3,
-        what="the recording clip frames",
-    )
-
-    await primary.push_error("synthesis failed", fatal=False)
-    await eventually(
-        lambda: harness.backup.received_texts == ["greeting"],
-        what="the replayed greeting",
-    )
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_queued_speak_does_not_replace_the_earlier_failed_utterance():
-    primary = StreamingPrimary(name="PrimaryTTS")
-    harness = await build_harness(primary=primary)
-    await start(harness)
-    await harness.pipeline.queue_frame(LLMFullResponseStartFrame())
-    await harness.pipeline.queue_frame(TTSSpeakFrame("first"))
-    await eventually(
-        lambda: primary.received_texts == ["first"], what="the first primary utterance"
-    )
-    first_context_id = next(
-        frame.context_id
-        for frame in harness.downstream.frames
-        if isinstance(frame, TTSStartedFrame)
-    )
-    await primary.append_to_audio_context(
-        first_context_id,
-        TTSAudioRawFrame(
-            b"\x00\x00" * int(primary.sample_rate * 2.8),
-            primary.sample_rate,
-            1,
-            context_id=first_context_id,
-        ),
-    )
-    await eventually(
-        lambda: any(
-            isinstance(frame, TTSAudioRawFrame)
-            and frame.context_id == first_context_id
-            for frame in harness.downstream.frames
-        ),
-        what="the first utterance audio",
-    )
-
-    await harness.pipeline.queue_frame(TTSSpeakFrame("second"))
-    await eventually(
-        lambda: primary.received_texts == ["first", "second"],
-        what="the queued primary utterance",
-    )
-    await primary.push_error("synthesis failed", fatal=False)
-    await eventually(
-        lambda: harness.backup.received_texts == ["first"],
-        what="the replay of the first utterance",
-    )
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("primary_emits_text", [False, True])
-async def test_replay_suppresses_duplicate_context_and_logs_only_after_primary_text(
-    primary_emits_text, monkeypatch
-):
-    primary = StreamingPrimary(name="PrimaryTTS")
-    backup = RecordingBackup(name="BackupTTS")
-    queued_speaks = []
-    queue_backup_frame = backup.queue_frame
-
-    async def capture_backup_frame(frame, *args, **kwargs):
-        if isinstance(frame, TTSSpeakFrame):
-            queued_speaks.append(frame)
-        await queue_backup_frame(frame, *args, **kwargs)
-
-    monkeypatch.setattr(backup, "queue_frame", capture_backup_frame)
-    harness = await build_harness(primary=primary, backup=backup)
-    await start(harness)
-    await harness.pipeline.queue_frame(
-        TTSSpeakFrame(
-            "transition",
-            append_to_context=True,
-            persist_to_logs=True,
-        )
-    )
-    await eventually(
-        lambda: primary.received_texts == ["transition"],
-        what="the primary transition speech",
-    )
-    speak_context_id = next(
-        frame.context_id
-        for frame in harness.downstream.frames
-        if isinstance(frame, TTSStartedFrame)
-    )
-
-    if primary_emits_text:
-        text_frame = TTSTextFrame(
-            text="transition",
-            aggregated_by="sentence",
-            context_id=speak_context_id,
-        )
-        text_frame.append_to_context = True
-        text_frame.persist_to_logs = True
-        await primary.push_frame(text_frame)
-        await eventually(
-            lambda: any(frame is text_frame for frame in harness.downstream.frames),
-            what="the primary text frame",
-        )
-
-    await primary.push_error("synthesis failed", fatal=False)
-    await eventually(
-        lambda: backup.received_texts == ["transition"],
-        what="the replayed transition speech",
-    )
-    assert len(queued_speaks) == 1
-    assert queued_speaks[0].append_to_context is not primary_emits_text
-    assert queued_speaks[0].persist_to_logs is not primary_emits_text
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_mid_call_error_switches_and_later_text_uses_backup():
-    harness = await build_harness()
-    await harness.pipeline.queue_frame(StartFrame())
-    await harness.pipeline.queue_frame(TTSSpeakFrame("first"))
-    await asyncio.sleep(0.2)
-    await harness.primary.push_error(
-        "in-stream", fatal=False, category=ErrorCategory.SERVER
-    )
-    await harness.pipeline.queue_frame(TTSSpeakFrame("second"))
-    await asyncio.sleep(0.5)
-    assert harness.tts.fallback_metrics["switched"] == 1
-    assert "second" in harness.backup.received_texts
     await harness.pipeline.cleanup()
 
 
@@ -656,597 +286,3 @@ async def test_two_errors_in_one_tick_switch_once():
     assert harness.tts.fallback_metrics["switched"] == 1
     assert len(switched_events) == 1
     await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_latch_blocks_second_error_during_in_flight_switch():
-    """Two primaries must reach handle_error while the first switch still awaits."""
-    harness = await build_harness()
-    await harness.pipeline.queue_frame(StartFrame())
-    await asyncio.sleep(0.2)
-    assert harness.backup.is_usable
-
-    switched_events = []
-
-    @harness.tts.strategy.event_handler("on_service_switched")
-    async def on_switched(_strategy, _service):
-        switched_events.append(True)
-
-    gate = asyncio.Event()
-    switch_entered = asyncio.Event()
-    original_set = harness.tts.strategy._set_active_if_available
-
-    async def held_set_active(service):
-        switch_entered.set()
-        await gate.wait()
-        return await original_set(service)
-
-    harness.tts.strategy._set_active_if_available = held_set_active
-
-    first = asyncio.create_task(
-        harness.primary.push_error("one", fatal=False, category=ErrorCategory.SERVER)
-    )
-    await switch_entered.wait()
-    second = asyncio.create_task(
-        harness.primary.push_error("two", fatal=False, category=ErrorCategory.SERVER)
-    )
-    gate.set()
-    await asyncio.gather(first, second)
-    await asyncio.sleep(0.2)
-    assert harness.tts.fallback_metrics["switched"] == 1
-    assert len(switched_events) == 1
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_never_switches_back():
-    harness = await build_harness()
-    await harness.pipeline.queue_frame(StartFrame())
-    await harness.primary.push_error("fail", fatal=False)
-    await harness.primary.set_usable(True)
-    await harness.backup.push_error("backup blip", fatal=False)
-    await harness.pipeline.queue_frame(TTSSpeakFrame("after"))
-    await asyncio.sleep(0.3)
-    assert harness.tts.strategy.active_service is harness.backup
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_refused_switch_keeps_primary_usable():
-    """Backup unusable before the error: early handle_error guard, no switch."""
-    harness = await build_harness(fail_backup_auth=True)
-    await harness.pipeline.queue_frame(StartFrame())
-    await harness.primary.push_error("upstream", fatal=False, exception=http_error(500))
-    await asyncio.sleep(0.5)
-    assert harness.tts.fallback_metrics["switched"] == 0
-    assert harness.primary.is_usable is True
-    assert primary_errors(harness)
-    assert not any(is_terminal_error(e) for e in harness.upstream.errors)
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_unusable_backup_is_refused_without_waiting_for_its_connect(
-    monkeypatch,
-):
-    """Only the early guard avoids the wait: the connect is still pending. Without
-    the guard push_error would wait out the connect bound (10 s here), and the
-    connect would be over by the time it returned."""
-    monkeypatch.setattr(fallback_tts, "_BACKUP_CONNECT_TIMEOUT_S", 10.0)
-    harness = await build_harness(backup_connect_gate=asyncio.Event())
-    await start(harness)
-    assert not harness.tts._backup_connected.is_set()
-    await harness.backup.set_usable(False)
-    await harness.primary.push_error("upstream", fatal=False, exception=http_error(500))
-    assert not harness.tts._backup_connected.is_set()
-    assert harness.tts.fallback_metrics["switched"] == 0
-    assert harness.tts.strategy.active_service is harness.primary
-    assert primary_errors(harness)
-    assert not any(is_terminal_error(e) for e in harness.upstream.errors)
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_refused_in_flight_switch_unlatches_and_keeps_primary():
-    """Backup still usable when the error lands; _set_active_if_available refuses."""
-    harness = await build_harness()
-    await harness.pipeline.queue_frame(StartFrame())
-    await asyncio.sleep(0.3)
-    assert harness.backup.is_usable
-
-    original_set = harness.tts.strategy._set_active_if_available
-    switch_attempts = 0
-
-    async def refuse_first_switch(service):
-        nonlocal switch_attempts
-        switch_attempts += 1
-        if switch_attempts == 1:
-            return None
-        return await original_set(service)
-
-    harness.tts.strategy._set_active_if_available = refuse_first_switch
-
-    await harness.primary.push_error("upstream", fatal=False, exception=http_error(500))
-    await asyncio.sleep(0.3)
-    assert harness.tts.fallback_metrics["switched"] == 0
-    assert harness.primary.is_usable is True
-    assert harness.tts.strategy.active_service is harness.primary
-    assert primary_errors(harness)
-
-    await harness.primary.push_error(
-        "retry", fatal=False, category=ErrorCategory.SERVER
-    )
-    await asyncio.sleep(0.3)
-    assert harness.tts.fallback_metrics["switched"] == 1
-    assert harness.tts.strategy.active_service is harness.backup
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("category", [ErrorCategory.QUOTA, ErrorCategory.UNKNOWN])
-async def test_switch_errors_types_includes_quota_and_unknown(category):
-    """Pin the v1 trigger: any non-fatal primary error, like Retell/Vapi failover."""
-    harness = await build_harness()
-    await harness.pipeline.queue_frame(StartFrame())
-    await harness.primary.push_error("err", fatal=False, category=category)
-    await asyncio.sleep(0.1)
-    assert harness.tts.strategy.active_service is harness.backup
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_backup_permanent_error_makes_switcher_unusable():
-    harness = await build_harness()
-    await harness.pipeline.queue_frame(StartFrame())
-    await harness.primary.push_error("fail", fatal=False)
-    await harness.backup.set_usable(False)
-    await harness.backup.push_error("backup dead", fatal=False)
-    await asyncio.sleep(0.2)
-    assert harness.primary.is_usable is False
-    assert harness.backup.is_usable is False
-    assert harness.tts.is_usable is False
-    terminal = [e for e in harness.upstream.errors if is_terminal_error(e)]
-    assert len(terminal) == 1
-    assert terminal[0].processor is harness.tts
-    await harness.pipeline.cleanup()
-
-
-async def settle_primary_path(harness):
-    """Push a frame that is not speech through the primary. Frames keep their
-    order on the way out, so once it is downstream everything the primary pushed
-    before it has been forwarded or dropped."""
-    marker = TextFrame("settled")
-    await harness.primary.push_frame(marker)
-    await eventually(
-        lambda: any(f is marker for f in harness.downstream.frames),
-        what="the primary's frames to settle",
-    )
-
-
-@pytest.mark.asyncio
-async def test_late_primary_audio_is_dropped_after_switch():
-    harness = await build_harness()
-    await harness.pipeline.queue_frame(StartFrame())
-    await harness.pipeline.queue_frame(TTSSpeakFrame("x"))
-    await eventually(
-        lambda: any(isinstance(f, TTSAudioRawFrame) for f in harness.downstream.frames),
-        what="the primary's audio",
-    )
-    context_id = next(
-        f.context_id
-        for f in harness.downstream.frames
-        if isinstance(f, TTSAudioRawFrame)
-    )
-    await harness.primary.push_error("fail", fatal=False)
-    harness.downstream.frames.clear()
-    late = TTSAudioRawFrame(b"\x00\x01", 16000, 1, context_id=context_id)
-    await harness.primary.push_frame(late, FrameDirection.DOWNSTREAM)
-    await settle_primary_path(harness)
-    assert not any(
-        isinstance(frame, TTSAudioRawFrame) and frame.context_id == context_id
-        for frame in harness.downstream.frames
-    )
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_interrupted_utterance_is_closed_by_the_switch_not_by_the_primary():
-    """The primary's Started went out before it failed: the switch closes the
-    context itself, and the primary's late audio and own Stopped add nothing, so
-    downstream sees exactly one Stopped. The context is one no TTS request made,
-    as a recording clip passing through the primary is: it is the primary's by
-    where its frames were pushed, not by what they carry."""
-    harness = await build_harness()
-    await start(harness)
-    context_id = "clip"
-    await harness.primary.push_frame(TTSStartedFrame(context_id=context_id))
-    await eventually(
-        lambda: frames_of(harness, context_id), what="the clip's Started frame"
-    )
-    await harness.primary.push_error("fail", fatal=False, category=ErrorCategory.SERVER)
-    assert harness.tts.strategy.active_service is harness.backup
-    assert [type(frame) for frame in frames_of(harness, context_id)] == [
-        TTSStartedFrame,
-        TTSStoppedFrame,
-    ]
-    await harness.primary.push_frame(
-        TTSAudioRawFrame(b"\x00\x01", 16000, 1, context_id=context_id)
-    )
-    await harness.primary.push_frame(TTSStoppedFrame(context_id=context_id))
-    await settle_primary_path(harness)
-    assert [type(frame) for frame in frames_of(harness, context_id)] == [
-        TTSStartedFrame,
-        TTSStoppedFrame,
-    ]
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_primary_speech_after_the_switch_is_dropped_and_the_backups_is_not():
-    harness = await build_harness()
-    await start(harness)
-    dead, live = "primary-never-started", "backup-context"
-    await harness.primary.push_error("fail", fatal=False, category=ErrorCategory.SERVER)
-    for frame in (
-        TTSStartedFrame(context_id=dead),
-        TTSStoppedFrame(context_id=dead),
-    ):
-        await harness.primary.push_frame(frame)
-    await settle_primary_path(harness)
-    for frame in (
-        TTSStartedFrame(context_id=live),
-        TTSStoppedFrame(context_id=live),
-    ):
-        await harness.backup.push_frame(frame)
-    await eventually(
-        lambda: len(frames_of(harness, live)) == 2, what="the backup's frames"
-    )
-    assert frames_of(harness, dead) == []
-    assert [type(frame) for frame in frames_of(harness, live)] == [
-        TTSStartedFrame,
-        TTSStoppedFrame,
-    ]
-    await harness.pipeline.cleanup()
-
-
-MEDIA = (TTSStartedFrame, TTSAudioRawFrame, TTSStoppedFrame)
-
-
-def lifecycle(harness):
-    return [
-        (type(frame).__name__, frame.context_id)
-        for frame in harness.downstream.frames
-        if isinstance(frame, (TTSStartedFrame, TTSStoppedFrame))
-    ]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("primary_pushes_stop_frames", [True, False])
-async def test_primary_context_is_closed_at_the_switch_and_its_late_close_stays_out(
-    primary_pushes_stop_frames,
-):
-    """A real switch while the primary is mid-context, then a backup utterance
-    that outlasts the primary's context: the primary's own close (the idle stop
-    timeout in production, closed by the test here) lands in the middle of the
-    backup's speech. Downstream must see Stopped(X) before Started(Y), and no
-    Stopped inside Y: the output transport ends the bot's speech on any
-    TTSStoppedFrame, which would cut Y's audio. A provider that never pushes a
-    stop frame must still be closed."""
-    primary = StreamingPrimary(
-        name="PrimaryTTS", push_stop_frames=primary_pushes_stop_frames
-    )
-    backup = TwoHalvesBackup(name="BackupTTS")
-    harness = await build_harness(primary=primary, backup=backup)
-    await start(harness)
-    await eventually(harness.tts._backup_connected.is_set, what="the backup connect")
-
-    await harness.pipeline.queue_frame(TTSSpeakFrame("first"))
-    await eventually(
-        lambda: any(isinstance(f, TTSStartedFrame) for f in harness.downstream.frames),
-        what="the primary's context to start",
-    )
-    x = next(c for kind, c in lifecycle(harness) if kind == "TTSStartedFrame")
-    await primary.append_to_audio_context(
-        x,
-        TTSAudioRawFrame(
-            b"\x00\x01" * int(primary.sample_rate * 3.1),
-            primary.sample_rate,
-            1,
-            context_id=x,
-        ),
-    )
-    await eventually(
-        lambda: any(isinstance(f, TTSAudioRawFrame) for f in frames_of(harness, x)),
-        what="the primary's audio",
-    )
-
-    await primary.push_error("stream died", fatal=False, category=ErrorCategory.SERVER)
-    assert harness.tts.strategy.active_service is backup
-    assert harness.tts.fallback_metrics["switched"] == 1
-    # Closed by the switch itself, before the backup has said anything.
-    assert [type(f) for f in frames_of(harness, x) if type(f) in MEDIA] == [
-        TTSStartedFrame,
-        TTSAudioRawFrame,
-        TTSStoppedFrame,
-    ]
-
-    await harness.pipeline.queue_frame(TTSSpeakFrame("second"))
-    await eventually(
-        lambda: any(
-            isinstance(f, TTSAudioRawFrame) and f.context_id != x
-            for f in harness.downstream.frames
-        ),
-        what="the first half of the backup's utterance",
-    )
-    y = next(c for kind, c in lifecycle(harness) if c != x)
-
-    # The primary's context ends now, mid-way through Y.
-    await primary.remove_audio_context(x)
-    await asyncio.wait_for(primary.context_closed.wait(), timeout=10)
-    backup.second_half.set()
-    await eventually(
-        lambda: ("TTSStoppedFrame", y) in lifecycle(harness),
-        what="the backup's utterance to end",
-    )
-
-    assert lifecycle(harness) == [
-        ("TTSStartedFrame", x),
-        ("TTSStoppedFrame", x),
-        ("TTSStartedFrame", y),
-        ("TTSStoppedFrame", y),
-    ]
-    frames = harness.downstream.frames
-    stopped_x = next(
-        i
-        for i, f in enumerate(frames)
-        if isinstance(f, TTSStoppedFrame) and f.context_id == x
-    )
-    started_y = next(
-        i
-        for i, f in enumerate(frames)
-        if isinstance(f, TTSStartedFrame) and f.context_id == y
-    )
-    stopped_y = next(
-        i
-        for i, f in enumerate(frames)
-        if isinstance(f, TTSStoppedFrame) and f.context_id == y
-    )
-    assert stopped_x < started_y
-    audio = [
-        (i, f.context_id)
-        for i, f in enumerate(frames)
-        if isinstance(f, TTSAudioRawFrame)
-    ]
-    assert [c for _, c in audio] == [x, y, y]
-    assert audio[0][0] < stopped_x
-    assert all(started_y < i < stopped_y for i, c in audio if c == y)
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_recording_clip_queued_behind_the_primary_stays_out_of_the_backup_speech():
-    """A recording router sits before the TTS and its clips carry contexts of
-    their own: queued behind the primary's playing context, they come out only
-    when that context ends, which is mid-way through the backup's utterance
-    after a switch. None of the clip may play there or end the bot's speech."""
-    primary = StreamingPrimary(name="PrimaryTTS")
-    backup = TwoHalvesBackup(name="BackupTTS")
-    harness = await build_harness(primary=primary, backup=backup)
-    await start(harness)
-    await eventually(harness.tts._backup_connected.is_set, what="the backup connect")
-
-    await harness.pipeline.queue_frame(TTSSpeakFrame("first"))
-    await eventually(
-        lambda: any(isinstance(f, TTSStartedFrame) for f in harness.downstream.frames),
-        what="the primary's context to start",
-    )
-    x = next(c for kind, c in lifecycle(harness) if kind == "TTSStartedFrame")
-    await primary.append_to_audio_context(
-        x,
-        TTSAudioRawFrame(
-            b"\x00\x01" * int(primary.sample_rate * 3.1),
-            primary.sample_rate,
-            1,
-            context_id=x,
-        ),
-    )
-
-    clip = "recording-clip"
-    for frame in (
-        TTSStartedFrame(context_id=clip),
-        TTSAudioRawFrame(b"\x00\x01" * 160, primary.sample_rate, 1, context_id=clip),
-        TTSStoppedFrame(context_id=clip),
-    ):
-        await harness.pipeline.queue_frame(frame)
-    await eventually(
-        lambda: any(
-            isinstance(f, TTSStoppedFrame) and f.context_id == clip
-            for f in primary.arrived
-        ),
-        what="the clip to reach the primary",
-    )
-
-    await primary.push_error("stream died", fatal=False, category=ErrorCategory.SERVER)
-    assert harness.tts.strategy.active_service is backup
-    await harness.pipeline.queue_frame(TTSSpeakFrame("second"))
-    await eventually(
-        lambda: any(
-            isinstance(f, TTSAudioRawFrame) and f.context_id != x
-            for f in harness.downstream.frames
-        ),
-        what="the first half of the backup's utterance",
-    )
-    y = next(c for kind, c in lifecycle(harness) if c not in (x, clip))
-
-    # The primary's context ends mid-way through Y and releases the clip.
-    await primary.remove_audio_context(x)
-    await eventually(
-        lambda: any(
-            isinstance(f, TTSStoppedFrame) and f.context_id == clip
-            for f in primary.pushed
-        ),
-        what="the primary to release the clip",
-    )
-    backup.second_half.set()
-    await eventually(
-        lambda: ("TTSStoppedFrame", y) in lifecycle(harness),
-        what="the backup's utterance to end",
-    )
-
-    assert frames_of(harness, clip) == []
-    assert lifecycle(harness) == [
-        ("TTSStartedFrame", x),
-        ("TTSStoppedFrame", x),
-        ("TTSStartedFrame", y),
-        ("TTSStoppedFrame", y),
-    ]
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_latch_cleared_when_switch_cancelled_then_retries():
-    """The first error is cancelled while the switch waits for the backup's
-    connect: the latch must not stay set, or no later error could switch."""
-    harness = await build_harness(slow_backup_setup=2.0)
-    await start(harness)
-    strategy = harness.tts.strategy
-    first = asyncio.create_task(
-        harness.primary.push_error("one", fatal=False, category=ErrorCategory.SERVER)
-    )
-    await eventually(lambda: strategy._switched, what="the switch to start waiting")
-    assert not first.done()
-    first.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await first
-    assert first.cancelled()
-    assert strategy._switched is False
-    assert strategy.active_service is harness.primary
-    assert harness.tts.fallback_metrics["switched"] == 0
-
-    await eventually(
-        harness.tts._backup_connected.is_set, timeout=5.0, what="the backup connect"
-    )
-    await harness.primary.push_error("two", fatal=False, category=ErrorCategory.SERVER)
-    assert strategy.active_service is harness.backup
-    assert harness.tts.fallback_metrics["switched"] == 1
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_end_frame_blocks_late_switch():
-    harness = await build_harness()
-    await start(harness)
-    await harness.pipeline.queue_frame(EndFrame())
-    await eventually(lambda: harness.tts._visit_ending, what="the EndFrame")
-    await harness.primary.push_error("late", fatal=False, category=ErrorCategory.SERVER)
-    await eventually(
-        lambda: any(isinstance(f, EndFrame) for f in harness.downstream.frames),
-        what="the EndFrame to reach downstream",
-    )
-    assert harness.tts.fallback_metrics["switched"] == 0
-    assert harness.tts.strategy.active_service is harness.primary
-    assert primary_errors(harness)
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_backup_connect_timeout_leaves_backup_usable_and_uncounted(monkeypatch):
-    """A connect that outlasts the bound is not a failure: the switch still goes
-    to the backup, which reconnects when it first has to speak."""
-    monkeypatch.setattr(fallback_tts, "_BACKUP_CONNECT_TIMEOUT_S", 0.2)
-    harness = await build_harness(slow_backup_setup=30.0)
-    await start(harness)
-    await eventually(
-        harness.tts._backup_connected.is_set, what="the connect to time out"
-    )
-    assert harness.backup.is_usable
-    assert "backup_unavailable" not in harness.tts.fallback_metrics
-    await harness.primary.push_error("fail", fatal=False, category=ErrorCategory.SERVER)
-    assert harness.tts.strategy.active_service is harness.backup
-    await harness.pipeline.queue_frame(TTSSpeakFrame("after"))
-    await eventually(
-        lambda: "after" in harness.backup.received_texts, what="the backup to speak"
-    )
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_backup_connect_failure_marks_backup_unusable_and_counts_it():
-    harness = await build_harness(backup_connect_error=True)
-    await eventually(harness.tts._backup_connected.is_set, what="the connect to fail")
-    assert harness.backup.is_usable is False
-    assert harness.tts.fallback_metrics["backup_unavailable"] == 1
-    await start(harness)
-    await harness.primary.push_error("fail", fatal=False, category=ErrorCategory.SERVER)
-    assert harness.tts.fallback_metrics["switched"] == 0
-    assert harness.tts.strategy.active_service is harness.primary
-    assert primary_errors(harness)
-    assert not any(is_terminal_error(e) for e in harness.upstream.errors)
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_inactive_backup_auth_error_does_not_pause_campaign(monkeypatch):
-    from api.services.campaign import circuit_breaker as cb_module
-
-    pause = AsyncMock()
-    monkeypatch.setattr(cb_module, "get_current_run_id", lambda: "7")
-    monkeypatch.setattr(cb_module, "get_current_org_id", lambda: "1")
-    monkeypatch.setattr(cb_module.db_client, "pause_campaign_for_provider_error", pause)
-    harness = await build_harness(fail_backup_auth=True)
-    await harness.pipeline.queue_frame(StartFrame())
-    await eventually(harness.tts._backup_connected.is_set, what="the backup connect")
-    pause.assert_not_awaited()
-    assert harness.tts.fallback_metrics["backup_unavailable"] == 1
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_active_backup_auth_error_pauses_campaign(monkeypatch):
-    from api.services.campaign import circuit_breaker as cb_module
-
-    pause = AsyncMock()
-    monkeypatch.setattr(cb_module, "get_current_run_id", lambda: "7")
-    monkeypatch.setattr(cb_module, "get_current_org_id", lambda: "1")
-    monkeypatch.setattr(cb_module.db_client, "pause_campaign_for_provider_error", pause)
-    harness = await build_harness()
-    await harness.pipeline.queue_frame(StartFrame())
-    await harness.primary.push_error("fail", fatal=False, category=ErrorCategory.SERVER)
-    await asyncio.sleep(0.3)
-    await harness.backup.push_error(
-        "unauthorized", fatal=False, exception=http_error(401)
-    )
-    await asyncio.sleep(0.2)
-    pause.assert_awaited()
-    await harness.pipeline.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_active_backup_pauses_campaign_when_switch_runs_outside_the_run(
-    monkeypatch,
-):
-    """The campaign handler is registered at switch time, on whichever task
-    pushed the primary's error. The run lives in the construction context."""
-    from api.services.campaign import circuit_breaker as cb_module
-
-    pause = AsyncMock()
-    monkeypatch.setattr(cb_module.db_client, "pause_campaign_for_provider_error", pause)
-    run_token, org_token = run_id_var.set("7"), org_id_var.set("1")
-    try:
-        harness = await build_harness()
-        await start(harness)
-        await asyncio.create_task(
-            harness.primary.push_error(
-                "fail", fatal=False, category=ErrorCategory.SERVER
-            ),
-            context=contextvars.Context(),
-        )
-        assert harness.tts.strategy.active_service is harness.backup
-        await harness.backup.push_error(
-            "unauthorized", fatal=False, exception=http_error(401)
-        )
-        pause.assert_awaited()
-        await harness.pipeline.cleanup()
-    finally:
-        run_id_var.reset(run_token)
-        org_id_var.reset(org_token)

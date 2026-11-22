@@ -28,8 +28,6 @@ from pipecat.services.settings import TTSSettings
 from pipecat.services.tts_service import TextAggregationMode, WebsocketTTSService
 from pipecat.utils.tracing.service_decorators import traced_tts
 
-from api.services.pipecat.fallback_tts import TTS_CONTEXT_ID_METADATA_KEY
-
 try:
     from websockets.asyncio.client import ClientConnection
     from websockets.asyncio.client import connect as websocket_connect
@@ -221,13 +219,10 @@ class MurfTTSService(WebsocketTTSService):
         await super().cancel(frame)
         await self._disconnect()
 
-    async def _connect(self, context_id: str | None = None):
+    async def _connect(self):
         await super()._connect()
 
-        if context_id is None:
-            await self._connect_websocket()
-        else:
-            await self._connect_websocket(context_id)
+        await self._connect_websocket()
 
         if self._websocket and (
             self._receive_task is None or self._receive_task.done()
@@ -245,7 +240,7 @@ class MurfTTSService(WebsocketTTSService):
 
         await self._disconnect_websocket()
 
-    async def _connect_websocket(self, context_id: str | None = None) -> None:
+    async def _connect_websocket(self) -> None:
         try:
             if self._websocket and self._websocket.state is State.OPEN:
                 return
@@ -268,10 +263,8 @@ class MurfTTSService(WebsocketTTSService):
         except Exception as e:
             logger.error(f"{self} initialization error: {e}")
             self._websocket = None
-            await self.push_error_frame(
-                self._tts_error_frame(
-                    f"{self} connection error: {e}", context_id, exception=e
-                )
+            await self.push_error(
+                error_msg=f"{self} connection error: {e}", exception=e
             )
 
     async def _send_advanced_settings(self) -> None:
@@ -315,17 +308,6 @@ class MurfTTSService(WebsocketTTSService):
             return self._websocket
         raise Exception("Websocket not connected")
 
-    def _tts_error_frame(
-        self,
-        error: str,
-        context_id: str | None = None,
-        exception: Exception | None = None,
-    ) -> ErrorFrame:
-        frame = ErrorFrame(error=error, exception=exception)
-        if context_id:
-            frame.metadata[TTS_CONTEXT_ID_METADATA_KEY] = context_id
-        return frame
-
     async def flush_audio(self, context_id: Optional[str] = None):
         flush_id = context_id or self.get_active_audio_context_id()
         if not flush_id or not self._websocket:
@@ -352,11 +334,9 @@ class MurfTTSService(WebsocketTTSService):
 
     async def _process_messages(self) -> None:
         async for message in self._get_websocket():
-            context_id = None
             try:
                 if isinstance(message, str):
                     data = json.loads(message)
-                    context_id = data.get("context_id")
                     await self._process_json_message(data)
                 else:
                     logger.warning(
@@ -364,12 +344,8 @@ class MurfTTSService(WebsocketTTSService):
                     )
             except Exception as e:
                 logger.error(f"{self} error processing message: {e}")
-                await self.push_error_frame(
-                    self._tts_error_frame(
-                        f"{self} error processing message: {e}",
-                        context_id if isinstance(context_id, str) else None,
-                        exception=e,
-                    )
+                await self.push_error(
+                    error_msg=f"{self} error processing message: {e}", exception=e
                 )
 
     async def _receive_messages(self) -> None:
@@ -392,15 +368,11 @@ class MurfTTSService(WebsocketTTSService):
             error_msg = f"{self} error: {data['error']}"
             logger.error(error_msg)
             await self.stop_all_metrics()
-            try:
-                await self.push_error_frame(
-                    self._tts_error_frame(error_msg, received_ctx_id)
-                )
-            finally:
-                await self.append_to_audio_context(
-                    received_ctx_id, TTSStoppedFrame(context_id=received_ctx_id)
-                )
-                await self.remove_audio_context(received_ctx_id)
+            await self.append_to_audio_context(
+                received_ctx_id, TTSStoppedFrame(context_id=received_ctx_id)
+            )
+            await self.remove_audio_context(received_ctx_id)
+            await self.push_error(error_msg=error_msg)
             return
 
         if "audio" in data:
@@ -474,7 +446,7 @@ class MurfTTSService(WebsocketTTSService):
 
         try:
             if not self._websocket or self._websocket.state is State.CLOSED:
-                await self._connect(context_id=context_id)
+                await self._connect()
 
             voice_config_msg = self._build_voice_config_message(
                 text, context_id=context_id, is_last=False
@@ -484,12 +456,12 @@ class MurfTTSService(WebsocketTTSService):
                 await self._get_websocket().send(json.dumps(voice_config_msg))
                 await self.start_tts_usage_metrics(text)
             except Exception as e:
-                yield self._tts_error_frame(f"Error sending message: {e}", context_id)
+                yield ErrorFrame(error=f"Error sending message: {e}")
                 yield TTSStoppedFrame(context_id=context_id)
                 await self._disconnect()
-                await self._connect(context_id=context_id)
+                await self._connect()
                 return
 
             return
         except Exception as e:
-            yield self._tts_error_frame(f"Unknown error occurred: {e}", context_id)
+            yield ErrorFrame(error=f"Unknown error occurred: {e}")

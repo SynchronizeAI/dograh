@@ -1,7 +1,7 @@
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import Float, cast, func, update
+from sqlalchemy import Float, cast, func
 from sqlalchemy.future import select
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -156,21 +156,20 @@ class WorkflowRunClient(BaseDBClient):
         """
         async with self.async_session() as session:
             result = await session.execute(
-                update(WorkflowRunModel)
+                select(WorkflowRunModel)
+                .join(WorkflowModel, WorkflowRunModel.workflow_id == WorkflowModel.id)
                 .where(
                     WorkflowRunModel.id == run_id,
-                    WorkflowRunModel.state == WorkflowRunState.INITIALIZED.value,
-                    WorkflowRunModel.workflow_id.in_(
-                        select(WorkflowModel.id).where(
-                            WorkflowModel.organization_id == organization_id
-                        )
-                    ),
+                    WorkflowModel.organization_id == organization_id,
                 )
-                .values(state=WorkflowRunState.RUNNING.value)
-                .returning(WorkflowRunModel.id)
+                .with_for_update(of=WorkflowRunModel)
             )
+            run = result.scalar_one_or_none()
+            if run is None or run.state != WorkflowRunState.INITIALIZED.value:
+                return False
+            run.state = WorkflowRunState.RUNNING.value
             await session.commit()
-            return result.scalar_one_or_none() is not None
+            return True
 
     async def get_all_workflow_runs(self) -> list[WorkflowRunModel]:
         async with self.async_session() as session:
@@ -616,17 +615,17 @@ class WorkflowRunClient(BaseDBClient):
         async with self.async_session() as session:
             # Use JSON text extraction to find matching call_id
             # This leverages the idx_workflow_runs_call_id index
-            query = (
+            result = await session.execute(
                 select(WorkflowRunModel)
                 .options(
                     joinedload(WorkflowRunModel.workflow).joinedload(WorkflowModel.user)
                 )
-                .where(WorkflowRunModel.gathered_context.op("->>")("call_id") == call_id)
-            )
-            if mode:
-                query = query.where(WorkflowRunModel.mode == mode)
-            result = await session.execute(
-                query.order_by(WorkflowRunModel.created_at.desc()).limit(1)
+                .where(
+                    WorkflowRunModel.gathered_context.op("->>")("call_id") == call_id,
+                    *([WorkflowRunModel.mode == mode] if mode else []),
+                )
+                .order_by(WorkflowRunModel.created_at.desc())
+                .limit(1)
             )
             return result.scalars().first()
 

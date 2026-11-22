@@ -545,16 +545,16 @@ async def test_inbound_run_routes_exotel_without_account_id_by_called_number():
     assert response == '{"url":"wss://x"}'
 
 
-@pytest.mark.asyncio
-async def test_koreaaitel_replayed_signed_webhook_reuses_run():
+def _setup_koreaaitel_webhook(monkeypatch, existing_runs, new_run_ids):
+    import api.routes.telephony as routes
+
     request = SimpleNamespace(
         headers={"x-signature": "signed"}, url="https://api.example.com/inbound/run"
     )
     provider_class = SimpleNamespace(
-        PROVIDER_NAME="koreaaitel",
-        generate_validation_error_response=Mock(return_value="rejected"),
+        PROVIDER_NAME="koreaaitel", generate_validation_error_response=Mock()
     )
-    normalized_data = SimpleNamespace(
+    data = SimpleNamespace(
         provider="koreaaitel",
         direction="inbound",
         to_number="+827012340001",
@@ -568,65 +568,71 @@ async def test_koreaaitel_replayed_signed_webhook_reuses_run():
     config = SimpleNamespace(
         id=55, organization_id=11, name="KoreaAITel", credentials={"account_id": "AC1"}
     )
-    phone_row = SimpleNamespace(id=77, inbound_workflow_id=33, address="07012340001")
-    workflow = SimpleNamespace(id=33, user_id=99)
-    existing_run = SimpleNamespace(id=999, workflow_id=33)
+    phone = SimpleNamespace(id=77, inbound_workflow_id=33, address="07012340001")
     provider = SimpleNamespace(
         verify_inbound_signature=AsyncMock(return_value=True),
-        start_inbound_stream=AsyncMock(side_effect=["first", "replayed", "new-call"]),
+        start_inbound_stream=AsyncMock(return_value="stream"),
     )
+    db = Mock(
+        find_inbound_route_by_account=AsyncMock(return_value=(config, phone)),
+        get_workflow=AsyncMock(return_value=SimpleNamespace(id=33, user_id=99)),
+        get_workflow_run_by_call_id=AsyncMock(side_effect=existing_runs),
+    )
+    concurrency = SimpleNamespace(
+        acquire_org_slot=AsyncMock(return_value=object()),
+        bind_workflow_run=AsyncMock(),
+        release_workflow_run_slot=AsyncMock(),
+        release_slot=AsyncMock(),
+    )
+    for name, value in {
+        "parse_webhook_request": AsyncMock(return_value=({}, "raw")),
+        "_detect_provider": AsyncMock(return_value=provider_class),
+        "normalize_webhook_data": Mock(return_value=data),
+        "db_client": db,
+        "get_telephony_provider_by_id": AsyncMock(return_value=provider),
+        "get_backend_endpoints": AsyncMock(return_value=("https://api", "wss://api")),
+        "call_concurrency": concurrency,
+        "authorize_workflow_run_start": AsyncMock(),
+        "_create_inbound_workflow_run": AsyncMock(
+            side_effect=[(run_id, None) for run_id in new_run_ids]
+        ),
+    }.items():
+        monkeypatch.setattr(routes, name, value)
+    return request, data, provider, db
 
-    with (
-        patch(
-            "api.routes.telephony.parse_webhook_request",
-            new=AsyncMock(return_value=({}, "raw-body")),
-        ),
-        patch(
-            "api.routes.telephony._detect_provider",
-            new=AsyncMock(return_value=provider_class),
-        ),
-        patch(
-            "api.routes.telephony.normalize_webhook_data", return_value=normalized_data
-        ),
-        patch("api.routes.telephony.db_client") as mock_db,
-        patch(
-            "api.routes.telephony.get_telephony_provider_by_id",
-            new=AsyncMock(return_value=provider),
-        ),
-        patch(
-            "api.routes.telephony.get_backend_endpoints",
-            new=AsyncMock(return_value=("https://api", "wss://api")),
-        ),
-        patch("api.routes.telephony.call_concurrency") as concurrency,
-        patch("api.routes.telephony.authorize_workflow_run_start", new=AsyncMock()),
-        patch(
-            "api.routes.telephony._create_inbound_workflow_run",
-            new=AsyncMock(side_effect=[(999, None), (1000, None)]),
-        ) as create_run,
-    ):
-        mock_db.find_inbound_route_by_account = AsyncMock(
-            return_value=(config, phone_row)
-        )
-        mock_db.get_workflow = AsyncMock(return_value=workflow)
-        mock_db.get_workflow_run_by_call_id = AsyncMock(
-            side_effect=[None, existing_run, None]
-        )
-        concurrency.acquire_org_slot = AsyncMock(return_value=object())
-        concurrency.bind_workflow_run = AsyncMock()
-        concurrency.release_workflow_run_slot = AsyncMock()
-        concurrency.release_slot = AsyncMock()
 
-        assert await handle_inbound_run(request) == "first"
-        assert await handle_inbound_run(request) == "replayed"
-        normalized_data.call_id = "CA2"
-        assert await handle_inbound_run(request) == "new-call"
-
-    assert create_run.await_count == 2
-    assert concurrency.acquire_org_slot.await_count == 2
+@pytest.mark.asyncio
+async def test_koreaaitel_replayed_signed_webhook_reuses_run(monkeypatch):
+    run = SimpleNamespace(id=999, workflow_id=33)
+    request, _, provider, db = _setup_koreaaitel_webhook(
+        monkeypatch, [None, run], [999]
+    )
+    assert await handle_inbound_run(request) == "stream"
+    assert await handle_inbound_run(request) == "stream"
+    assert [
+        call.args[0] for call in db.get_workflow_run_by_call_id.await_args_list
+    ] == ["CA1", "CA1"]
     assert [
         call.kwargs["workflow_run_id"]
         for call in provider.start_inbound_stream.await_args_list
-    ] == [999, 999, 1000]
+    ] == [999, 999]
+
+
+@pytest.mark.asyncio
+async def test_koreaaitel_different_call_id_creates_run(monkeypatch):
+    request, data, provider, db = _setup_koreaaitel_webhook(
+        monkeypatch, [None, None], [999, 1000]
+    )
+    await handle_inbound_run(request)
+    data.call_id = "CA2"
+    await handle_inbound_run(request)
+    assert [
+        call.args[0] for call in db.get_workflow_run_by_call_id.await_args_list
+    ] == ["CA1", "CA2"]
+    assert [
+        call.kwargs["workflow_run_id"]
+        for call in provider.start_inbound_stream.await_args_list
+    ] == [999, 1000]
 
 
 @pytest.mark.asyncio

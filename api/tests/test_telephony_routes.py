@@ -551,19 +551,19 @@ def _setup_koreaaitel_webhook(monkeypatch, existing_runs, new_run_ids):
     request = SimpleNamespace(
         headers={"x-signature": "signed"}, url="https://api.example.com/inbound/run"
     )
-    provider_class = SimpleNamespace(
-        PROVIDER_NAME="koreaaitel", generate_validation_error_response=Mock()
-    )
+    provider_class = SimpleNamespace(PROVIDER_NAME="koreaaitel")
     data = SimpleNamespace(
-        provider="koreaaitel",
-        direction="inbound",
-        to_number="+827012340001",
-        from_number="+821012345678",
-        to_country="KR",
-        from_country="KR",
-        account_id="AC1",
-        call_id="CA1",
-        raw_data={},
+        **dict(
+            provider="koreaaitel",
+            direction="inbound",
+            to_number="+827012340001",
+            from_number="+821012345678",
+            to_country="KR",
+            from_country="KR",
+            account_id="AC1",
+            call_id="CA1",
+            raw_data={},
+        )
     )
     config = SimpleNamespace(
         id=55, organization_id=11, name="KoreaAITel", credentials={"account_id": "AC1"}
@@ -579,10 +579,7 @@ def _setup_koreaaitel_webhook(monkeypatch, existing_runs, new_run_ids):
         get_workflow_run_by_call_id=AsyncMock(side_effect=existing_runs),
     )
     concurrency = SimpleNamespace(
-        acquire_org_slot=AsyncMock(return_value=object()),
-        bind_workflow_run=AsyncMock(),
-        release_workflow_run_slot=AsyncMock(),
-        release_slot=AsyncMock(),
+        acquire_org_slot=AsyncMock(return_value=object()), bind_workflow_run=AsyncMock()
     )
     for name, value in {
         "parse_webhook_request": AsyncMock(return_value=({}, "raw")),
@@ -602,37 +599,23 @@ def _setup_koreaaitel_webhook(monkeypatch, existing_runs, new_run_ids):
 
 
 @pytest.mark.asyncio
-async def test_koreaaitel_replayed_signed_webhook_reuses_run(monkeypatch):
-    run = SimpleNamespace(id=999, workflow_id=33)
-    request, _, provider, db = _setup_koreaaitel_webhook(
-        monkeypatch, [None, run], [999]
-    )
-    assert await handle_inbound_run(request) == "stream"
-    assert await handle_inbound_run(request) == "stream"
-    assert [
-        call.args[0] for call in db.get_workflow_run_by_call_id.await_args_list
-    ] == ["CA1", "CA1"]
-    assert [
-        call.kwargs["workflow_run_id"]
-        for call in provider.start_inbound_stream.await_args_list
-    ] == [999, 999]
-
-
+@pytest.mark.parametrize("replay", [True, False])
 @pytest.mark.asyncio
-async def test_koreaaitel_different_call_id_creates_run(monkeypatch):
-    request, data, provider, db = _setup_koreaaitel_webhook(
-        monkeypatch, [None, None], [999, 1000]
-    )
-    await handle_inbound_run(request)
-    data.call_id = "CA2"
-    await handle_inbound_run(request)
+async def test_koreaaitel_webhook_replay_and_call_id_isolation(monkeypatch, replay):
+    run = SimpleNamespace(id=999, workflow_id=33)
+    found, new_ids = ([None, run], [999]) if replay else ([None, None], [999, 1000])
+    request, data, provider, db = _setup_koreaaitel_webhook(monkeypatch, found, new_ids)
+    data.call_id = "CA1"
+    assert await handle_inbound_run(request) == "stream"
+    data.call_id = "CA1" if replay else "CA2"
+    assert await handle_inbound_run(request) == "stream"
     assert [
         call.args[0] for call in db.get_workflow_run_by_call_id.await_args_list
-    ] == ["CA1", "CA2"]
+    ] == ["CA1", data.call_id]
     assert [
         call.kwargs["workflow_run_id"]
         for call in provider.start_inbound_stream.await_args_list
-    ] == [999, 1000]
+    ] == ([999, 999] if replay else [999, 1000])
 
 
 @pytest.mark.asyncio

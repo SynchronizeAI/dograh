@@ -77,17 +77,12 @@ async def test_koreaaitel_losing_socket_closes_without_pipeline_setup(monkeypatc
         initial_context={},
         definition=SimpleNamespace(workflow_configurations={}),
     )
-    monkeypatch.setattr(
-        run_pipeline_module.db_client, "get_workflow", AsyncMock(return_value=workflow)
-    )
-    monkeypatch.setattr(
-        run_pipeline_module.db_client, "get_workflow_run", AsyncMock(return_value=run)
-    )
-    monkeypatch.setattr(
-        run_pipeline_module.db_client,
-        "mark_workflow_run_running",
-        AsyncMock(side_effect=[True, False]),
-    )
+    for name, mock in {
+        "get_workflow": AsyncMock(return_value=workflow),
+        "get_workflow_run": AsyncMock(return_value=run),
+        "mark_workflow_run_running": AsyncMock(side_effect=[True, False]),
+    }.items():
+        monkeypatch.setattr(run_pipeline_module.db_client, name, mock)
     setup = AsyncMock(side_effect=_ReachedSetup)
     monkeypatch.setattr(
         "api.services.configuration.run_model_configuration."

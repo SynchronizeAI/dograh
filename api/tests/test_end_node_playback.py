@@ -91,7 +91,7 @@ async def test_recorded_transition_wait_requires_context_text(
         "move_to_agent",
         "agent",
         transition_speech_type="audio",
-        transition_speech_recording_id="recording-1",
+        transition_speech_recording_id="1",
         source_node=engine.active_agent.workflow.nodes["agent"],
     )
     result = AsyncMock()

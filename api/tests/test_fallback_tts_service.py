@@ -11,6 +11,7 @@ from pipecat.clocks.system_clock import SystemClock
 from pipecat.frames.frames import (
     EndFrame,
     ErrorFrame,
+    LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
     StartFrame,
@@ -106,6 +107,8 @@ class StreamingPrimary(RecordingPrimary):
 
     def __init__(self, *, push_stop_frames=True, **kwargs):
         # The idle timer is out of play: the test closes the context itself.
+        # WebSocket TTS services accept requests while another context is open.
+        kwargs.setdefault("pause_frame_processing", False)
         super().__init__(stop_frame_timeout_s=3600.0, **kwargs)
         self._push_stop_frames = push_stop_frames
         self.context_closed = asyncio.Event()
@@ -130,11 +133,16 @@ class StreamingPrimary(RecordingPrimary):
 
 class FailingPrimary(RecordingPrimary):
     def __init__(self, *, audio_seconds=0.0, **kwargs):
+        kwargs.setdefault("pause_frame_processing", False)
         super().__init__(**kwargs)
         self.audio_seconds = audio_seconds
 
     async def run_tts(self, text, context_id):
         self.received_texts.append(text)
+        # The fallback tracks requests in an async event handler. Let that
+        # observer register the speak context before this provider fails or
+        # emits its first audio chunk.
+        await asyncio.sleep(0)
         if self.audio_seconds:
             samples = int(self.audio_seconds * self.sample_rate)
             yield TTSAudioRawFrame(
@@ -366,6 +374,12 @@ async def test_failure_replays_context_when_stop_and_error_arrive_in_either_orde
 async def test_error_context_id_selects_failed_request_over_older_stop():
     primary = StreamingPrimary(name="PrimaryTTS")
     harness = await build_harness(primary=primary)
+    requested_contexts = []
+
+    async def record_request(_service, context_id, text):
+        requested_contexts.append((context_id, text))
+
+    primary.add_event_handler("on_tts_request", record_request)
     await start(harness)
     await harness.pipeline.queue_frame(TTSSpeakFrame("first request"))
     await eventually(
@@ -377,12 +391,13 @@ async def test_error_context_id_selects_failed_request_over_older_stop():
         lambda: primary.received_texts == ["first request", "failed request"],
         what="the second primary request",
     )
-    started = [
-        frame.context_id
-        for frame in harness.downstream.frames
-        if isinstance(frame, TTSStartedFrame)
+    await eventually(
+        lambda: len(requested_contexts) == 2,
+        what="the primary request contexts",
+    )
+    first_context_id, failed_context_id = [
+        context_id for context_id, _text in requested_contexts
     ]
-    first_context_id, failed_context_id = started
 
     await primary.push_frame(TTSStoppedFrame(context_id=first_context_id))
     await eventually(
@@ -412,6 +427,7 @@ async def test_failure_replays_ordinary_llm_text():
     await harness.pipeline.queue_frame(LLMFullResponseStartFrame())
     await harness.pipeline.queue_frame(LLMTextFrame("First sentence. "))
     await harness.pipeline.queue_frame(LLMTextFrame("Second sentence."))
+    await harness.pipeline.queue_frame(LLMFullResponseEndFrame())
     await eventually(
         lambda: len(primary.received_texts) == 2,
         what="both primary LLM synthesis requests",

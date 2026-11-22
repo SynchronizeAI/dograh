@@ -1555,6 +1555,7 @@ def create_llm_service_from_provider(
     temperature: float | None | NotGiven = NOT_GIVEN,
     bill_to: str | None = None,
     provider_order: list[str] | None = None,
+    reasoning_effort: str | None = None,
     usage_context: str | None = None,
 ):
     """Create an LLM service from explicit provider/model/api_key.
@@ -1612,14 +1613,18 @@ def create_llm_service_from_provider(
                 api_key=api_key,
                 settings=OpenAILLMSettings(
                     model=model,
-                    extra={"reasoning_effort": "minimal", "verbosity": "low"},
+                    extra={
+                        "reasoning_effort": reasoning_effort or "minimal",
+                        "verbosity": "low",
+                    },
                 ),
                 **kwargs,
             )
+        extra = {"reasoning_effort": reasoning_effort} if reasoning_effort else {}
         return OpenAILLMService(
             enable_direct_mode=enable_direct_mode,
             api_key=api_key,
-            settings=OpenAILLMSettings(model=model, **sampling_settings),
+            settings=OpenAILLMSettings(model=model, extra=extra, **sampling_settings),
             **kwargs,
         )
     elif provider == ServiceProviders.GROQ.value:
@@ -2113,6 +2118,7 @@ def _create_single_llm_service(
         ServiceProviders.ATLASCLOUD.value,
     ):
         kwargs["base_url"] = user_config.llm.base_url
+        kwargs["reasoning_effort"] = getattr(user_config.llm, "reasoning_effort", None)
     elif provider == ServiceProviders.OPENROUTER.value:
         kwargs["base_url"] = user_config.llm.base_url
         kwargs["provider_order"] = getattr(user_config.llm, "provider_order", None)

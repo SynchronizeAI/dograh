@@ -368,11 +368,13 @@ class MurfTTSService(WebsocketTTSService):
             error_msg = f"{self} error: {data['error']}"
             logger.error(error_msg)
             await self.stop_all_metrics()
-            await self.append_to_audio_context(
-                received_ctx_id, TTSStoppedFrame(context_id=received_ctx_id)
-            )
-            await self.remove_audio_context(received_ctx_id)
-            await self.push_error(error_msg=error_msg)
+            try:
+                await self.push_error(error_msg=error_msg)
+            finally:
+                await self.append_to_audio_context(
+                    received_ctx_id, TTSStoppedFrame(context_id=received_ctx_id)
+                )
+                await self.remove_audio_context(received_ctx_id)
             return
 
         if "audio" in data:

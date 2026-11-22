@@ -168,9 +168,22 @@ async def test_murf_provider_error_closes_audio_context():
     service = MurfTTSService(api_key="test-key")
     context_id = "ctx-1"
     await service.create_audio_context(context_id)
-    service.push_error = AsyncMock()
+    events = []
+
+    async def push_error(**kwargs):
+        events.append("error")
+
+    service.push_error = AsyncMock(side_effect=push_error)
     service.stop_all_metrics = AsyncMock()
     service.push_frame = AsyncMock()
+    append_to_audio_context = service.append_to_audio_context
+
+    async def append_and_record_stop(context_id, frame):
+        if isinstance(frame, TTSStoppedFrame):
+            events.append("stopped")
+        await append_to_audio_context(context_id, frame)
+
+    service.append_to_audio_context = append_and_record_stop
 
     await service._process_json_message(
         {"context_id": context_id, "error": "voice not found"}
@@ -179,6 +192,7 @@ async def test_murf_provider_error_closes_audio_context():
     items = await _read_audio_context(service, context_id)
     assert any(isinstance(item, TTSStoppedFrame) for item in items)
     assert items[-1] is None
+    assert events == ["error", "stopped"]
     service.stop_all_metrics.assert_awaited_once()
     service.push_error.assert_awaited_once()
     service.push_frame.assert_not_called()

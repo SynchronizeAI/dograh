@@ -23,12 +23,13 @@ from api.services.workflow.disposition_mapping import map_disposition
 from api.tasks.function_names import FunctionNames
 
 
-async def mark_workflow_run_failed(workflow_run_id: int, error_message: str) -> None:
-    """Complete the run with a user-visible error and notify integrations.
-
-    Best-effort: callers invoke this while rejecting a call, so a bookkeeping
-    failure must never mask the original rejection path.
-    """
+async def mark_workflow_run_failed(
+    workflow_run_id: int,
+    error_message: str,
+    *,
+    session=None,
+) -> bool:
+    """Record a pre-start failure and notify integrations after persistence."""
     error_disposition = TelephonyCallStatus.ERROR.value
     failure_event = stamp_realtime_feedback_event(
         build_pipeline_error_event(
@@ -45,8 +46,12 @@ async def mark_workflow_run_failed(workflow_run_id: int, error_message: str) -> 
         # mapping: a failure resolving it must not mask the rejection this
         # function is recording, same as the write below.
         mapped_disposition = await map_disposition(
-            await db_client.get_organization_id_by_workflow_run_id(workflow_run_id),
+            await db_client.get_organization_id_by_workflow_run_id(
+                workflow_run_id,
+                **({"session": session} if session is not None else {}),
+            ),
             error_disposition,
+            **({"session": session} if session is not None else {}),
         )
         await db_client.update_workflow_run(
             run_id=workflow_run_id,
@@ -62,11 +67,22 @@ async def mark_workflow_run_failed(workflow_run_id: int, error_message: str) -> 
                 "call_status": error_disposition,
             },
             logs={"realtime_feedback_events": [failure_event]},
+            **({"session": session} if session is not None else {}),
         )
     except Exception as e:  # noqa: BLE001 - bookkeeping must remain best-effort
+        if session is not None:
+            raise
         logger.error(f"Failed to record failure on workflow run {workflow_run_id}: {e}")
-        return
+        return False
 
+    if session is not None:
+        return True
+
+    await enqueue_failed_workflow_run_integrations(workflow_run_id)
+    return True
+
+
+async def enqueue_failed_workflow_run_integrations(workflow_run_id: int) -> None:
     try:
         # Imported lazily to avoid loading the ARQ worker/task graph when route
         # modules import this helper.

@@ -64,7 +64,11 @@ def get_workflow_model_override(configurations: dict) -> dict | None:
 
 
 async def validate_workflow_model_compatibility(
-    organization_id: int, effective: EffectiveAIModelConfiguration, definition
+    organization_id: int,
+    effective: EffectiveAIModelConfiguration,
+    definition,
+    *,
+    session=None,
 ) -> None:
     """Check workflow consumers against the final, locally resolved setup."""
     from api.services.configuration.model_connections import (
@@ -83,7 +87,12 @@ async def validate_workflow_model_compatibility(
             for uuid in (node.get("data", {}).get("document_uuids") or [])
         }
     )
-    await validate_embedding_compatibility(organization_id, effective, documents)
+    await validate_embedding_compatibility(
+        organization_id,
+        effective,
+        documents,
+        **({"session": session} if session is not None else {}),
+    )
     # Legacy explicit QA/voicemail settings remain readable, but must not use a
     # correlation ID authorized under an unrelated managed service key.
     key = get_dograh_service_api_key(effective)
@@ -135,7 +144,7 @@ def _run_inputs(workflow_run) -> tuple[dict, dict | None]:
 
 
 async def resolve_run_model_configuration(
-    *, organization_id: int, workflow_run
+    *, organization_id: int, workflow_run, session=None
 ) -> EffectiveAIModelConfiguration:
     """Pin the call-scoped model setup before the caller is connected.
 
@@ -150,7 +159,11 @@ async def resolve_run_model_configuration(
 
     snapshot = getattr(workflow_run, "model_configuration_snapshot", None)
     if isinstance(snapshot, dict) and snapshot:
-        return await hydrate_model_configuration_snapshot(organization_id, snapshot)
+        return await hydrate_model_configuration_snapshot(
+            organization_id,
+            snapshot,
+            **({"session": session} if session is not None else {}),
+        )
 
     configurations, api_override = _run_inputs(workflow_run)
     try:
@@ -158,20 +171,31 @@ async def resolve_run_model_configuration(
             organization_id,
             workflow_override=get_workflow_model_override(configurations),
             api_override=api_override,
+            **({"session": session} if session is not None else {}),
         )
         await validate_workflow_model_compatibility(
-            organization_id, resolved.effective, workflow_run.definition
+            organization_id,
+            resolved.effective,
+            workflow_run.definition,
+            **({"session": session} if session is not None else {}),
         )
     except (HTTPException, ValidationError, ValueError) as exc:
         raise _configuration_failure(exc) from exc
 
     stored = await db_client.store_model_configuration_snapshot_if_absent(
-        workflow_run.id, organization_id, resolved.snapshot
+        workflow_run.id,
+        organization_id,
+        resolved.snapshot,
+        **({"session": session} if session is not None else {}),
     )
     workflow_run.model_configuration_snapshot = stored
     if stored is resolved.snapshot:
         return resolved.effective
-    return await hydrate_model_configuration_snapshot(organization_id, stored)
+    return await hydrate_model_configuration_snapshot(
+        organization_id,
+        stored,
+        **({"session": session} if session is not None else {}),
+    )
 
 
 async def apply_pre_call_model_overrides(

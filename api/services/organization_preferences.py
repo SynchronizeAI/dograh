@@ -21,6 +21,7 @@ from api.services.observability.call_events.configuration import (
 async def get_organization_preferences(
     organization_id: int | None,
     db=None,
+    session=None,
 ) -> OrganizationPreferences:
     if organization_id is None:
         return OrganizationPreferences()
@@ -30,12 +31,14 @@ async def get_organization_preferences(
         db,
         organization_id,
         OrganizationConfigurationKey.ORGANIZATION_PREFERENCES.value,
+        **({"session": session} if session is not None else {}),
     )
     if row is None:
         row = await _get_configuration(
             db,
             organization_id,
             OrganizationConfigurationKey.MODEL_CONFIGURATION_PREFERENCES.value,
+            **({"session": session} if session is not None else {}),
         )
     return _parse_preferences(row.value if row is not None else None, organization_id)
 
@@ -62,8 +65,12 @@ async def external_pbx_integrations_enabled(
     return preferences.external_pbx_integrations_enabled
 
 
-async def _get_configuration(db, organization_id: int, key: str):
-    row = db.get_configuration(organization_id, key)
+async def _get_configuration(db, organization_id: int, key: str, *, session=None):
+    row = db.get_configuration(
+        organization_id,
+        key,
+        **({"session": session} if session is not None else {}),
+    )
     if isawaitable(row):
         row = await row
     return row

@@ -146,7 +146,11 @@ class WorkflowRunClient(BaseDBClient):
         return new_run
 
     async def store_model_configuration_snapshot_if_absent(
-        self, run_id: int, organization_id: int, snapshot: dict
+        self,
+        run_id: int,
+        organization_id: int,
+        snapshot: dict,
+        session: AsyncSession | None = None,
     ) -> dict:
         """Pin a run's resolved model configuration once; return what is pinned.
 
@@ -154,7 +158,11 @@ class WorkflowRunClient(BaseDBClient):
         resolve picks among pooled credentials, so the first write wins and the
         other caller executes the stored choice rather than its own.
         """
-        async with self.async_session() as session:
+        owns_session = session is None
+        session_context = (
+            self.async_session() if owns_session else nullcontext(session)
+        )
+        async with session_context as session:
             result = await session.execute(
                 select(WorkflowRunModel)
                 .join(WorkflowModel, WorkflowRunModel.workflow_id == WorkflowModel.id)
@@ -170,7 +178,10 @@ class WorkflowRunClient(BaseDBClient):
             if run.model_configuration_snapshot:
                 return run.model_configuration_snapshot
             run.model_configuration_snapshot = snapshot
-            await session.commit()
+            if owns_session:
+                await session.commit()
+            else:
+                await session.flush()
             return snapshot
 
     async def mark_workflow_run_running(
@@ -296,9 +307,16 @@ class WorkflowRunClient(BaseDBClient):
             return formatted_runs, total_count
 
     async def get_workflow_run(
-        self, run_id: int, user_id: int = None, organization_id: int = None
+        self,
+        run_id: int,
+        user_id: int = None,
+        organization_id: int = None,
+        session: AsyncSession | None = None,
     ) -> WorkflowRunModel | None:
-        async with self.async_session() as session:
+        session_context = (
+            self.async_session() if session is None else nullcontext(session)
+        )
+        async with session_context as session:
             query = (
                 select(WorkflowRunModel)
                 .options(selectinload(WorkflowRunModel.definition))
@@ -323,9 +341,14 @@ class WorkflowRunClient(BaseDBClient):
             result = await session.execute(query)
             return result.scalars().first()
 
-    async def get_workflow_run_by_id(self, run_id: int) -> WorkflowRunModel | None:
+    async def get_workflow_run_by_id(
+        self, run_id: int, session: AsyncSession | None = None
+    ) -> WorkflowRunModel | None:
         """Get workflow run by ID without user filtering - for background tasks"""
-        async with self.async_session() as session:
+        session_context = (
+            self.async_session() if session is None else nullcontext(session)
+        )
+        async with session_context as session:
             result = await session.execute(
                 select(WorkflowRunModel)
                 .options(
@@ -356,12 +379,15 @@ class WorkflowRunClient(BaseDBClient):
             return result.scalar_one_or_none() or {}
 
     async def get_organization_id_by_workflow_run_id(
-        self, run_id: int | None
+        self, run_id: int | None, session: AsyncSession | None = None
     ) -> int | None:
         """Resolve organization_id from a workflow run via workflow.user."""
         if not run_id:
             return None
-        async with self.async_session() as session:
+        session_context = (
+            self.async_session() if session is None else nullcontext(session)
+        )
+        async with session_context as session:
             result = await session.execute(
                 select(WorkflowModel.organization_id)
                 .join(
@@ -458,13 +484,18 @@ class WorkflowRunClient(BaseDBClient):
         annotations: dict | None = None,
         extra: dict | None = None,
         model_configuration_snapshot: dict | None = None,
+        session: AsyncSession | None = None,
     ) -> WorkflowRunModel:
         """Merge supplied fields under a row lock.
 
         Pass only changed context keys, not a previously read context snapshot;
         incoming values take precedence over the current stored values.
         """
-        async with self.async_session() as session:
+        owns_session = session is None
+        session_context = (
+            self.async_session() if owns_session else nullcontext(session)
+        )
+        async with session_context as session:
             # Use SELECT FOR UPDATE to lock the row during the update
             result = await session.execute(
                 select(WorkflowRunModel)
@@ -536,9 +567,13 @@ class WorkflowRunClient(BaseDBClient):
             if state:
                 run.state = state
             try:
-                await session.commit()
+                if owns_session:
+                    await session.commit()
+                else:
+                    await session.flush()
             except Exception as e:
-                await session.rollback()
+                if owns_session:
+                    await session.rollback()
                 raise e
             await session.refresh(run)
         return run

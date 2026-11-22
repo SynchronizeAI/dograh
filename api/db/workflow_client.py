@@ -1,8 +1,10 @@
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from typing import Optional
 
 from loguru import logger
 from sqlalchemy import func, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import load_only, selectinload
 
@@ -86,9 +88,16 @@ class WorkflowClient(BaseDBClient):
                     raise ModelCatalogNotFound("Provider connection not found")
 
     async def get_workflow_definition(
-        self, workflow_id: int, definition_id: int, organization_id: int
+        self,
+        workflow_id: int,
+        definition_id: int,
+        organization_id: int,
+        session: AsyncSession | None = None,
     ) -> WorkflowDefinitionModel | None:
-        async with self.async_session() as session:
+        session_context = (
+            self.async_session() if session is None else nullcontext(session)
+        )
+        async with session_context as session:
             return await session.scalar(
                 select(WorkflowDefinitionModel)
                 .join(
@@ -660,6 +669,7 @@ class WorkflowClient(BaseDBClient):
         workflow_id: int,
         user_id: int | None = None,
         organization_id: int | None = None,
+        session: AsyncSession | None = None,
     ) -> WorkflowModel | None:
         """Fetch a workflow by id, scoped to a tenant.
 
@@ -676,7 +686,10 @@ class WorkflowClient(BaseDBClient):
                 "for tenant scoping; use get_workflow_by_id for unscoped "
                 "system lookups."
             )
-        async with self.async_session() as session:
+        session_context = (
+            self.async_session() if session is None else nullcontext(session)
+        )
+        async with session_context as session:
             query = (
                 select(WorkflowModel)
                 .options(

@@ -25,6 +25,7 @@ NO_DISPOSITION_MAPPING: dict[str, str] = {}
 async def get_disposition_mapping(
     organization_id: int | None,
     db=None,
+    session=None,
 ) -> dict[str, str]:
     """The organization's disposition mapping, or ``{}`` when it has none.
 
@@ -36,7 +37,11 @@ async def get_disposition_mapping(
     if organization_id is None:
         return NO_DISPOSITION_MAPPING
 
-    preferences = await get_organization_preferences(organization_id, db=db)
+    preferences = await get_organization_preferences(
+        organization_id,
+        db=db,
+        **({"session": session} if session is not None else {}),
+    )
     if not preferences.disposition_mapping_enabled:
         return NO_DISPOSITION_MAPPING
     return {
@@ -64,6 +69,7 @@ async def map_disposition(
     organization_id: int | None,
     disposition: str | None,
     db=None,
+    session=None,
 ) -> str | None:
     """One-shot mapping for callers that translate a single disposition.
 
@@ -71,5 +77,9 @@ async def map_disposition(
     should hold the mapping from :func:`get_disposition_mapping` instead, so a
     disposition can be stamped without an await on the teardown path.
     """
-    mapping = await get_disposition_mapping(organization_id, db=db)
+    mapping = await get_disposition_mapping(
+        organization_id,
+        db=db,
+        **({"session": session} if session is not None else {}),
+    )
     return apply_disposition_mapping(mapping, disposition)

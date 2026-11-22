@@ -233,17 +233,24 @@ def _check_required_credentials(service):
                 raise _invalid("Required credentials are missing")
 
 
-async def _connection(organization_id, uuid, *, active_only=True):
+async def _connection(organization_id, uuid, *, active_only=True, session=None):
     connection = await db_client.get_provider_connection(
-        organization_id, str(uuid), active_only=active_only
+        organization_id,
+        str(uuid),
+        active_only=active_only,
+        **({"session": session} if session is not None else {}),
     )
     if connection is None:
         raise HTTPException(status_code=404, detail="Provider connection not found")
     return connection
 
 
-async def _named(organization_id, uuid):
-    row = await db_client.get_named_model_configuration(organization_id, str(uuid))
+async def _named(organization_id, uuid, *, session=None):
+    row = await db_client.get_named_model_configuration(
+        organization_id,
+        str(uuid),
+        **({"session": session} if session is not None else {}),
+    )
     if row is None:
         raise HTTPException(status_code=404, detail="Model configuration not found")
     return row
@@ -262,11 +269,19 @@ def dograh_model_configuration_spec(connection_uuid) -> dict:
     }
 
 
-async def get_default_model_configuration(organization_id):
-    row = await db_client.get_configuration(organization_id, DEFAULT_KEY)
+async def get_default_model_configuration(organization_id, *, session=None):
+    row = await db_client.get_configuration(
+        organization_id,
+        DEFAULT_KEY,
+        **({"session": session} if session is not None else {}),
+    )
     if row is None or not row.value:
         return None
-    return await _named(organization_id, row.value)
+    return await _named(
+        organization_id,
+        row.value,
+        **({"session": session} if session is not None else {}),
+    )
 
 
 async def resolve_model_configuration(
@@ -277,8 +292,11 @@ async def resolve_model_configuration(
     *,
     preferred_dograh_key=None,
     default_row=None,
+    session=None,
 ):
-    default = default_row or await get_default_model_configuration(organization_id)
+    default = default_row or await get_default_model_configuration(
+        organization_id, **({"session": session} if session is not None else {})
+    )
     config = deepcopy(default.configuration) if default else {}
     provenance = (
         [
@@ -296,7 +314,11 @@ async def resolve_model_configuration(
     async def get_connection(uuid):
         uuid = str(uuid)
         if uuid not in connections:
-            connections[uuid] = await _connection(organization_id, uuid)
+            connections[uuid] = await _connection(
+                organization_id,
+                uuid,
+                **({"session": session} if session is not None else {}),
+            )
         return connections[uuid]
 
     for source, value in (
@@ -317,7 +339,11 @@ async def resolve_model_configuration(
         patch = patch.model_dump(mode="json", exclude_unset=True)
         named_uuid = patch.pop("model_configuration_uuid", None)
         if named_uuid:
-            row = await _named(organization_id, named_uuid)
+            row = await _named(
+                organization_id,
+                named_uuid,
+                **({"session": session} if session is not None else {}),
+            )
             config = deepcopy(row.configuration)
             provenance.append(
                 {
@@ -335,6 +361,7 @@ async def resolve_model_configuration(
         provenance,
         connections,
         preferred_dograh_key=preferred_dograh_key,
+        **({"session": session} if session is not None else {}),
     )
 
 
@@ -544,6 +571,7 @@ async def _resolve_spec(
     connections,
     *,
     preferred_dograh_key=None,
+    session=None,
 ):
     try:
         spec = (
@@ -576,7 +604,11 @@ async def _resolve_spec(
             continue
         uuid = str(selection.provider_connection_uuid)
         if uuid not in connections:
-            connections[uuid] = await _connection(organization_id, uuid)
+            connections[uuid] = await _connection(
+                organization_id,
+                uuid,
+                **({"session": session} if session is not None else {}),
+            )
         row = connections[uuid]
         if (
             key == "llm"
@@ -778,7 +810,9 @@ def _build_service(role, provider, credentials, connection_settings, settings):
         raise _validation_failure(role, exc) from None
 
 
-async def hydrate_model_configuration_snapshot(organization_id, snapshot):
+async def hydrate_model_configuration_snapshot(
+    organization_id, snapshot, *, session=None
+):
     if snapshot.get("version") != 3 or snapshot.get("mode") not in {
         "pipeline",
         "realtime",
@@ -793,7 +827,10 @@ async def hydrate_model_configuration_snapshot(organization_id, snapshot):
         uuid = selection["provider_connection_uuid"]
         if uuid not in connections:
             connections[uuid] = await _connection(
-                organization_id, uuid, active_only=False
+                organization_id,
+                uuid,
+                active_only=False,
+                **({"session": session} if session is not None else {}),
             )
         row = connections[uuid]
         runtime_provider = _schema(role, row.provider).model_fields["provider"].default
@@ -882,7 +919,7 @@ def public_snapshot(snapshot):
 
 
 async def validate_embedding_compatibility(
-    organization_id, effective, document_uuids=None
+    organization_id, effective, document_uuids=None, *, session=None
 ):
     """Compare query settings with persisted index metadata, without reindexing.
 
@@ -893,7 +930,9 @@ async def validate_embedding_compatibility(
     if document_uuids == []:
         return
     spaces = await db_client.get_model_configuration_embedding_spaces(
-        organization_id, document_uuids=document_uuids
+        organization_id,
+        document_uuids=document_uuids,
+        **({"session": session} if session is not None else {}),
     )
     if not spaces:
         return

@@ -1,8 +1,10 @@
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timezone
 
 from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from api.db.base_client import BaseDBClient
@@ -53,9 +55,14 @@ class UserClient(BaseDBClient):
                 raise ValueError(error_msg)
         return user, was_created
 
-    async def get_user_by_id(self, user_id: int) -> UserModel | None:
+    async def get_user_by_id(
+        self, user_id: int, session: AsyncSession | None = None
+    ) -> UserModel | None:
         """Fetch a user by their internal ID."""
-        async with self.async_session() as session:
+        session_context = (
+            self.async_session() if session is None else nullcontext(session)
+        )
+        async with session_context as session:
             result = await session.execute(
                 select(UserModel).where(UserModel.id == user_id)
             )

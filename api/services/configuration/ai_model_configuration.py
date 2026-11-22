@@ -26,6 +26,7 @@ class ResolvedAIModelConfiguration:
 async def get_resolved_ai_model_configuration(
     *,
     organization_id: int | None,
+    session=None,
 ) -> ResolvedAIModelConfiguration:
     """Resolve the organization's default configuration, or an empty one."""
     if organization_id is not None:
@@ -34,10 +35,13 @@ async def get_resolved_ai_model_configuration(
             resolve_model_configuration,
         )
 
-        default = await get_default_model_configuration(organization_id)
+        session_options = {"session": session} if session is not None else {}
+        default = await get_default_model_configuration(
+            organization_id, **session_options
+        )
         if default is not None:
             resolved = await resolve_model_configuration(
-                organization_id, default_row=default
+                organization_id, default_row=default, **session_options
             )
             return ResolvedAIModelConfiguration(
                 effective=resolved.effective, source="organization_v3"
@@ -51,6 +55,7 @@ async def get_effective_ai_model_configuration_for_workflow(
     *,
     organization_id: int | None,
     workflow_configurations: dict | None,
+    session=None,
 ) -> EffectiveAIModelConfiguration:
     """The definition's catalog binding layered on the organization default."""
     workflow_configurations = workflow_configurations or {}
@@ -67,10 +72,12 @@ async def get_effective_ai_model_configuration_for_workflow(
         resolved = await resolve_model_configuration(
             organization_id,
             workflow_override=workflow_configurations["model_configuration_override"],
+            **({"session": session} if session is not None else {}),
         )
         return resolved.effective
     resolved_config = await get_resolved_ai_model_configuration(
         organization_id=organization_id,
+        **({"session": session} if session is not None else {}),
     )
     return resolved_config.effective
 

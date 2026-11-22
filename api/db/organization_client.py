@@ -1,8 +1,10 @@
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import exists
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from api.db.base_client import BaseDBClient
@@ -110,10 +112,16 @@ class OrganizationClient(BaseDBClient):
             return organization, False
 
     async def is_user_member_of_organization(
-        self, user_id: int, organization_id: int
+        self,
+        user_id: int,
+        organization_id: int,
+        session: AsyncSession | None = None,
     ) -> bool:
         """Return True if the user belongs to the given organization."""
-        async with self.async_session() as session:
+        session_context = (
+            self.async_session() if session is None else nullcontext(session)
+        )
+        async with session_context as session:
             result = await session.execute(
                 select(
                     exists().where(

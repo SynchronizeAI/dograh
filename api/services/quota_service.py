@@ -265,11 +265,16 @@ def _is_service_key_org_mismatch_error(error: Exception) -> bool:
 async def _store_run_correlation_id(
     workflow_run_id: int | None,
     correlation_id: str | None,
+    *,
+    session=None,
 ) -> None:
     if not workflow_run_id or not correlation_id:
         return
 
-    workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)
+    workflow_run = await db_client.get_workflow_run_by_id(
+        workflow_run_id,
+        **({"session": session} if session is not None else {}),
+    )
     if not workflow_run:
         logger.warning(
             "Could not store MPS correlation id for missing workflow run {}",
@@ -285,6 +290,7 @@ async def _store_run_correlation_id(
     await db_client.update_workflow_run(
         workflow_run_id,
         initial_context=initial_context,
+        **({"session": session} if session is not None else {}),
     )
 
 
@@ -295,6 +301,7 @@ async def _authorize_hosted_workflow_run_start(
     workflow_id: int | None,
     workflow_run_id: int | None,
     user_config: Any,
+    session=None,
 ) -> QuotaCheckResult:
     """Authorize a hosted workflow run against the org's MPS billing account."""
     if organization_id is None:
@@ -395,6 +402,7 @@ async def _authorize_hosted_workflow_run_start(
         await _store_run_correlation_id(
             workflow_run_id,
             correlation_id,
+            **({"session": session} if session is not None else {}),
         )
     except Exception as e:
         _log_mps_exception(
@@ -460,6 +468,7 @@ async def _authorize_oss_managed_v2_correlation(
     workflow_id: int,
     workflow_run_id: int | None,
     user_config: Any,
+    session=None,
 ) -> QuotaCheckResult:
     if not workflow_run_id or not uses_managed_model_services_v2(user_config):
         return QuotaCheckResult(has_quota=True)
@@ -496,6 +505,7 @@ async def _authorize_oss_managed_v2_correlation(
         await _store_run_correlation_id(
             workflow_run_id,
             correlation_id,
+            **({"session": session} if session is not None else {}),
         )
     except _MPS_UNREACHABLE_ERRORS as e:
         _log_mps_exception(
@@ -525,6 +535,7 @@ async def _authorize_oss_managed_v2_run(
     workflow_run_id: int,
     service_key: str,
     user_config: Any,
+    session=None,
 ) -> QuotaCheckResult:
     try:
         authorization = await mps_service_key_client.authorize_service_key_run_start(
@@ -561,6 +572,7 @@ async def _authorize_oss_managed_v2_run(
             workflow_id=workflow_id,
             workflow_run_id=workflow_run_id,
             user_config=user_config,
+            **({"session": session} if session is not None else {}),
         )
     except _MPS_UNREACHABLE_ERRORS as e:
         _log_mps_exception(
@@ -602,6 +614,7 @@ async def _authorize_oss_managed_v2_run(
         await _store_run_correlation_id(
             workflow_run_id,
             correlation_id,
+            **({"session": session} if session is not None else {}),
         )
     except Exception as e:
         _log_mps_exception(
@@ -630,6 +643,7 @@ async def authorize_workflow_run_start(
     workflow_run_id: int | None = None,
     actor_user: UserModel | None = None,
     definition_id: int | None = None,
+    session=None,
 ) -> QuotaCheckResult:
     """Authorize a workflow run before any billable call/text runtime starts.
 
@@ -652,6 +666,7 @@ async def authorize_workflow_run_start(
         workflow = await db_client.get_workflow(
             workflow_id,
             organization_id=organization_id,
+            **({"session": session} if session is not None else {}),
         )
     except Exception as e:
         log_failure(
@@ -698,6 +713,7 @@ async def authorize_workflow_run_start(
                 is_member = await db_client.is_user_member_of_organization(
                     user_id=actor_id,
                     organization_id=organization_id,
+                    **({"session": session} if session is not None else {}),
                 )
             except Exception as e:
                 log_failure(
@@ -729,7 +745,10 @@ async def authorize_workflow_run_start(
         # definitive "not found": let it fall through to the outer handler so
         # it fails closed. The None case below is a genuine missing row and keeps
         # its specific code.
-        workflow_owner = await db_client.get_user_by_id(workflow.user_id)
+        workflow_owner = await db_client.get_user_by_id(
+            workflow.user_id,
+            **({"session": session} if session is not None else {}),
+        )
         if not workflow_owner:
             return QuotaCheckResult(
                 has_quota=False,
@@ -748,7 +767,9 @@ async def authorize_workflow_run_start(
             # outer fail-closed handler; only a genuinely missing/mismatched run
             # returns the specific code below.
             workflow_run = await db_client.get_workflow_run(
-                workflow_run_id, organization_id=organization_id
+                workflow_run_id,
+                organization_id=organization_id,
+                **({"session": session} if session is not None else {}),
             )
             if workflow_run is None or workflow_run.workflow_id != workflow.id:
                 logger.warning(
@@ -768,7 +789,10 @@ async def authorize_workflow_run_start(
                 )
         elif definition_id is not None:
             definition = await db_client.get_workflow_definition(
-                workflow.id, definition_id, organization_id
+                workflow.id,
+                definition_id,
+                organization_id,
+                **({"session": session} if session is not None else {}),
             )
             if definition is None or definition.status not in {"published", "archived"}:
                 return QuotaCheckResult(
@@ -782,12 +806,15 @@ async def authorize_workflow_run_start(
             # Pins the call-scoped setup the run will execute, so the key
             # authorized here is the key the pipeline uses.
             user_config = await resolve_run_model_configuration(
-                organization_id=organization_id, workflow_run=workflow_run
+                organization_id=organization_id,
+                workflow_run=workflow_run,
+                **({"session": session} if session is not None else {}),
             )
         else:
             user_config = await get_effective_ai_model_configuration_for_workflow(
                 organization_id=organization_id,
                 workflow_configurations=workflow_configurations,
+                **({"session": session} if session is not None else {}),
             )
 
         if DEPLOYMENT_MODE != "oss":
@@ -797,6 +824,7 @@ async def authorize_workflow_run_start(
                 workflow_id=workflow.id,
                 workflow_run_id=workflow_run_id,
                 user_config=user_config,
+                **({"session": session} if session is not None else {}),
             )
 
         dograh_api_keys = _dograh_api_keys(user_config)
@@ -837,6 +865,7 @@ async def authorize_workflow_run_start(
             workflow_run_id=workflow_run_id,
             service_key=correlation_service_key,
             user_config=user_config,
+            **({"session": session} if session is not None else {}),
         )
 
     except HTTPException as exc:

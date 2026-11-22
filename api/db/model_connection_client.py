@@ -5,9 +5,11 @@ client through an unscoped lookup. Only current credentials are retained.
 """
 
 from copy import deepcopy
+from contextlib import nullcontext
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.db.base_client import BaseDBClient
 from api.db.models import (
@@ -94,9 +96,17 @@ class ModelConnectionClient(BaseDBClient):
             return list((await session.scalars(stmt)).all())
 
     async def get_provider_connection(
-        self, organization_id, connection_uuid, *, active_only=True
+        self,
+        organization_id,
+        connection_uuid,
+        *,
+        active_only=True,
+        session: AsyncSession | None = None,
     ):
-        async with self.async_session() as session:
+        session_context = (
+            self.async_session() if session is None else nullcontext(session)
+        )
+        async with session_context as session:
             return await self._catalog_row(
                 session,
                 ProviderConnectionModel,
@@ -106,9 +116,17 @@ class ModelConnectionClient(BaseDBClient):
             )
 
     async def get_named_model_configuration(
-        self, organization_id, configuration_uuid, *, active_only=True
+        self,
+        organization_id,
+        configuration_uuid,
+        *,
+        active_only=True,
+        session: AsyncSession | None = None,
     ):
-        async with self.async_session() as session:
+        session_context = (
+            self.async_session() if session is None else nullcontext(session)
+        )
+        async with session_context as session:
             return await self._catalog_row(
                 session,
                 NamedModelConfigurationModel,
@@ -485,11 +503,18 @@ class ModelConnectionClient(BaseDBClient):
             return row
 
     async def get_model_configuration_embedding_spaces(
-        self, organization_id, *, document_uuids=None
+        self,
+        organization_id,
+        *,
+        document_uuids=None,
+        session: AsyncSession | None = None,
     ):
         if document_uuids == []:
             return []
-        async with self.async_session() as session:
+        session_context = (
+            self.async_session() if session is None else nullcontext(session)
+        )
+        async with session_context as session:
             statement = (
                 select(
                     KnowledgeBaseChunkModel.embedding_model,

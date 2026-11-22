@@ -1,9 +1,11 @@
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from api.db.base_client import BaseDBClient
@@ -32,10 +34,16 @@ class OrganizationConfigurationClient(BaseDBClient):
             return dict(rows.all())
 
     async def get_configuration(
-        self, organization_id: int, key: str
+        self,
+        organization_id: int,
+        key: str,
+        session: AsyncSession | None = None,
     ) -> Optional[OrganizationConfigurationModel]:
         """Get a specific configuration for an organization by key."""
-        async with self.async_session() as session:
+        session_context = (
+            self.async_session() if session is None else nullcontext(session)
+        )
+        async with session_context as session:
             result = await session.execute(
                 select(OrganizationConfigurationModel).where(
                     OrganizationConfigurationModel.organization_id == organization_id,

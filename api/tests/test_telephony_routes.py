@@ -637,6 +637,8 @@ async def test_koreaaitel_replay_reuses_run_and_new_call_id_creates_run():
         mode="koreaaitel",
         workflow_id=33,
         workflow=workflow,
+        state=WorkflowRunState.INITIALIZED.value,
+        is_completed=False,
     )
     provider_instance = SimpleNamespace(
         verify_inbound_signature=AsyncMock(return_value=True),
@@ -681,7 +683,9 @@ async def test_koreaaitel_replay_reuses_run_and_new_call_id_creates_run():
         ),
         patch(
             "api.routes.telephony.authorize_workflow_run_start",
-            new=AsyncMock(),
+            new=AsyncMock(
+                return_value=SimpleNamespace(has_quota=True, error_message="")
+            ),
         ),
         patch(
             "api.routes.telephony.prepare_workflow_run_inputs",
@@ -735,9 +739,10 @@ async def test_koreaaitel_replay_reuses_run_and_new_call_id_creates_run():
     )
 
 
+@pytest.mark.parametrize("quota_allowed", [True, False])
 @pytest.mark.asyncio
 async def test_concurrent_koreaaitel_deliveries_create_one_run(
-    setup_test_database, monkeypatch
+    setup_test_database, monkeypatch, quota_allowed
 ):
     from api.db import db_client
 
@@ -767,7 +772,7 @@ async def test_concurrent_koreaaitel_deliveries_create_one_run(
         id=55, organization_id=11, name="KoreaAITel", credentials={}
     )
     phone_row = SimpleNamespace(id=77, inbound_workflow_id=33, address="07012345678")
-    workflow = SimpleNamespace(id=33, user_id=99)
+    workflow = SimpleNamespace(id=33, user_id=99, organization_id=11)
     provider_instance = SimpleNamespace(
         verify_inbound_signature=AsyncMock(return_value=True),
         start_inbound_stream=AsyncMock(side_effect=["first", "replay"]),
@@ -775,6 +780,8 @@ async def test_concurrent_koreaaitel_deliveries_create_one_run(
     runs = {}
     lookup_sessions = []
     create_sessions = []
+    authorization_sessions = []
+    failure_sessions = []
     next_run_id = iter([700, 701])
 
     async def get_run_by_call_id(call_id, provider, session=None):
@@ -792,12 +799,35 @@ async def test_concurrent_koreaaitel_deliveries_create_one_run(
             mode=args[3],
             workflow_id=args[0],
             workflow=SimpleNamespace(organization_id=args[2]),
+            state=WorkflowRunState.INITIALIZED.value,
+            is_completed=False,
         )
         return run_id, None
 
-    async def authorize_run(**_kwargs):
-        assert not create_sessions[-1].in_transaction()
-        return SimpleNamespace(has_quota=True, error_message="")
+    async def authorize_run(**kwargs):
+        session = kwargs["session"]
+        authorization_sessions.append(session)
+        assert session is create_sessions[-1]
+        assert session.in_transaction()
+        return SimpleNamespace(
+            has_quota=quota_allowed,
+            error_message="quota denied" if not quota_allowed else "",
+        )
+
+    async def fail_run(run_id, _error_message, *, session):
+        failure_sessions.append(session)
+        assert session is create_sessions[-1]
+        assert session.in_transaction()
+        for run in runs.values():
+            if run.id == run_id:
+                run.state = WorkflowRunState.COMPLETED.value
+                run.is_completed = True
+                break
+
+    stream_responses = ["first", "replay"]
+    expected_responses = (
+        ["first", "replay"] if quota_allowed else ["rejected", "rejected"]
+    )
 
     with (
         patch(
@@ -826,12 +856,21 @@ async def test_concurrent_koreaaitel_deliveries_create_one_run(
             "api.routes.telephony.authorize_workflow_run_start",
             new=AsyncMock(side_effect=authorize_run),
         ) as authorize_run,
+        patch(
+            "api.routes.telephony.mark_workflow_run_failed",
+            new=AsyncMock(side_effect=fail_run),
+        ) as mark_failed,
+        patch(
+            "api.routes.telephony.enqueue_failed_workflow_run_integrations",
+            new=AsyncMock(),
+        ) as enqueue_failure,
         patch("api.routes.telephony.call_concurrency") as concurrency,
         patch(
             "api.routes.telephony._create_inbound_workflow_run",
             new=AsyncMock(side_effect=create_run),
         ) as create_workflow_run,
     ):
+        provider_instance.start_inbound_stream.side_effect = stream_responses
         concurrency.acquire_org_slot = AsyncMock(return_value=object())
         concurrency.bind_workflow_run = AsyncMock()
         concurrency.release_workflow_run_slot = AsyncMock()
@@ -852,18 +891,30 @@ async def test_concurrent_koreaaitel_deliveries_create_one_run(
             handle_inbound_run(request), handle_inbound_run(request)
         )
 
-    assert sorted(responses) == ["first", "replay"]
+    assert sorted(responses) == sorted(expected_responses)
     assert create_workflow_run.await_count == 1
     assert authorize_run.await_count == 1
     assert concurrency.acquire_org_slot.await_count == 1
     assert len(runs) == 1
     assert len(create_sessions) == 1
+    assert authorization_sessions == [create_sessions[0]]
+    assert (
+        all(run.state == WorkflowRunState.COMPLETED.value for run in runs.values())
+        == (not quota_allowed)
+    )
+    assert mark_failed.await_count == (0 if quota_allowed else 1)
+    assert failure_sessions == ([] if quota_allowed else [create_sessions[0]])
+    assert enqueue_failure.await_count == (0 if quota_allowed else 1)
     assert any(session is create_sessions[0] for session in lookup_sessions)
     assert lookup_sessions[0] is not lookup_sessions[1]
-    assert {
-        call.kwargs["workflow_run_id"]
-        for call in provider_instance.start_inbound_stream.await_args_list
-    } == {700}
+    assert provider_instance.start_inbound_stream.await_count == (
+        2 if quota_allowed else 0
+    )
+    if quota_allowed:
+        assert {
+            call.kwargs["workflow_run_id"]
+            for call in provider_instance.start_inbound_stream.await_args_list
+        } == {700}
 
 
 @asynccontextmanager

@@ -12,6 +12,7 @@ from pipecat.frames.frames import (
     EndFrame,
     ErrorFrame,
     LLMFullResponseStartFrame,
+    LLMTextFrame,
     StartFrame,
     TextFrame,
     TTSAudioRawFrame,
@@ -314,6 +315,70 @@ async def test_failure_before_audio_replays_current_sentence_on_backup_once():
     )
     assert primary.received_texts == ["greeting disclosure"]
     assert harness.tts.fallback_metrics["switched"] == 1
+    await harness.pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop_before_error", [False, True])
+async def test_failure_replays_context_when_stop_and_error_arrive_in_either_order(
+    stop_before_error,
+):
+    primary = StreamingPrimary(name="PrimaryTTS")
+    harness = await build_harness(primary=primary)
+    await start(harness)
+    await harness.pipeline.queue_frame(TTSSpeakFrame("greeting disclosure"))
+    await eventually(
+        lambda: primary.received_texts == ["greeting disclosure"],
+        what="the primary greeting",
+    )
+    context_id = next(
+        frame.context_id
+        for frame in harness.downstream.frames
+        if isinstance(frame, TTSStartedFrame)
+    )
+
+    if stop_before_error:
+        await primary.push_frame(TTSStoppedFrame(context_id=context_id))
+        await eventually(
+            lambda: any(
+                isinstance(frame, TTSStoppedFrame) and frame.context_id == context_id
+                for frame in harness.downstream.frames
+            ),
+            what="the primary stop frame",
+        )
+
+    await primary.push_error("synthesis failed", fatal=False)
+
+    if not stop_before_error:
+        await primary.push_frame(TTSStoppedFrame(context_id=context_id))
+
+    await eventually(
+        lambda: harness.backup.received_texts == ["greeting disclosure"],
+        what="the replayed greeting",
+    )
+    await harness.pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_failure_replays_ordinary_llm_text():
+    primary = StreamingPrimary(name="PrimaryTTS")
+    harness = await build_harness(primary=primary)
+    await start(harness)
+    await harness.pipeline.queue_frame(LLMFullResponseStartFrame())
+    await harness.pipeline.queue_frame(LLMTextFrame("First sentence. "))
+    await harness.pipeline.queue_frame(LLMTextFrame("Second sentence."))
+    await eventually(
+        lambda: len(primary.received_texts) == 2,
+        what="both primary LLM synthesis requests",
+    )
+    expected = "".join(primary.received_texts)
+
+    await primary.push_error("synthesis failed", fatal=False)
+
+    await eventually(
+        lambda: harness.backup.received_texts == [expected],
+        what="the replayed LLM response",
+    )
     await harness.pipeline.cleanup()
 
 

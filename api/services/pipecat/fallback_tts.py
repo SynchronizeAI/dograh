@@ -24,6 +24,7 @@ from pipecat.frames.frames import (
     TTSStartedFrame,
     TTSStoppedFrame,
     TTSTextFrame,
+    TextType,
 )
 from pipecat.pipeline.service_switcher import ServiceSwitcher, ServiceSwitcherStrategy
 from pipecat.processors.frame_processor import (
@@ -45,7 +46,10 @@ _FROM_PRIMARY = "tts_fallback_from_primary"
 
 @dataclass
 class _SpeakContext:
-    speak: TTSSpeakFrame
+    text: str
+    append_to_context: bool = False
+    persist_to_logs: bool = False
+    text_type: TextType = TextType.SENTENCE
     audio_duration: float = 0.0
     text_emitted: bool = False
 
@@ -99,6 +103,7 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
         self._open_primary_contexts: dict[str, TTSStartedFrame] = {}
         self._processing_primary_speak: TTSSpeakFrame | None = None
         self._speak_contexts: dict[str, _SpeakContext] = {}
+        self._recently_stopped_speak_context: _SpeakContext | None = None
         self._visit_ending = False
         self._backup_setup: FrameProcessorSetup | None = None
         self._backup_connect_task: asyncio.Task | None = None
@@ -151,17 +156,36 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
             if speak_context is not None:
                 speak_context.text_emitted = True
         elif isinstance(frame, TTSStoppedFrame):
-            self._speak_contexts.pop(frame.context_id, None)
+            speak_context = self._speak_contexts.pop(frame.context_id, None)
+            if speak_context is not None:
+                self._recently_stopped_speak_context = speak_context
 
     def _before_primary_process_frame(self, _primary, frame: Frame) -> None:
         self._processing_primary_speak = (
             frame if isinstance(frame, TTSSpeakFrame) else None
         )
 
-    def _on_primary_tts_request(self, _primary, context_id: str, _text: str) -> None:
+    def _on_primary_tts_request(self, _primary, context_id: str, text: str) -> None:
+        if self.strategy.active_service is not self.primary:
+            return
+        self._recently_stopped_speak_context = None
         speak = self._processing_primary_speak
-        if speak is not None and self.strategy.active_service is self.primary:
-            self._speak_contexts.setdefault(context_id, _SpeakContext(speak))
+        if speak is not None:
+            self._speak_contexts.setdefault(
+                context_id,
+                _SpeakContext(
+                    text=speak.text,
+                    append_to_context=speak.append_to_context,
+                    persist_to_logs=speak.persist_to_logs,
+                    text_type=speak.text_type,
+                ),
+            )
+        else:
+            speak_context = self._speak_contexts.get(context_id)
+            if speak_context is None:
+                self._speak_contexts[context_id] = _SpeakContext(text=text)
+            else:
+                speak_context.text += text
 
     def _count_backup_unavailable(self) -> None:
         if self._backup_unavailable_logged:
@@ -224,24 +248,28 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
         )
         self._register_backup_campaign_handler()
         await self.primary.set_usable(False)
-        speak_context = next(iter(self._speak_contexts.values()), None)
+        speak_context = self._recently_stopped_speak_context or next(
+            reversed(self._speak_contexts.values()), None
+        )
         self._speak_contexts.clear()
+        self._recently_stopped_speak_context = None
         self._processing_primary_speak = None
         if (
             speak_context is not None
             and speak_context.audio_duration < _NO_FALLBACK_AFTER_AUDIO_DURATION_S
         ):
-            speak = speak_context.speak
             await self.backup.queue_frame(
                 TTSSpeakFrame(
-                    speak.text,
+                    speak_context.text,
                     append_to_context=(
-                        speak.append_to_context and not speak_context.text_emitted
+                        speak_context.append_to_context
+                        and not speak_context.text_emitted
                     ),
                     persist_to_logs=(
-                        speak.persist_to_logs and not speak_context.text_emitted
+                        speak_context.persist_to_logs
+                        and not speak_context.text_emitted
                     ),
-                    text_type=speak.text_type,
+                    text_type=speak_context.text_type,
                 )
             )
 

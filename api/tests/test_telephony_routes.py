@@ -619,6 +619,104 @@ async def test_inbound_run_rejects_when_concurrency_limit_reached():
 
 
 @pytest.mark.asyncio
+async def test_koreaaitel_replay_reuses_run_and_new_call_id_creates_run():
+    request = SimpleNamespace(headers={}, url="https://api.example.com/inbound/run")
+    provider_class = SimpleNamespace(
+        PROVIDER_NAME="koreaaitel",
+        generate_validation_error_response=Mock(return_value="rejected"),
+    )
+    config = SimpleNamespace(
+        id=55, organization_id=11, name="KoreaAITel", credentials={}
+    )
+    phone_row = SimpleNamespace(id=77, inbound_workflow_id=33, address="07012345678")
+    workflow = SimpleNamespace(id=33, user_id=99)
+    existing_run = SimpleNamespace(id=999, mode="koreaaitel")
+    provider_instance = SimpleNamespace(
+        verify_inbound_signature=AsyncMock(return_value=True),
+        start_inbound_stream=AsyncMock(side_effect=["first", "replay", "new-call"]),
+    )
+    call_ids = iter(["call-1", "call-1", "call-2"])
+
+    def normalize(*_args):
+        call_id = next(call_ids)
+        return SimpleNamespace(
+            provider="koreaaitel",
+            direction="inbound",
+            to_number="07012345678",
+            from_number="01012345678",
+            to_country="KR",
+            from_country="KR",
+            account_id="account-1",
+            call_id=call_id,
+            raw_data={"CallId": call_id},
+        )
+
+    with (
+        patch(
+            "api.routes.telephony.parse_webhook_request",
+            new=AsyncMock(return_value=({}, "raw-body")),
+        ),
+        patch(
+            "api.routes.telephony._detect_provider",
+            new=AsyncMock(return_value=provider_class),
+        ),
+        patch("api.routes.telephony.normalize_webhook_data", side_effect=normalize),
+        patch("api.routes.telephony.db_client") as mock_db,
+        patch(
+            "api.routes.telephony.get_telephony_provider_by_id",
+            new=AsyncMock(return_value=provider_instance),
+        ),
+        patch(
+            "api.routes.telephony.get_backend_endpoints",
+            new=AsyncMock(
+                return_value=("https://api.example.test", "wss://api.example.test")
+            ),
+        ),
+        patch(
+            "api.routes.telephony.authorize_workflow_run_start",
+            new=AsyncMock(),
+        ),
+        patch(
+            "api.routes.telephony.prepare_workflow_run_inputs",
+            new=AsyncMock(return_value={}),
+        ),
+        patch("api.routes.telephony.call_concurrency") as mock_concurrency,
+        patch(
+            "api.routes.telephony._create_inbound_workflow_run",
+            new=AsyncMock(side_effect=[(999, None), (1000, None)]),
+        ) as create_run,
+    ):
+        mock_db.find_inbound_route_by_account = AsyncMock(
+            return_value=(config, phone_row)
+        )
+        mock_db.get_workflow = AsyncMock(return_value=workflow)
+        mock_db.get_workflow_run_by_call_id = AsyncMock(
+            side_effect=[None, existing_run, None]
+        )
+        mock_concurrency.acquire_org_slot = AsyncMock(return_value=object())
+        mock_concurrency.bind_workflow_run = AsyncMock()
+        mock_concurrency.release_workflow_run_slot = AsyncMock()
+        mock_concurrency.release_slot = AsyncMock()
+
+        first = await handle_inbound_run(request)
+        replay = await handle_inbound_run(request)
+        different_call = await handle_inbound_run(request)
+
+    assert (first, replay, different_call) == ("first", "replay", "new-call")
+    assert create_run.await_count == 2
+    assert provider_instance.verify_inbound_signature.await_count == 3
+    assert (
+        provider_instance.start_inbound_stream.await_args_list[1].kwargs[
+            "workflow_run_id"
+        ]
+        == 999
+    )
+    assert mock_db.get_workflow_run_by_call_id.await_args_list[0].args == ("call-1",)
+    assert mock_db.get_workflow_run_by_call_id.await_args_list[1].args == ("call-1",)
+    assert mock_db.get_workflow_run_by_call_id.await_args_list[2].args == ("call-2",)
+
+
+@pytest.mark.asyncio
 async def test_smallwebrtc_run_reaching_telephony_websocket_closes_without_running():
     websocket = AsyncMock()
     workflow_run = SimpleNamespace(

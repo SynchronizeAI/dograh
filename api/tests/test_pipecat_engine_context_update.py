@@ -419,9 +419,9 @@ class TestContextUpdateBeforeNextCompletion:
         """Entering a node with ``respond_immediately`` off starts no generation;
         the next one runs on the caller's next turn."""
         three_node_workflow.nodes["agent"].respond_immediately = False
-        three_node_workflow.edges[0].transition_speech = (
-            "What would you like to do next?"
-        )
+        three_node_workflow.edges[
+            0
+        ].transition_speech = "What would you like to do next?"
         mock_steps = [
             MockLLMService.create_function_call_chunks(
                 function_name="collect_info", arguments={}, tool_call_id="call_enter"

@@ -83,9 +83,7 @@ async def test_recorded_transition_wait_requires_context_text(
     engine.active_agent.workflow.nodes["agent"].respond_immediately = False
     engine._fetch_recording_audio = object()
     engine.queue_speech = AsyncMock(
-        return_value=SimpleNamespace(
-            outcome=PlaybackOutcome.PLAYED, text=transcript
-        )
+        return_value=SimpleNamespace(outcome=PlaybackOutcome.PLAYED, text=transcript)
     )
     transition = await engine._create_transition_func(
         "move_to_agent",

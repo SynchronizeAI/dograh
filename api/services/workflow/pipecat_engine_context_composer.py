@@ -7,6 +7,8 @@ reusable functions. Defines recording response mode markers and instructions.
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Optional
 
+from pipecat.adapters.schemas.function_schema import FunctionSchema
+
 if TYPE_CHECKING:
     from api.services.workflow.pipecat_engine_custom_tools import CustomToolManager
     from api.services.workflow.workflow_graph import Node, WorkflowGraph
@@ -96,7 +98,7 @@ async def compose_functions_for_node(
     *,
     node: "Node",
     custom_tool_manager: Optional["CustomToolManager"],
-) -> list[dict]:
+) -> list[FunctionSchema]:
     """Compose the function/tool schemas for a workflow node.
 
     Gathers knowledge-base tools, custom tools (including built-in
@@ -110,7 +112,7 @@ async def compose_functions_for_node(
     Returns:
         A list of function schemas to register with the LLM.
     """
-    functions: list[dict] = []
+    functions: list[FunctionSchema] = []
 
     # Knowledge base retrieval tool
     if node.document_uuids:

@@ -417,6 +417,70 @@ async def test_primary_failure_after_three_seconds_does_not_replay():
     await harness.pipeline.cleanup()
 
 
+@pytest.mark.asyncio
+async def test_streamed_llm_text_does_not_reset_active_request_audio_duration():
+    primary = StreamingPrimary(name="PrimaryTTS")
+    backup = CapturingBackup(name="BackupTTS")
+    harness = await build_harness(
+        primary=primary,
+        backup=backup,
+        spoken_text=True,
+    )
+    await start(harness)
+    await eventually(harness.tts._backup_connected.is_set, what="the backup connect")
+
+    await harness.pipeline.queue_frame(TTSSpeakFrame("First sentence"))
+    await eventually(
+        lambda: any(isinstance(f, TTSStartedFrame) for f in harness.downstream.frames),
+        what="the primary request to start",
+    )
+    context_id = next(
+        f.context_id
+        for f in harness.downstream.frames
+        if isinstance(f, TTSStartedFrame)
+    )
+    await primary.append_to_audio_context(
+        context_id,
+        TTSAudioRawFrame(
+            b"\x00\x00" * int(3.1 * primary.sample_rate),
+            primary.sample_rate,
+            1,
+            context_id=context_id,
+        ),
+    )
+    await eventually(
+        lambda: sum(
+            len(f.audio) / (f.sample_rate * f.num_channels * 2)
+            for f in harness.downstream.frames
+            if isinstance(f, TTSAudioRawFrame) and f.context_id == context_id
+        )
+        > 3.0,
+        what="more than three seconds of the first sentence to reach downstream",
+    )
+
+    await harness.pipeline.queue_frame(LLMFullResponseStartFrame())
+    await harness.pipeline.queue_frame(LLMTextFrame("The next "))
+    await harness.pipeline.queue_frame(LLMTextFrame("sentence is still streaming"))
+    await eventually(
+        lambda: any(
+            isinstance(f, LLMTextFrame) and f.text == "sentence is still streaming"
+            for f in harness.downstream.frames
+        ),
+        what="the next streamed sentence to reach downstream",
+    )
+    assert harness.tts._request_context_id == context_id
+    assert harness.tts._request_audio_duration > 3.0
+
+    await primary.push_error("stream failed", fatal=False)
+    await eventually(
+        lambda: harness.tts.strategy.active_service is backup
+        and not harness.tts._pending_llm_text,
+        what="the provider switch",
+    )
+    assert backup.speak_frames == []
+    await harness.pipeline.cleanup()
+
+
 async def eventually(predicate, *, timeout=3.0, what="the condition"):
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout

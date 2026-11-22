@@ -213,13 +213,20 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
         )
         self._register_backup_campaign_handler()
         await self.primary.set_usable(False)
-        if self._request_text and self._request_audio_duration < _NO_FALLBACK_AFTER_AUDIO_DURATION_S:
+        if self._request_context_id is not None or self._request_text:
+            replay_text = self._request_text
+            replay_audio_duration = self._request_audio_duration
             flags = self._request_speak_flags
+        else:
+            replay_text = self._pending_llm_text
+            replay_audio_duration = 0.0
+            flags = None
+        if replay_text and replay_audio_duration < _NO_FALLBACK_AFTER_AUDIO_DURATION_S:
             replay = (
-                TTSSpeakFrame(self._request_text)
+                TTSSpeakFrame(replay_text)
                 if flags is None
                 else TTSSpeakFrame(
-                    self._request_text,
+                    replay_text,
                     append_to_context=flags[0],
                     persist_to_logs=flags[1],
                     text_type=flags[2],
@@ -313,13 +320,10 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
             and self.strategy.active_service is self.primary
             and isinstance(frame, LLMFullResponseStartFrame)
         ):
-            # TTS can fail while the LLM frames are still being handled, before
-            # the primary emits on_tts_request. Start a fresh candidate so a
-            # previous explicit speak cannot be replayed for this response.
-            self._request_text = ""
-            self._request_context_id = None
-            self._request_audio_duration = 0.0
-            self._request_speak_flags = None
+            if self._request_context_id is None:
+                self._request_text = ""
+                self._request_audio_duration = 0.0
+                self._request_speak_flags = None
             self._pending_speak_flags = None
             self._pending_llm_text = ""
         elif (
@@ -327,14 +331,11 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
             and self.strategy.active_service is self.primary
             and isinstance(frame, LLMTextFrame)
         ):
-            # Keep text available for an error that arrives before TTS's request
-            # callback. Once synthesis starts, that callback replaces this
-            # candidate with the provider-ready sentence.
             self._pending_llm_text += frame.text
-            self._request_text = self._pending_llm_text
-            self._request_context_id = None
-            self._request_audio_duration = 0.0
-            self._request_speak_flags = None
+            if self._request_context_id is None:
+                self._request_text = ""
+                self._request_audio_duration = 0.0
+                self._request_speak_flags = None
             self._pending_speak_flags = None
         await super().process_frame(frame, direction)
 
@@ -353,4 +354,9 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
                 self._open_primary_contexts[context_id] = frame
             elif isinstance(frame, TTSStoppedFrame):
                 self._open_primary_contexts.pop(context_id, None)
+                if context_id and context_id == self._request_context_id:
+                    self._request_text = ""
+                    self._request_context_id = None
+                    self._request_audio_duration = 0.0
+                    self._request_speak_flags = None
         await super().push_frame(frame, direction)

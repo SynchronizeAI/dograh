@@ -2110,6 +2110,26 @@ def _dograh_eager_field_schema(schema: dict) -> None:
     schema["visible_for_languages"] = DEEPGRAM_FLUX_MULTILINGUAL_LANGUAGE_OPTIONS
 
 
+def _flux_eot_threshold_field(schema):
+    return Field(
+        default=0.7,
+        ge=0.5,
+        le=0.9,
+        description="Flux end-of-turn confidence threshold.",
+        json_schema_extra=schema,
+    )
+
+
+def _flux_eot_timeout_field(schema):
+    return Field(
+        default=3000,
+        ge=500,
+        le=10000,
+        description="Flux end-of-turn silence timeout in milliseconds.",
+        json_schema_extra=schema,
+    )
+
+
 @register_stt(provider=DEEPGRAM_PROVIDER)
 class DeepgramSTTConfiguration(BaseSTTConfiguration):
     provider: Literal[ServiceProviders.DEEPGRAM] = ServiceProviders.DEEPGRAM
@@ -2167,6 +2187,8 @@ class DeepgramSTTConfiguration(BaseSTTConfiguration):
         ),
         json_schema_extra=_deepgram_eager_field_schema,
     )
+    eot_threshold: float = _flux_eot_threshold_field(_deepgram_eager_field_schema)
+    eot_timeout_ms: int = _flux_eot_timeout_field(_deepgram_eager_field_schema)
 
     base_url: str = Field(
         default=DEEPGRAM_DEFAULT_BASE_URL,
@@ -2319,6 +2341,8 @@ class DograhSTTService(BaseSTTConfiguration):
         ),
         json_schema_extra=_dograh_eager_field_schema,
     )
+    eot_threshold: float = _flux_eot_threshold_field(_dograh_eager_field_schema)
+    eot_timeout_ms: int = _flux_eot_timeout_field(_dograh_eager_field_schema)
 
     @field_validator("language_hints")
     @classmethod

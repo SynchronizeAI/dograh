@@ -120,6 +120,58 @@ def test_create_deepgram_flux_multi_sends_every_language_hint():
 
 
 @pytest.mark.parametrize("schema", [DeepgramSTTConfiguration, DograhSTTService])
+@pytest.mark.parametrize("threshold", [0.5, 0.7, 0.85, 0.9])
+def test_flux_eot_threshold_accepts_supported_values(schema, threshold):
+    assert (
+        schema(api_key="test-key", eot_threshold=threshold).eot_threshold == threshold
+    )
+
+
+@pytest.mark.parametrize("schema", [DeepgramSTTConfiguration, DograhSTTService])
+@pytest.mark.parametrize("threshold", [0.49, 0.91, float("nan"), float("inf"), None])
+def test_flux_eot_threshold_rejects_invalid_values(schema, threshold):
+    with pytest.raises(ValueError, match="eot_threshold"):
+        schema(api_key="test-key", eot_threshold=threshold)
+
+
+@pytest.mark.parametrize("schema", [DeepgramSTTConfiguration, DograhSTTService])
+@pytest.mark.parametrize("timeout", [500, 3000, 7000, 10000])
+def test_flux_eot_timeout_accepts_supported_values(schema, timeout):
+    assert schema(api_key="test-key", eot_timeout_ms=timeout).eot_timeout_ms == timeout
+
+
+@pytest.mark.parametrize("schema", [DeepgramSTTConfiguration, DograhSTTService])
+@pytest.mark.parametrize("timeout", [499, 10001, None])
+def test_flux_eot_timeout_rejects_invalid_values(schema, timeout):
+    with pytest.raises(ValueError, match="eot_timeout_ms"):
+        schema(api_key="test-key", eot_timeout_ms=timeout)
+
+
+@pytest.mark.parametrize(
+    ("schema", "model", "factory"),
+    [
+        (DeepgramSTTConfiguration, "flux-general-en", "DeepgramFluxSTTService"),
+        (DeepgramSTTConfiguration, "flux-general-multi", "DeepgramFluxSTTService"),
+        (DograhSTTService, "default", "DograhFluxSTTService"),
+    ],
+)
+def test_flux_eot_settings_reach_service(schema, model, factory):
+    config = schema(
+        api_key="test-key", model=model, eot_threshold=0.85, eot_timeout_ms=7000
+    )
+    with patch(f"api.services.pipecat.service_factory.{factory}") as service:
+        create_stt_service(
+            SimpleNamespace(stt=config),
+            AudioConfig(
+                transport_in_sample_rate=16000, transport_out_sample_rate=16000
+            ),
+        )
+    settings = service.call_args.kwargs["settings"]
+    assert settings.eot_threshold == 0.85
+    assert settings.eot_timeout_ms == 7000
+
+
+@pytest.mark.parametrize("schema", [DeepgramSTTConfiguration, DograhSTTService])
 @pytest.mark.parametrize("threshold", [0.3, 0.4, 0.5, 0.7])
 def test_flux_eager_threshold_accepts_supported_values(schema, threshold):
     config = schema(api_key="test-key", eager_eot_threshold=threshold)

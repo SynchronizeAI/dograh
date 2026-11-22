@@ -533,15 +533,22 @@ def _stt_configurable_settings(config, *, for_update: bool = False) -> dict[str,
             else dograh_stt_uses_flux_language(language)
         )
         if is_flux:
+            settings = {
+                "eot_threshold": getattr(config, "eot_threshold", 0.7),
+                "eot_timeout_ms": getattr(config, "eot_timeout_ms", 3000),
+            }
             if (
                 provider == ServiceProviders.DEEPGRAM
                 and config.model == "flux-general-en"
             ):
-                return {}
+                return settings
             hints = _resolve_deepgram_flux_language_hints(
                 language, getattr(config, "language_hints", None)
             )
-            return {"language_hints": hints} if hints or for_update else {}
+            return {
+                **settings,
+                **({"language_hints": hints} if hints or for_update else {}),
+            }
         return {"language": language or "multi"}
     if provider == ServiceProviders.GOOGLE:
         try:
@@ -654,6 +661,13 @@ def get_stt_settings_update(
         logger.info("[transfer] Gladia does not apply settings to an active session")
         return None
     settings = _stt_configurable_settings(destination_config, for_update=True)
+    if (
+        provider == ServiceProviders.DEEPGRAM
+        and call_config.model == "flux-general-en"
+        and call_config.eot_threshold == destination_config.eot_threshold
+        and call_config.eot_timeout_ms == destination_config.eot_timeout_ms
+    ):
+        return None
     return type(stt._settings)(**settings) if settings else None
 
 

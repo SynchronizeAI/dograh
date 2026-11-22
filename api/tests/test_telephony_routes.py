@@ -10,6 +10,7 @@ from api.errors.telephony_errors import TelephonyError
 from api.routes.telephony import _handle_telephony_websocket, handle_inbound_run, router
 from api.services.auth.depends import get_user
 from api.services.call_concurrency import CallConcurrencyLimitError
+from api.services.telephony.providers.koreaaitel.provider import KoreaAITelProvider
 
 
 def _make_test_app() -> FastAPI:
@@ -552,18 +553,14 @@ def _setup_koreaaitel_webhook(monkeypatch, existing_runs, new_run_ids):
         headers={"x-signature": "signed"}, url="https://api.example.com/inbound/run"
     )
     provider_class = SimpleNamespace(PROVIDER_NAME="koreaaitel")
-    data = SimpleNamespace(
-        **dict(
-            provider="koreaaitel",
-            direction="inbound",
-            to_number="+827012340001",
-            from_number="+821012345678",
-            to_country="KR",
-            from_country="KR",
-            account_id="AC1",
-            call_id="CA1",
-            raw_data={},
-        )
+    data = KoreaAITelProvider.parse_inbound_webhook(
+        {
+            "CallId": "CA1",
+            "AccountId": "AC1",
+            "From": "01012345678",
+            "To": "07012340001",
+            "Direction": "inbound",
+        }
     )
     config = SimpleNamespace(
         id=55, organization_id=11, name="KoreaAITel", credentials={"account_id": "AC1"}

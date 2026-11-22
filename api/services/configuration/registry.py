@@ -1,5 +1,4 @@
 import random
-import typing
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -2455,27 +2454,21 @@ class AssemblyAISTTConfiguration(BaseSTTConfiguration):
             "AssemblyAI realtime STT model. "
             "assemblyai-stt-3-7-realtime-agent is the Universal-3.7 voice-agent model."
         ),
-        json_schema_extra=typing.cast(
-            dict[str, typing.Any],
-            {
-                "examples": ASSEMBLYAI_STT_MODELS,
-                "docs_url": "https://www.assemblyai.com/docs/streaming/select-the-speech-model",
-            },
-        ),
+        json_schema_extra={
+            "examples": ASSEMBLYAI_STT_MODELS,
+            "docs_url": "https://www.assemblyai.com/docs/streaming/select-the-speech-model",
+        },
     )
     language: str = Field(
         default="en",
         description="ISO 639-1 language code.",
-        json_schema_extra=typing.cast(
-            dict[str, typing.Any],
-            {
-                "examples": ASSEMBLYAI_STT_LANGUAGES,
-                "model_options": {
-                    "u3-rt-pro": ASSEMBLYAI_U3_LANGUAGES,
-                    ASSEMBLYAI_REALTIME_AGENT_MODEL: ASSEMBLYAI_37_LANGUAGES,
-                },
+        json_schema_extra={
+            "examples": ASSEMBLYAI_STT_LANGUAGES,
+            "model_options": {
+                "u3-rt-pro": ASSEMBLYAI_U3_LANGUAGES,
+                ASSEMBLYAI_REALTIME_AGENT_MODEL: ASSEMBLYAI_37_LANGUAGES,
             },
-        ),
+        },
     )
 
 

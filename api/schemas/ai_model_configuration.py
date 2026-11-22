@@ -75,8 +75,7 @@ class EffectiveAIModelConfiguration(BaseModel):
                 "Dograh manages its own fallbacks and cannot be a fallback target"
             )
         if any(
-            rule.target.provider == self.stt.provider
-            for rule in self.stt_fallback.rules
+            rule.target.provider == self.stt.provider for rule in self.stt_fallback.rules
         ):
             raise ValueError(
                 "STT fallback target must use a different provider than the primary"

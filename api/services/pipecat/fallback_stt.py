@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-from collections.abc import Awaitable, Callable
 
 from loguru import logger
 
@@ -66,7 +65,7 @@ def _stop_primary_reconnects(primary: FrameProcessor) -> None:
         )
 
     if hasattr(primary, "_reconnect"):
-        primary._reconnect = _fail_instead_of_reconnecting  # type: ignore[method-assign]
+        primary._reconnect = _fail_instead_of_reconnecting
 
     # Deepgram retries in a separate connection task and ignores the generic
     # reconnect controls. Cancel that task only after its error frame has made
@@ -80,7 +79,7 @@ def _stop_primary_reconnects(primary: FrameProcessor) -> None:
             connection_task.cancel()
 
     if hasattr(primary, "_connection_task"):
-        primary.push_error = _push_error_and_stop_connection_loop  # type: ignore[method-assign]
+        primary.push_error = _push_error_and_stop_connection_loop
 
 
 class _SwitchOnFirstUnrecoverableError(ServiceSwitcherStrategy):
@@ -89,9 +88,9 @@ class _SwitchOnFirstUnrecoverableError(ServiceSwitcherStrategy):
     def __init__(self, services: list[FrameProcessor]):
         super().__init__(services)
         self._switched = False
-        self.prepare_switch: Callable[[ErrorFrame], Awaitable[None]] | None = None
-        self.complete_switch: Callable[[ErrorFrame], Awaitable[None]] | None = None
-        self.visit_over: Callable[[], bool] | None = None
+        self.prepare_switch = None
+        self.complete_switch = None
+        self.visit_over = None
 
     async def handle_error(self, error: ErrorFrame) -> FrameProcessor | None:
         if self._switched or (self.visit_over and self.visit_over()):
@@ -134,7 +133,7 @@ class FallbackSTTService(ServiceSwitcher[_SwitchOnFirstUnrecoverableError]):
         self._visit_ending = False
         self._campaign_handler_registered = False
         self._fallback_metrics: dict[str, int] = {"switched": 0}
-        self.on_switched: Callable[[], Awaitable[None]] | None = None
+        self.on_switched = None
         # Registered on the task that pushes the primary's error. The run and
         # organization live in this construction-time context.
         self._run_context = contextvars.copy_context()

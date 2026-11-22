@@ -479,15 +479,11 @@ class PipecatEngine:
                         append_to_context=True,
                         mute_user=True,
                     )
-                    speech_queued = (
-                        speech.outcome
-                        not in (
-                            PlaybackOutcome.FAILED,
-                            PlaybackOutcome.SKIPPED,
-                            PlaybackOutcome.CLOSED,
-                        )
-                        and bool(speech.text and speech.text.strip())
-                    )
+                    speech_queued = speech.outcome not in (
+                        PlaybackOutcome.FAILED,
+                        PlaybackOutcome.SKIPPED,
+                        PlaybackOutcome.CLOSED,
+                    ) and bool(speech.text and speech.text.strip())
                 elif transition_speech:
                     speech_queued = await self.queue_text_message(
                         transition_speech,

@@ -38,6 +38,10 @@ When on, the caller can interrupt the agent mid-utterance.
 
 When on and a Global Node exists, the Global Prompt is prepended to this node's Prompt at runtime. On by default.
 
+**Respond Immediately**
+
+When off, the Agent Node waits for the caller's next turn instead of starting a reply after an incoming edge's transition speech is queued. If no transition speech is queued, the node responds as usual. For recorded transition audio, a non-empty transcript is required for the node to wait.
+
 **Knowledge Base Documents**
 
 Files the agent can reference when answering questions - product guides, FAQs, policies. Attach them via the "Manage Documents" button in the node settings panel.

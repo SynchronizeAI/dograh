@@ -4,6 +4,6 @@ description: "Update label, inbound binding, or activation state of a phone numb
 openapi: "PUT /api/v1/organizations/telephony-configs/{config_id}/phone-numbers/{phone_number_id}"
 ---
 
-Changing `inbound_workflow_id` re-syncs the inbound webhook with the provider; the response includes a `provider_sync` block with the result.
+Changing `inbound_workflow_id` updates the number's inbound workflow assignment. See the [telephony configuration reference](/api-reference/telephony-configs#phone-numbers) for provider-side webhook setup and `provider_sync` behavior.
 
 To remove an existing inbound binding, send `clear_inbound_workflow: true`. Sending `inbound_workflow_id: null` alone is treated as "no change".

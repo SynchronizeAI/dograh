@@ -31,8 +31,8 @@ The backup must be a different provider than the primary, so a Deepgram outage d
       {
         "condition": { "type": "error" },
         "target": {
-          "provider_connection_uuid": "<elevenlabs-connection-uuid>",
-          "settings": { "model": "scribe_v3_live", "language": "en" }
+          "provider_connection_uuid": "<soniox-connection-uuid>",
+          "settings": { "model": "stt-rt-v6", "language": "ko" }
         }
       }
     ]
@@ -42,9 +42,7 @@ The backup must be a different provider than the primary, so a Deepgram outage d
 
 Set it on named model configurations, workflow overrides, and API-trigger overrides, next to `stt`.
 
-Set the backup language to `en` or `ko` to match the call. If your workflows serve both languages, configure the matching backup language for each workflow.
-
-`scribe_v3_live` is ElevenLabs Scribe v3 Live on the ElevenLabs connection you already have.
+Set the backup language to `en` or `ko` to match the call. If your workflows serve both languages, configure the matching backup language for each workflow. This example uses Soniox `stt-rt-v6` on a Soniox connection.
 
 Resolved runs store the policy without credentials in the workflow snapshot.
 
@@ -58,9 +56,7 @@ This policy stops those reconnects and connects the backup on the first connecti
 
 There is no health check and no switch back to the primary.
 
-English Flux normally ends the turn itself.
-
-After a switch to Scribe, later turns end the same way a Korean Nova transcription does: voice activity plus the transcript, not a Flux end-of-turn event.
+When a fallback replaces a primary that supplied external turn endings, later turns start from the backup transcript and local voice activity, then end through confidence-gated Smart Turn. A completion prediction must reach 0.99 confidence; lower-confidence predictions do not end the turn. Smart Turn uses the workflow's `smart_turn_stop_secs`, with a minimum of the 2-second default. The primary's provider-controlled turn endings stay active until failover occurs.
 
 A named model configuration without a recognizer fallback never stores or returns the `stt_fallback` key.
 

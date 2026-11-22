@@ -137,6 +137,18 @@ ensure_tracing()
 
 DEFAULT_USER_TURN_STOP_TIMEOUT = 5.0
 EXTERNAL_TURN_USER_STOP_TIMEOUT = 30.0
+# The reported English and Korean mid-sentence pauses scored 0.982 and 0.926.
+FALLBACK_SMART_TURN_MIN_CONFIDENCE = 0.99
+
+
+class _FallbackSmartTurnAnalyzer(LocalSmartTurnAnalyzerV3):
+    """Require stronger Smart Turn confidence after external STT fails over."""
+
+    def _predict_endpoint(self, audio_array):
+        result = super()._predict_endpoint(audio_array)
+        if result["probability"] < FALLBACK_SMART_TURN_MIN_CONFIDENCE:
+            result["prediction"] = 0
+        return result
 
 
 def _eager_end_of_turn_enabled(user_config, is_realtime) -> bool:
@@ -316,13 +328,26 @@ def _bind_stt_fallback_turns(
     *,
     uses_external_turns: bool,
 ) -> None:
-    """After Flux fails over, end turns the way a Nova transcription line does."""
+    """After external STT fails over, use confidence-gated Smart Turn."""
     from api.services.pipecat.fallback_stt import FallbackSTTService
 
     if not uses_external_turns or not isinstance(stt, FallbackSTTService):
         return
-    strategies = _create_non_realtime_user_turn_strategies(
-        run_configs, uses_external_turns=False
+    fallback_smart_turn_stop_secs = max(
+        DEFAULT_SMART_TURN_STOP_SECS,
+        run_configs.get("smart_turn_stop_secs") or DEFAULT_SMART_TURN_STOP_SECS,
+    )
+    strategies = UserTurnStrategies(
+        start=_create_non_realtime_user_turn_start_strategies(
+            run_configs, uses_external_turns=False
+        ),
+        stop=[
+            TurnAnalyzerUserTurnStopStrategy(
+                turn_analyzer=_FallbackSmartTurnAnalyzer(
+                    params=SmartTurnParams(stop_secs=fallback_smart_turn_stop_secs)
+                )
+            )
+        ],
     )
     timeout = _resolve_user_turn_stop_timeout(run_configs, uses_external_turns=False)
 

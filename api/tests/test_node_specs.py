@@ -378,6 +378,7 @@ def test_all_registered_node_models_inherit_base_node_data():
                 "prompt",
                 "allow_interrupt",
                 "add_global_prompt",
+                "respond_immediately",
                 "extraction_enabled",
                 "extraction_prompt",
                 "extraction_variables",

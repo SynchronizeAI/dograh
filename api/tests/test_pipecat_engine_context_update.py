@@ -18,6 +18,7 @@ from typing import List
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from pipecat.frames.frames import LLMContextFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
@@ -47,6 +48,7 @@ async def run_pipeline_and_capture_context(
     workflow: WorkflowGraph,
     mock_steps: List[List],
     set_node_delay: float = 0.0,
+    on_ready=None,
 ) -> tuple[ContextCapturingMockLLM, LLMContext]:
     """Run a pipeline with context-capturing mock LLM.
 
@@ -127,13 +129,46 @@ async def run_pipeline_and_capture_context(
         new_callable=AsyncMock,
         return_value=1,
     ):
-        await run_engine_test_pipeline(task, engine, mock_transport)
+        await run_engine_test_pipeline(
+            task,
+            engine,
+            mock_transport,
+            on_ready=(lambda: on_ready(engine)) if on_ready else None,
+        )
 
     return llm, context
 
 
 class TestContextUpdateBeforeNextCompletion:
     """Test that context is properly updated before the next LLM completion."""
+
+    @pytest.mark.asyncio
+    async def test_transition_speech_is_added_to_llm_context(
+        self, three_node_workflow: WorkflowGraph
+    ):
+        transition_speech = "Is there anything else I can help with?"
+        three_node_workflow.edges[0].transition_speech = transition_speech
+        mock_steps = [
+            MockLLMService.create_function_call_chunks(
+                function_name="collect_info", arguments={}, tool_call_id="call_enter"
+            ),
+            MockLLMService.create_function_call_chunks(
+                function_name="end_call", arguments={}, tool_call_id="call_end"
+            ),
+            MockLLMService.create_text_chunks("Goodbye!"),
+        ]
+
+        llm, _ = await run_pipeline_and_capture_context(
+            workflow=three_node_workflow, mock_steps=mock_steps
+        )
+
+        end_context = llm.get_context_at_step(2)
+        assert end_context is not None
+        assert any(
+            message.get("role") == "assistant"
+            and message.get("content") == transition_speech
+            for message in end_context["messages"]
+        )
 
     @pytest.mark.asyncio
     async def test_single_transition_updates_context_before_next_completion(
@@ -342,3 +377,107 @@ class TestContextUpdateBeforeNextCompletion:
         assert len(assistant_messages_at_step_2) >= 2, (
             "Should have at least 2 assistant messages by step 2"
         )
+
+    @pytest.mark.asyncio
+    async def test_later_node_cannot_call_earlier_node_transition(
+        self, three_node_workflow: WorkflowGraph
+    ):
+        """A node's functions replace the previous node's, as in Pipecat Flows.
+
+        The agent node has no edge back to itself, so a repeated
+        ``collect_info`` call from the agent node must not re-enter it.
+        """
+        mock_steps = [
+            MockLLMService.create_function_call_chunks(
+                function_name="collect_info", arguments={}, tool_call_id="call_enter"
+            ),
+            MockLLMService.create_function_call_chunks(
+                function_name="collect_info", arguments={}, tool_call_id="call_stale"
+            ),
+            MockLLMService.create_function_call_chunks(
+                function_name="end_call", arguments={}, tool_call_id="call_end"
+            ),
+            MockLLMService.create_text_chunks("Goodbye!"),
+        ]
+
+        llm, context = await run_pipeline_and_capture_context(
+            workflow=three_node_workflow, mock_steps=mock_steps
+        )
+
+        stale_result = next(
+            msg
+            for msg in context.get_messages()
+            if msg.get("tool_call_id") == "call_stale"
+        )
+        assert "not currently available" in stale_result["content"]
+        assert "collect_info" not in llm._functions
+
+    @pytest.mark.asyncio
+    async def test_node_set_not_to_respond_immediately_waits_for_caller(
+        self, three_node_workflow: WorkflowGraph
+    ):
+        """Entering a node with ``respond_immediately`` off starts no generation;
+        the next one runs on the caller's next turn."""
+        three_node_workflow.nodes["agent"].respond_immediately = False
+        three_node_workflow.edges[
+            0
+        ].transition_speech = "What would you like to do next?"
+        mock_steps = [
+            MockLLMService.create_function_call_chunks(
+                function_name="collect_info", arguments={}, tool_call_id="call_enter"
+            ),
+            MockLLMService.create_function_call_chunks(
+                function_name="end_call", arguments={}, tool_call_id="call_end"
+            ),
+            MockLLMService.create_text_chunks("Goodbye!"),
+        ]
+        steps_after_entry: list[int] = []
+        drivers: list[asyncio.Task] = []
+
+        async def on_ready(engine: PipecatEngine) -> None:
+            async def drive() -> None:
+                await engine.set_node(engine.active_agent.workflow.start_node_id)
+                await engine.active_agent.llm.queue_frame(
+                    LLMContextFrame(engine.context)
+                )
+                async with asyncio.timeout(2):
+                    while engine.active_agent.current_node.id == "start":
+                        await asyncio.sleep(0.01)
+                await asyncio.sleep(0.3)
+                steps_after_entry.append(engine.active_agent.llm.get_current_step())
+                if engine.active_agent.current_node.id == "agent":
+                    # Stand-in for the caller's next turn.
+                    await engine.active_agent.llm.queue_frame(
+                        LLMContextFrame(engine.context)
+                    )
+
+            drivers.append(asyncio.create_task(drive()))
+
+        llm, _ = await run_pipeline_and_capture_context(
+            workflow=three_node_workflow, mock_steps=mock_steps, on_ready=on_ready
+        )
+        await asyncio.gather(*drivers)
+
+        assert steps_after_entry == [1]
+        assert llm.get_current_step() == 3
+        assert AGENT_SYSTEM_PROMPT in llm.get_system_prompt_at_step(1)
+
+    @pytest.mark.asyncio
+    async def test_wait_mode_generates_when_transition_speech_is_not_queued(
+        self, three_node_workflow: WorkflowGraph
+    ):
+        three_node_workflow.nodes["agent"].respond_immediately = False
+        mock_steps = [
+            MockLLMService.create_function_call_chunks(
+                function_name="collect_info", arguments={}, tool_call_id="call_enter"
+            ),
+            MockLLMService.create_function_call_chunks(
+                function_name="end_call", arguments={}, tool_call_id="call_end"
+            ),
+            MockLLMService.create_text_chunks("Goodbye!"),
+        ]
+        llm, _ = await run_pipeline_and_capture_context(
+            workflow=three_node_workflow, mock_steps=mock_steps
+        )
+
+        assert llm.get_current_step() == 3

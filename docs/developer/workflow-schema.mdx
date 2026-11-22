@@ -57,12 +57,16 @@ Each node represents a step in the conversation.
 | `name` | string | required | Display name for the node |
 | `prompt` | string | required* | LLM system prompt. *Not required for `trigger`, `webhook`, `qa` nodes |
 | `allow_interrupt` | boolean | `false` | Allow the caller to interrupt the agent mid-speech |
-| `wait_for_user_response` | boolean | `false` | Pause and wait for caller input before continuing |
-| `wait_for_user_response_timeout` | number | `null` | Seconds to wait for input before timing out |
 | `detect_voicemail` | boolean | `false` | Detect and handle voicemail on outbound calls |
 | `delayed_start` | boolean | `false` | Delay execution of this node |
 | `delayed_start_duration` | number | `null` | Delay in seconds |
 | `add_global_prompt` | boolean | `true` | Merge the `globalNode` prompt into this node's prompt |
+
+### agentNode — response behavior
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `respond_immediately` | boolean | `true` | See the [Agent Node guide](../voice-agent/agent#what-goes-in-an-agent-node) for runtime behavior. |
 
 ### agentNode — data extraction
 

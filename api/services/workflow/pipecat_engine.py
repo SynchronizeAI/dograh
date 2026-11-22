@@ -1,3 +1,4 @@
+from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -432,8 +433,10 @@ class PipecatEngine:
         transition_speech_recording_id: Optional[str] = None,
         *,
         agent: AgentRuntime | None = None,
+        source_node: Node | None = None,
     ):
         agent = agent or self.active_agent
+        source_node = source_node or agent.current_node
 
         async def transition_func(function_call_params: FunctionCallParams) -> None:
             """Inner function that handles the node change tool calls"""
@@ -444,6 +447,16 @@ class PipecatEngine:
             logger.info(f"Arguments: {function_call_params.arguments}")
 
             try:
+                if source_node is not None and agent.current_node is not source_node:
+                    await function_call_params.result_callback(
+                        {
+                            "status": "error",
+                            "error": "Transition is no longer available",
+                        },
+                        properties=FunctionCallResultProperties(run_llm=False),
+                    )
+                    return
+
                 # Perform variable extraction before transitioning to new node
                 await self._perform_variable_extraction_if_needed(
                     self.active_agent.current_node,
@@ -452,6 +465,7 @@ class PipecatEngine:
 
                 # Queue transition speech/audio before switching nodes
                 speech_type = transition_speech_type or "text"
+                speech_queued = False
                 if (
                     speech_type == "audio"
                     and transition_speech_recording_id
@@ -460,18 +474,30 @@ class PipecatEngine:
                     logger.info(
                         f"Playing transition audio: {transition_speech_recording_id}"
                     )
-                    await self.queue_speech(
-                        recording_pk=int(transition_speech_recording_id), mute_user=True
+                    speech = await self.queue_speech(
+                        recording_pk=int(transition_speech_recording_id),
+                        append_to_context=True,
+                        mute_user=True,
                     )
+                    speech_queued = speech.outcome not in (
+                        PlaybackOutcome.FAILED,
+                        PlaybackOutcome.SKIPPED,
+                        PlaybackOutcome.CLOSED,
+                    ) and bool(speech.text and speech.text.strip())
                 elif transition_speech:
-                    await self.queue_text_message(transition_speech, mute_user=True)
+                    speech_queued = await self.queue_text_message(
+                        transition_speech,
+                        append_to_context=True,
+                        mute_user=True,
+                    )
 
                 # Set context for the new node, so that when the function call result
                 # frame is received by LLMContextAggregator and an LLM generation
                 # is done, we have updated context and functions
                 await self.set_node(transition_to_node, origin_visit_id=agent.visit_id)
 
-                is_end_node = agent.workflow.nodes[transition_to_node].is_end
+                next_node = agent.workflow.nodes[transition_to_node]
+                is_end_node = next_node.is_end
                 if is_end_node:
                     # Register before the tool result can trigger generation.
                     closing_speech = self.speech_playback.expect_response(
@@ -495,6 +521,13 @@ class PipecatEngine:
                 result = {"status": "done"}
 
                 properties = FunctionCallResultProperties(
+                    # Pipecat Flows' respond_immediately: a node set to wait
+                    # for the caller answers on the caller's next turn.
+                    run_llm=(
+                        False
+                        if speech_queued and not next_node.respond_immediately
+                        else None
+                    ),
                     on_context_updated=on_context_updated,
                 )
 
@@ -520,6 +553,7 @@ class PipecatEngine:
         transition_speech_type: Optional[str] = None,
         transition_speech_recording_id: Optional[str] = None,
         *,
+        source_node: Node,
         agent: AgentRuntime | None = None,
     ):
         agent = agent or self.active_agent
@@ -535,6 +569,7 @@ class PipecatEngine:
             transition_speech_type,
             transition_speech_recording_id,
             agent=agent,
+            source_node=source_node,
         )
 
         # Register function with LLM
@@ -957,6 +992,7 @@ class PipecatEngine:
                     edge.transition_speech,
                     edge.data.transition_speech_type,
                     edge.data.transition_speech_recording_id,
+                    source_node=node,
                     agent=agent,
                 )
         if node.tool_uuids and manager:
@@ -977,6 +1013,13 @@ class PipecatEngine:
         functions = await compose_functions_for_node(
             node=node, custom_tool_manager=manager
         )
+        # As in Pipecat Flows, a node's functions replace the previous node's:
+        # a handler the new node does not offer can no longer be called.
+        offered = {function.name for function in functions}
+        for function in agent.tools.standard_tools if agent.tools else ():
+            if function.name not in offered:
+                with suppress(KeyError):
+                    agent.llm.unregister_function(function.name)
         agent.tools = ToolsSchema(standard_tools=functions)
         agent.system_prompt = prompt.text
         if agent.recording_router is not None:

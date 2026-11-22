@@ -46,6 +46,10 @@ export interface AgentNode {
      */
     add_global_prompt?: boolean;
     /**
+     * When false, the node waits for the caller only after the incoming edge's transition speech is queued and, for recorded audio, has a non-empty transcript; otherwise it responds as usual.
+     */
+    respond_immediately?: boolean;
+    /**
      * When true, runs an LLM extraction pass for this node.
      */
     extraction_enabled?: boolean;

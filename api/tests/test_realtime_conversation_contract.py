@@ -342,7 +342,7 @@ async def test_edge_speech_policy_preserves_node_transition(
             if isinstance(call.args[0], TTSSpeakFrame)
         )
         assert frame.text == "Let me ask a few questions."
-        assert not frame.append_to_context
+        assert frame.append_to_context
     assert await engine.should_mute_user(InputAudioRawFrame(bytes(640), 16000, 1)) == (
         not is_realtime
     )

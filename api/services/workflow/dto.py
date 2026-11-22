@@ -476,6 +476,7 @@ class StartCallNodeData(
         "prompt",
         "allow_interrupt",
         "add_global_prompt",
+        "respond_immediately",
         "extraction_enabled",
         "extraction_prompt",
         "extraction_variables",
@@ -518,7 +519,16 @@ class AgentNodeData(
     _ExtractionNodeDataMixin,
     _ToolDocumentRefsMixin,
 ):
-    pass
+    respond_immediately: bool = spec_field(
+        default=True,
+        ui_type=PropertyType.boolean,
+        display_name="Respond Immediately",
+        description=(
+            "When false, the node waits for the caller only after the incoming "
+            "edge's transition speech is queued and, for recorded audio, has a "
+            "non-empty transcript; otherwise it responds as usual."
+        ),
+    )
 
 
 @node_spec(

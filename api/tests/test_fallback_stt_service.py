@@ -25,7 +25,7 @@ from pipecat.services.assemblyai.stt import AssemblyAISTTService
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.turns.user_stop import (
     ExternalUserTurnStopStrategy,
-    SpeechTimeoutUserTurnStopStrategy,
+    TurnAnalyzerUserTurnStopStrategy,
 )
 from pipecat.turns.user_turn_controller import UserTurnController
 from pipecat.utils.asyncio.task_manager import TaskManager
@@ -260,7 +260,7 @@ async def _speak_while_flux_still_reports_speech(controller):
 
 
 @pytest.mark.asyncio
-async def test_external_turn_failover_uses_conservative_pause_window():
+async def test_external_turn_failover_installs_local_turn_analyzer():
     from api.services.pipecat.run_pipeline import (
         _create_non_realtime_user_turn_strategies,
     )
@@ -305,17 +305,15 @@ async def test_external_turn_failover_uses_conservative_pause_window():
 
     await stt.on_switched()
     assert isinstance(
-        controller.user_turn_strategies.stop[0], SpeechTimeoutUserTurnStopStrategy
+        controller.user_turn_strategies.stop[0], TurnAnalyzerUserTurnStopStrategy
     )
     assert greeting._normal_strategies is not flux
     assert isinstance(
-        greeting._normal_strategies.stop[0], SpeechTimeoutUserTurnStopStrategy
+        greeting._normal_strategies.stop[0], TurnAnalyzerUserTurnStopStrategy
     )
 
     await _speak_while_flux_still_reports_speech(controller)
     assert stopped == []
-    await asyncio.sleep(1.3)
-    assert stopped == [1]
     await controller.cleanup()
 
 
@@ -330,31 +328,19 @@ async def test_external_turn_failover_uses_conservative_pause_window():
 async def test_stt_fallback_keeps_a_turn_open_across_a_1_5_second_pause(
     monkeypatch, prefix, continuation
 ):
-    from pipecat.audio.turn.base_turn_analyzer import EndOfTurnState
+    probabilities = iter((0.539, 0.9))
 
-    class EarlyCompleteAnalyzer:
-        """Represent the observed low-confidence Smart Turn completion."""
-
-        def __init__(self, *, params):
-            self.params = params
-
-        def set_sample_rate(self, _sample_rate):
-            pass
-
-        def update_vad_start_secs(self, _start_secs):
-            pass
-
-        async def analyze_end_of_turn(self):
-            return EndOfTurnState.COMPLETE, None
-
-        def clear(self):
-            pass
-
-        async def cleanup(self):
-            pass
+    def predict_endpoint(_analyzer, _audio):
+        probability = next(probabilities)
+        return {
+            "probability": probability,
+            "prediction": int(probability > 0.5),
+        }
 
     monkeypatch.setattr(
-        run_pipeline_module, "LocalSmartTurnAnalyzerV3", EarlyCompleteAnalyzer
+        run_pipeline_module.LocalSmartTurnAnalyzerV3,
+        "_predict_endpoint",
+        predict_endpoint,
     )
     original = run_pipeline_module._create_non_realtime_user_turn_strategies(
         {"turn_stop_strategy": "assemblyai"}, uses_external_turns=True
@@ -370,9 +356,14 @@ async def test_stt_fallback_keeps_a_turn_open_across_a_1_5_second_pause(
         )
     )
     stopped = []
-    controller.add_event_handler(
-        "on_user_turn_stopped", lambda *_args: stopped.append(1)
-    )
+    loop = asyncio.get_running_loop()
+    stopped_event = asyncio.Event()
+
+    def record_turn_stop(*_args):
+        stopped.append(loop.time())
+        stopped_event.set()
+
+    controller.add_event_handler("on_user_turn_stopped", record_turn_stop)
 
     greeting = GreetingController.__new__(GreetingController)
     greeting._user = SimpleNamespace(user_turn_controller=controller)
@@ -389,11 +380,13 @@ async def test_stt_fallback_keeps_a_turn_open_across_a_1_5_second_pause(
     )
     await controller.process_frame(ProposedUserStartedSpeakingFrame())
     await controller.process_frame(VADUserStartedSpeakingFrame())
+    await controller.process_frame(_audio(b"\x00\x00" * 320))
     await controller.process_frame(VADUserStoppedSpeakingFrame())
     await asyncio.sleep(1.5)
     assert stopped == []
 
     await controller.process_frame(VADUserStartedSpeakingFrame())
+    await controller.process_frame(_audio(b"\x00\x00" * 320))
     await controller.process_frame(
         TranscriptionFrame(
             text=f"{prefix} {continuation}",
@@ -402,23 +395,25 @@ async def test_stt_fallback_keeps_a_turn_open_across_a_1_5_second_pause(
             finalized=True,
         )
     )
+    final_speech_at = loop.time()
     await controller.process_frame(VADUserStoppedSpeakingFrame())
-    await asyncio.sleep(2.1)
-    assert stopped == [1]
+    await asyncio.wait_for(stopped_event.wait(), timeout=1.2)
+    assert len(stopped) == 1
+    assert stopped[0] - final_speech_at <= 1.2
     await controller.cleanup()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("turn_stop_strategy", "smart_turn_stop_secs", "expected_timeout"),
+    ("turn_stop_strategy", "smart_turn_stop_secs", "expected_stop_secs"),
     [
         ("assemblyai", 1.4, 2.0),
         ("transcription", 2.4, 2.4),
         ("turn_analyzer", 1.7, 2.0),
     ],
 )
-async def test_external_stt_failover_uses_conservative_pause_timeout(
-    turn_stop_strategy, smart_turn_stop_secs, expected_timeout
+async def test_external_stt_failover_uses_smart_turn_pause_window(
+    turn_stop_strategy, smart_turn_stop_secs, expected_stop_secs
 ):
     controller = SimpleNamespace(_user_turn_stop_timeout=None)
     user_aggregator = SimpleNamespace(user_turn_controller=controller)
@@ -439,5 +434,5 @@ async def test_external_stt_failover_uses_conservative_pause_timeout(
 
     strategies = greeting.use_transcription_turns.await_args.args[0]
     stop_strategy = strategies.stop[0]
-    assert isinstance(stop_strategy, SpeechTimeoutUserTurnStopStrategy)
-    assert stop_strategy._user_speech_timeout == expected_timeout
+    assert isinstance(stop_strategy, TurnAnalyzerUserTurnStopStrategy)
+    assert stop_strategy._turn_analyzer.params.stop_secs == expected_stop_secs

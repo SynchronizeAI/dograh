@@ -137,6 +137,19 @@ ensure_tracing()
 
 DEFAULT_USER_TURN_STOP_TIMEOUT = 5.0
 EXTERNAL_TURN_USER_STOP_TIMEOUT = 30.0
+# Keep a margin above Smart Turn's default 0.5 cutoff; the reported pause
+# transcript scored 0.539 while the caller was still mid-sentence.
+FALLBACK_SMART_TURN_MIN_CONFIDENCE = 0.6
+
+
+class _FallbackSmartTurnAnalyzer(LocalSmartTurnAnalyzerV3):
+    """Require stronger Smart Turn confidence after external STT fails over."""
+
+    def _predict_endpoint(self, audio_array):
+        result = super()._predict_endpoint(audio_array)
+        if result["probability"] < FALLBACK_SMART_TURN_MIN_CONFIDENCE:
+            result["prediction"] = 0
+        return result
 
 
 def _eager_end_of_turn_enabled(user_config, is_realtime) -> bool:
@@ -316,12 +329,12 @@ def _bind_stt_fallback_turns(
     *,
     uses_external_turns: bool,
 ) -> None:
-    """After external STT fails over, use a conservative silence timeout."""
+    """After external STT fails over, use confidence-gated Smart Turn."""
     from api.services.pipecat.fallback_stt import FallbackSTTService
 
     if not uses_external_turns or not isinstance(stt, FallbackSTTService):
         return
-    fallback_user_speech_timeout = max(
+    fallback_smart_turn_stop_secs = max(
         DEFAULT_SMART_TURN_STOP_SECS,
         run_configs.get("smart_turn_stop_secs") or DEFAULT_SMART_TURN_STOP_SECS,
     )
@@ -330,8 +343,10 @@ def _bind_stt_fallback_turns(
             run_configs, uses_external_turns=False
         ),
         stop=[
-            SpeechTimeoutUserTurnStopStrategy(
-                user_speech_timeout=fallback_user_speech_timeout
+            TurnAnalyzerUserTurnStopStrategy(
+                turn_analyzer=_FallbackSmartTurnAnalyzer(
+                    params=SmartTurnParams(stop_secs=fallback_smart_turn_stop_secs)
+                )
             )
         ],
     )

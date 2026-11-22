@@ -137,9 +137,8 @@ ensure_tracing()
 
 DEFAULT_USER_TURN_STOP_TIMEOUT = 5.0
 EXTERNAL_TURN_USER_STOP_TIMEOUT = 30.0
-# Keep a margin above Smart Turn's default 0.5 cutoff; the reported pause
-# transcript scored 0.539 while the caller was still mid-sentence.
-FALLBACK_SMART_TURN_MIN_CONFIDENCE = 0.6
+# The reported English and Korean mid-sentence pauses scored 0.982 and 0.926.
+FALLBACK_SMART_TURN_MIN_CONFIDENCE = 0.99
 
 
 class _FallbackSmartTurnAnalyzer(LocalSmartTurnAnalyzerV3):

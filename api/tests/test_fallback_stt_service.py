@@ -319,16 +319,16 @@ async def test_external_turn_failover_installs_local_turn_analyzer():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("prefix", "continuation"),
+    ("prefix", "continuation", "pause_probability"),
     [
-        ("I want a reservation for Friday at", "seven for two people"),
-        ("다음 주 금요일 오후 세 시에 두 명으로 예약하고", "싶습니다."),
+        ("I want a reservation for Friday at", "seven for two people", 0.982),
+        ("다음 주 금요일 오후 세 시에 두 명으로 예약하고", "싶습니다.", 0.926),
     ],
 )
 async def test_stt_fallback_keeps_a_turn_open_across_a_1_5_second_pause(
-    monkeypatch, prefix, continuation
+    monkeypatch, prefix, continuation, pause_probability
 ):
-    probabilities = iter((0.539, 0.9))
+    probabilities = iter((pause_probability, 0.999))
 
     def predict_endpoint(_analyzer, _audio):
         probability = next(probabilities)

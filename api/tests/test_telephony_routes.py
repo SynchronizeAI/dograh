@@ -1,3 +1,5 @@
+import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, Mock, patch
 
@@ -629,8 +631,13 @@ async def test_koreaaitel_replay_reuses_run_and_new_call_id_creates_run():
         id=55, organization_id=11, name="KoreaAITel", credentials={}
     )
     phone_row = SimpleNamespace(id=77, inbound_workflow_id=33, address="07012345678")
-    workflow = SimpleNamespace(id=33, user_id=99)
-    existing_run = SimpleNamespace(id=999, mode="koreaaitel")
+    workflow = SimpleNamespace(id=33, user_id=99, organization_id=11)
+    existing_run = SimpleNamespace(
+        id=999,
+        mode="koreaaitel",
+        workflow_id=33,
+        workflow=workflow,
+    )
     provider_instance = SimpleNamespace(
         verify_inbound_signature=AsyncMock(return_value=True),
         start_inbound_stream=AsyncMock(side_effect=["first", "replay", "new-call"]),
@@ -693,6 +700,9 @@ async def test_koreaaitel_replay_reuses_run_and_new_call_id_creates_run():
         mock_db.get_workflow_run_by_call_id = AsyncMock(
             side_effect=[None, existing_run, None]
         )
+        mock_db.workflow_run_replay_lock = Mock(
+            side_effect=lambda *_args: _noop_async_context()
+        )
         mock_concurrency.acquire_org_slot = AsyncMock(return_value=object())
         mock_concurrency.bind_workflow_run = AsyncMock()
         mock_concurrency.release_workflow_run_slot = AsyncMock()
@@ -711,9 +721,145 @@ async def test_koreaaitel_replay_reuses_run_and_new_call_id_creates_run():
         ]
         == 999
     )
-    assert mock_db.get_workflow_run_by_call_id.await_args_list[0].args == ("call-1",)
-    assert mock_db.get_workflow_run_by_call_id.await_args_list[1].args == ("call-1",)
-    assert mock_db.get_workflow_run_by_call_id.await_args_list[2].args == ("call-2",)
+    assert mock_db.get_workflow_run_by_call_id.await_args_list[0].args == (
+        "call-1",
+        "koreaaitel",
+    )
+    assert mock_db.get_workflow_run_by_call_id.await_args_list[1].args == (
+        "call-1",
+        "koreaaitel",
+    )
+    assert mock_db.get_workflow_run_by_call_id.await_args_list[2].args == (
+        "call-2",
+        "koreaaitel",
+    )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_koreaaitel_deliveries_create_one_run(
+    setup_test_database, monkeypatch
+):
+    from api.db import db_client
+
+    request = SimpleNamespace(headers={}, url="https://api.example.com/inbound/run")
+    webhook_data = {
+        "CallId": "same-call-id",
+        "AccountId": "account-1",
+        "From": "01012345678",
+        "To": "07012345678",
+    }
+    normalized_data = SimpleNamespace(
+        provider="koreaaitel",
+        direction="inbound",
+        to_number="07012345678",
+        from_number="01012345678",
+        to_country="KR",
+        from_country="KR",
+        account_id="account-1",
+        call_id="same-call-id",
+        raw_data=webhook_data,
+    )
+    provider_class = SimpleNamespace(
+        PROVIDER_NAME="koreaaitel",
+        generate_validation_error_response=Mock(return_value="rejected"),
+    )
+    config = SimpleNamespace(
+        id=55, organization_id=11, name="KoreaAITel", credentials={}
+    )
+    phone_row = SimpleNamespace(id=77, inbound_workflow_id=33, address="07012345678")
+    workflow = SimpleNamespace(id=33, user_id=99)
+    provider_instance = SimpleNamespace(
+        verify_inbound_signature=AsyncMock(return_value=True),
+        start_inbound_stream=AsyncMock(side_effect=["first", "replay"]),
+    )
+    runs = {}
+    next_run_id = iter([700, 701])
+
+    async def get_run_by_call_id(call_id, provider):
+        await asyncio.sleep(0)
+        return runs.get((provider, call_id))
+
+    async def create_run(*args, **kwargs):
+        normalized = args[4]
+        await asyncio.sleep(0.02)
+        run_id = next(next_run_id)
+        runs[(args[3], normalized.call_id)] = SimpleNamespace(
+            id=run_id,
+            mode=args[3],
+            workflow_id=args[0],
+            workflow=SimpleNamespace(organization_id=args[2]),
+        )
+        return run_id, None
+
+    with (
+        patch(
+            "api.routes.telephony.parse_webhook_request",
+            new=AsyncMock(return_value=(webhook_data, "raw-body")),
+        ),
+        patch(
+            "api.routes.telephony._detect_provider",
+            new=AsyncMock(return_value=provider_class),
+        ),
+        patch(
+            "api.routes.telephony.normalize_webhook_data",
+            return_value=normalized_data,
+        ),
+        patch(
+            "api.routes.telephony.get_telephony_provider_by_id",
+            new=AsyncMock(return_value=provider_instance),
+        ),
+        patch(
+            "api.routes.telephony.get_backend_endpoints",
+            new=AsyncMock(
+                return_value=("https://api.example.test", "wss://api.example.test")
+            ),
+        ),
+        patch(
+            "api.routes.telephony.authorize_workflow_run_start",
+            new=AsyncMock(
+                return_value=SimpleNamespace(has_quota=True, error_message="")
+            ),
+        ) as authorize_run,
+        patch("api.routes.telephony.call_concurrency") as concurrency,
+        patch(
+            "api.routes.telephony._create_inbound_workflow_run",
+            new=AsyncMock(side_effect=create_run),
+        ) as create_workflow_run,
+    ):
+        concurrency.acquire_org_slot = AsyncMock(return_value=object())
+        concurrency.bind_workflow_run = AsyncMock()
+        concurrency.release_workflow_run_slot = AsyncMock()
+        concurrency.release_slot = AsyncMock()
+        monkeypatch.setattr(
+            db_client,
+            "find_inbound_route_by_account",
+            AsyncMock(return_value=(config, phone_row)),
+        )
+        monkeypatch.setattr(
+            db_client, "get_workflow", AsyncMock(return_value=workflow)
+        )
+        monkeypatch.setattr(
+            db_client, "get_workflow_run_by_call_id", get_run_by_call_id
+        )
+
+        responses = await asyncio.gather(
+            handle_inbound_run(request), handle_inbound_run(request)
+        )
+
+    assert sorted(responses) == ["first", "replay"]
+    assert create_workflow_run.await_count == 1
+    assert authorize_run.await_count == 1
+    assert concurrency.acquire_org_slot.await_count == 1
+    assert len(runs) == 1
+    assert {
+        call.kwargs["workflow_run_id"]
+        for call in provider_instance.start_inbound_stream.await_args_list
+    } == {700}
+
+
+@asynccontextmanager
+async def _noop_async_context():
+    yield
 
 
 @pytest.mark.asyncio

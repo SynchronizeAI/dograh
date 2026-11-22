@@ -1,7 +1,9 @@
+import json
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
-from sqlalchemy import Float, cast, func
+from sqlalchemy import Float, cast, func, text
 from sqlalchemy.future import select
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -34,6 +36,20 @@ def append_unique_tags(existing_tags: object, new_tags: object) -> list:
 
 
 class WorkflowRunClient(BaseDBClient):
+    @asynccontextmanager
+    async def workflow_run_replay_lock(
+        self, provider: str, call_id: str
+    ) -> AsyncIterator[None]:
+        lock_key = json.dumps([provider, call_id], separators=(",", ":"))
+        async with self.async_session() as session:
+            await session.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"
+                ),
+                {"lock_key": lock_key},
+            )
+            yield
+
     async def create_workflow_run(
         self,
         name: str,
@@ -602,12 +618,13 @@ class WorkflowRunClient(BaseDBClient):
             return result.scalars().first()
 
     async def get_workflow_run_by_call_id(
-        self, call_id: str
+        self, call_id: str, provider: str | None = None
     ) -> Optional[WorkflowRunModel]:
         """Find workflow run by call_id stored in gathered_context.
 
         Args:
             call_id: The telephony call ID to search for
+            provider: Optionally limit the lookup to one provider mode
 
         Returns:
             The WorkflowRunModel if found, None otherwise
@@ -615,17 +632,20 @@ class WorkflowRunClient(BaseDBClient):
         async with self.async_session() as session:
             # Use JSON text extraction to find matching call_id
             # This leverages the idx_workflow_runs_call_id index
-            result = await session.execute(
+            query = (
                 select(WorkflowRunModel)
                 .options(
                     joinedload(WorkflowRunModel.workflow).joinedload(WorkflowModel.user)
                 )
                 .where(
-                    WorkflowRunModel.gathered_context.op("->>")("call_id") == call_id
+                    WorkflowRunModel.gathered_context.op("->>")("call_id") == call_id,
                 )
                 .order_by(WorkflowRunModel.created_at.desc())
                 .limit(1)
             )
+            if provider is not None:
+                query = query.where(WorkflowRunModel.mode == provider)
+            result = await session.execute(query)
             return result.scalars().first()
 
     async def list_voice_runs_for_workflow(

@@ -104,6 +104,8 @@ class KoreaAITelProvider(TelephonyProvider):
         from_raw = "" if restricted else webhook_data.get("From", "")
         to_raw = webhook_data.get("To", "")
         raw_data = dict(webhook_data)
+        if "CallToken" in raw_data:
+            raw_data["CallToken"] = "[REDACTED]"
         if restricted:
             raw_data["From"] = ""
         return NormalizedInboundData(

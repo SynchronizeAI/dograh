@@ -74,6 +74,15 @@ def test_parse_withheld_caller_is_blank_everywhere():
     assert data.raw_data["ForwardedFrom"] == "0212345678"
 
 
+def test_parse_redacts_call_token_and_preserves_other_webhook_fields():
+    webhook = {**WEBHOOK, "CallToken": "secret-capability"}
+
+    data = KoreaAITelProvider.parse_inbound_webhook(webhook)
+
+    assert data.raw_data == {**WEBHOOK, "CallToken": "[REDACTED]"}
+    assert webhook["CallToken"] == "secret-capability"
+
+
 def test_validate_account_id():
     assert KoreaAITelProvider.validate_account_id({"account_id": "AC1a2b"}, "AC1a2b")
     assert not KoreaAITelProvider.validate_account_id({"account_id": "AC1a2b"}, "AC9")

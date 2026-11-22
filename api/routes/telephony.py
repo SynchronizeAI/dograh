@@ -5,6 +5,7 @@ Consolidated from split modules for easier maintenance.
 
 import json
 import uuid
+from contextlib import asynccontextmanager
 from typing import Optional, cast
 
 from fastapi import (
@@ -541,6 +542,126 @@ async def _create_inbound_workflow_run(
     return cast(int, workflow_run.id), run_inputs.definition
 
 
+@asynccontextmanager
+async def _inbound_call_replay_lock(provider: str, call_id: str):
+    if provider == "koreaaitel":
+        async with db_client.workflow_run_replay_lock(provider, call_id):
+            yield
+    else:
+        yield
+
+
+async def _start_inbound_call(
+    workflow_id: int,
+    user_id: int,
+    organization_id: int,
+    provider_class,
+    provider_instance,
+    normalized_data,
+    telephony_configuration_id: int,
+    from_phone_number_id: Optional[int],
+    workflow,
+    *,
+    concurrency_source: str,
+    quota_log_suffix: str,
+    start_pre_call_fetch: bool,
+):
+    provider = provider_class.PROVIDER_NAME
+    async with _inbound_call_replay_lock(provider, normalized_data.call_id):
+        if provider == "koreaaitel":
+            existing_run = await db_client.get_workflow_run_by_call_id(
+                normalized_data.call_id, provider
+            )
+            if existing_run:
+                _, wss_backend_endpoint = await get_backend_endpoints()
+                websocket_url = ws_auth.build_media_ws_url(
+                    wss_backend_endpoint,
+                    existing_run.workflow_id,
+                    existing_run.workflow.organization_id,
+                    existing_run.id,
+                )
+                return await provider_instance.start_inbound_stream(
+                    websocket_url=websocket_url,
+                    workflow_run_id=existing_run.id,
+                    normalized_data=normalized_data,
+                )
+
+        try:
+            concurrency_slot = await call_concurrency.acquire_org_slot(
+                organization_id,
+                source=concurrency_source,
+                timeout=0,
+            )
+        except CallConcurrencyLimitError:
+            return provider_class.generate_validation_error_response(
+                TelephonyError.CONCURRENT_CALL_LIMIT
+            )
+
+        workflow_run_id = None
+        try:
+            workflow_run_id, run_definition = await _create_inbound_workflow_run(
+                workflow_id,
+                user_id,
+                organization_id,
+                provider,
+                normalized_data,
+                telephony_configuration_id=telephony_configuration_id,
+                from_phone_number_id=from_phone_number_id,
+            )
+            await call_concurrency.bind_workflow_run(concurrency_slot, workflow_run_id)
+
+            quota_result = await authorize_workflow_run_start(
+                workflow_id=workflow_id,
+                organization_id=organization_id,
+                workflow_run_id=workflow_run_id,
+            )
+            if not quota_result.has_quota:
+                logger.warning(
+                    f"User {user_id} has exceeded quota{quota_log_suffix}: "
+                    f"{quota_result.error_message}"
+                )
+                await mark_workflow_run_failed(
+                    workflow_run_id, quota_result.error_message or "Quota exceeded"
+                )
+                await call_concurrency.release_workflow_run_slot(workflow_run_id)
+                return provider_class.generate_validation_error_response(
+                    TelephonyError.QUOTA_EXCEEDED
+                )
+
+            backend_endpoint, wss_backend_endpoint = await get_backend_endpoints()
+            websocket_url = ws_auth.build_media_ws_url(
+                wss_backend_endpoint,
+                workflow_id,
+                organization_id,
+                workflow_run_id,
+            )
+
+            response = await provider_instance.start_inbound_stream(
+                websocket_url=websocket_url,
+                workflow_run_id=workflow_run_id,
+                normalized_data=normalized_data,
+                backend_endpoint=backend_endpoint,
+            )
+            if start_pre_call_fetch:
+                start_inbound_pre_call_fetch(
+                    workflow, run_definition, workflow_run_id, normalized_data
+                )
+            return response
+        except WorkflowRunSlotAlreadyBoundError:
+            return provider_class.generate_validation_error_response(
+                TelephonyError.CONCURRENT_CALL_LIMIT
+            )
+        except Exception as e:
+            if workflow_run_id:
+                await mark_workflow_run_failed(
+                    workflow_run_id, f"Inbound call failed to start: {e}"
+                )
+                await call_concurrency.release_workflow_run_slot(workflow_run_id)
+            else:
+                await call_concurrency.release_slot(concurrency_slot)
+            raise
+
+
 async def _resolve_inbound_telephony_config(
     organization_id: int, provider_class, account_id: str
 ) -> tuple[TelephonyError, Optional[int]]:
@@ -935,100 +1056,20 @@ async def handle_inbound_run(request: Request):
                 TelephonyError.SIGNATURE_VALIDATION_FAILED
             )
 
-        # KoreaAITel may redeliver a signed webhook. Reuse the original run
-        # so a replay cannot start a second billable call.
-        if provider_class.PROVIDER_NAME == "koreaaitel":
-            existing_run = await db_client.get_workflow_run_by_call_id(
-                normalized_data.call_id
-            )
-            if existing_run and existing_run.mode == provider_class.PROVIDER_NAME:
-                _, wss_backend_endpoint = await get_backend_endpoints()
-                websocket_url = ws_auth.build_media_ws_url(
-                    wss_backend_endpoint,
-                    workflow_id,
-                    config.organization_id,
-                    existing_run.id,
-                )
-                return await provider_instance.start_inbound_stream(
-                    websocket_url=websocket_url,
-                    workflow_run_id=existing_run.id,
-                    normalized_data=normalized_data,
-                )
-
-        try:
-            concurrency_slot = await call_concurrency.acquire_org_slot(
-                config.organization_id,
-                source=f"inbound:{provider_class.PROVIDER_NAME}",
-                timeout=0,
-            )
-        except CallConcurrencyLimitError:
-            return provider_class.generate_validation_error_response(
-                TelephonyError.CONCURRENT_CALL_LIMIT
-            )
-
-        workflow_run_id = None
-        try:
-            # 5. Create workflow run + authorize quota before returning provider
-            # stream instructions.
-            workflow_run_id, run_definition = await _create_inbound_workflow_run(
-                workflow_id,
-                user_id,
-                config.organization_id,
-                provider_class.PROVIDER_NAME,
-                normalized_data,
-                telephony_configuration_id=telephony_configuration_id,
-                from_phone_number_id=phone_row.id,
-            )
-            await call_concurrency.bind_workflow_run(concurrency_slot, workflow_run_id)
-
-            quota_result = await authorize_workflow_run_start(
-                workflow_id=workflow_id,
-                organization_id=config.organization_id,
-                workflow_run_id=workflow_run_id,
-            )
-            if not quota_result.has_quota:
-                logger.warning(
-                    f"User {user_id} has exceeded quota: {quota_result.error_message}"
-                )
-                await mark_workflow_run_failed(
-                    workflow_run_id, quota_result.error_message or "Quota exceeded"
-                )
-                await call_concurrency.release_workflow_run_slot(workflow_run_id)
-                return provider_class.generate_validation_error_response(
-                    TelephonyError.QUOTA_EXCEEDED
-                )
-
-            backend_endpoint, wss_backend_endpoint = await get_backend_endpoints()
-            websocket_url = ws_auth.build_media_ws_url(
-                wss_backend_endpoint,
-                workflow_id,
-                config.organization_id,
-                workflow_run_id,
-            )
-
-            response = await provider_instance.start_inbound_stream(
-                websocket_url=websocket_url,
-                workflow_run_id=workflow_run_id,
-                normalized_data=normalized_data,
-                backend_endpoint=backend_endpoint,
-            )
-            start_inbound_pre_call_fetch(
-                workflow, run_definition, workflow_run_id, normalized_data
-            )
-            return response
-        except WorkflowRunSlotAlreadyBoundError:
-            return provider_class.generate_validation_error_response(
-                TelephonyError.CONCURRENT_CALL_LIMIT
-            )
-        except Exception as e:
-            if workflow_run_id:
-                await mark_workflow_run_failed(
-                    workflow_run_id, f"Inbound call failed to start: {e}"
-                )
-                await call_concurrency.release_workflow_run_slot(workflow_run_id)
-            else:
-                await call_concurrency.release_slot(concurrency_slot)
-            raise
+        return await _start_inbound_call(
+            workflow_id,
+            user_id,
+            config.organization_id,
+            provider_class,
+            provider_instance,
+            normalized_data,
+            telephony_configuration_id,
+            phone_row.id,
+            workflow,
+            concurrency_source=f"inbound:{provider_class.PROVIDER_NAME}",
+            quota_log_suffix="",
+            start_pre_call_fetch=True,
+        )
 
     except ValueError as e:
         logger.error(f"/inbound/run request parsing error: {e}")
@@ -1132,76 +1173,20 @@ async def handle_inbound_telephony(
 
         user_id = workflow_context["user_id"]
         organization_id = workflow_context["organization_id"]
-        try:
-            concurrency_slot = await call_concurrency.acquire_org_slot(
-                organization_id,
-                source=f"inbound_legacy:{workflow_context['provider']}",
-                timeout=0,
-            )
-        except CallConcurrencyLimitError:
-            return provider_class.generate_validation_error_response(
-                TelephonyError.CONCURRENT_CALL_LIMIT
-            )
-
-        workflow_run_id = None
-        try:
-            # Create workflow run.
-            workflow_run_id, _ = await _create_inbound_workflow_run(
-                workflow_id,
-                workflow_context["user_id"],
-                organization_id,
-                workflow_context["provider"],
-                normalized_data,
-                telephony_configuration_id=workflow_context[
-                    "telephony_configuration_id"
-                ],
-                from_phone_number_id=workflow_context.get("from_phone_number_id"),
-            )
-            await call_concurrency.bind_workflow_run(concurrency_slot, workflow_run_id)
-
-            quota_result = await authorize_workflow_run_start(
-                workflow_id=workflow_id,
-                organization_id=organization_id,
-                workflow_run_id=workflow_run_id,
-            )
-            if not quota_result.has_quota:
-                logger.warning(
-                    f"User {user_id} has exceeded quota for inbound calls: "
-                    f"{quota_result.error_message}"
-                )
-                await mark_workflow_run_failed(
-                    workflow_run_id, quota_result.error_message or "Quota exceeded"
-                )
-                await call_concurrency.release_workflow_run_slot(workflow_run_id)
-                return provider_class.generate_validation_error_response(
-                    TelephonyError.QUOTA_EXCEEDED
-                )
-
-            # Generate response URLs
-            backend_endpoint, wss_backend_endpoint = await get_backend_endpoints()
-            websocket_url = ws_auth.build_media_ws_url(
-                wss_backend_endpoint, workflow_id, organization_id, workflow_run_id
-            )
-
-            response = await provider_instance.start_inbound_stream(
-                websocket_url=websocket_url,
-                workflow_run_id=workflow_run_id,
-                normalized_data=normalized_data,
-                backend_endpoint=backend_endpoint,
-            )
-        except WorkflowRunSlotAlreadyBoundError:
-            return provider_class.generate_validation_error_response(
-                TelephonyError.CONCURRENT_CALL_LIMIT
-            )
-        except Exception as e:
-            if workflow_run_id:
-                await mark_workflow_run_failed(
-                    workflow_run_id, f"Inbound call failed to start: {e}"
-                )
-                await call_concurrency.release_workflow_run_slot(workflow_run_id)
-            else:
-                await call_concurrency.release_slot(concurrency_slot)
-            raise
+        response = await _start_inbound_call(
+            workflow_id,
+            user_id,
+            organization_id,
+            provider_class,
+            provider_instance,
+            normalized_data,
+            workflow_context["telephony_configuration_id"],
+            workflow_context.get("from_phone_number_id"),
+            workflow_context.get("workflow"),
+            concurrency_source=f"inbound_legacy:{workflow_context['provider']}",
+            quota_log_suffix=" for inbound calls",
+            start_pre_call_fetch=False,
+        )
 
         logger.info(
             f"Generated {normalized_data.provider} response for call {normalized_data.call_id}"

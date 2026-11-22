@@ -64,3 +64,48 @@ async def test_stream_start_claims_run_before_pipeline_setup(monkeypatch, claime
         )
 
     mark_running.assert_awaited_once_with(44, 7)
+
+
+@pytest.mark.asyncio
+async def test_koreaaitel_losing_socket_closes_without_pipeline_setup(monkeypatch):
+    sockets = [AsyncMock(), AsyncMock()]
+    workflow = SimpleNamespace(
+        organization_id=7, workflow_configurations=None, user_id=99
+    )
+    run = SimpleNamespace(
+        workflow_id=1,
+        initial_context={},
+        definition=SimpleNamespace(workflow_configurations={}),
+    )
+    for name, mock in {
+        "get_workflow": AsyncMock(return_value=workflow),
+        "get_workflow_run": AsyncMock(return_value=run),
+        "mark_workflow_run_running": AsyncMock(side_effect=[True, False]),
+    }.items():
+        monkeypatch.setattr(run_pipeline_module.db_client, name, mock)
+    setup = AsyncMock(side_effect=_ReachedSetup)
+    monkeypatch.setattr(
+        "api.services.configuration.run_model_configuration."
+        "get_effective_ai_model_configuration_for_run",
+        setup,
+    )
+
+    async def connect(socket):
+        await run_pipeline_module.run_pipeline_telephony(
+            websocket=socket,
+            provider_name="koreaaitel",
+            workflow_id=1,
+            workflow_run_id=44,
+            organization_id=7,
+            call_id="call-1",
+            transport_kwargs={},
+        )
+
+    with pytest.raises(_ReachedSetup):
+        await connect(sockets[0])
+    await connect(sockets[1])
+
+    sockets[1].close.assert_awaited_once_with(
+        code=4409, reason="Workflow run already admitted"
+    )
+    assert setup.await_count == 1

@@ -935,6 +935,25 @@ async def handle_inbound_run(request: Request):
                 TelephonyError.SIGNATURE_VALIDATION_FAILED
             )
 
+        if provider_class.PROVIDER_NAME == WorkflowRunMode.KOREAAITEL.value:
+            existing_run = await db_client.get_workflow_run_by_call_id(
+                normalized_data.call_id, mode=provider_class.PROVIDER_NAME
+            )
+            if existing_run:
+                backend_endpoint, wss_backend_endpoint = await get_backend_endpoints()
+                websocket_url = ws_auth.build_media_ws_url(
+                    wss_backend_endpoint,
+                    existing_run.workflow_id,
+                    config.organization_id,
+                    existing_run.id,
+                )
+                return await provider_instance.start_inbound_stream(
+                    websocket_url=websocket_url,
+                    workflow_run_id=existing_run.id,
+                    normalized_data=normalized_data,
+                    backend_endpoint=backend_endpoint,
+                )
+
         try:
             concurrency_slot = await call_concurrency.acquire_org_slot(
                 config.organization_id,

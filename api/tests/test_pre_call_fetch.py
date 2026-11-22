@@ -1,8 +1,12 @@
+import copy
+from types import SimpleNamespace
+
 import httpx
 import pytest
 
 from api.services.pipecat import pre_call_fetch as service
 from api.services.pipecat.pre_call_fetch import _extract_initial_context
+from api.tests.conftest import DEFAULT_WORKFLOW_DEFINITION
 
 
 @pytest.mark.asyncio
@@ -82,6 +86,56 @@ async def test_hook_timeout_preserves_best_effort_context_policy(monkeypatch):
     )
     assert result.outcome == "unavailable"
     assert result.model_overrides is None
+
+
+@pytest.mark.asyncio
+async def test_call_pipeline_awaits_the_fetch_its_inbound_webhook_started(
+    monkeypatch,
+):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"initial_context": {"customer": "Jane"}})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        service.httpx,
+        "AsyncClient",
+        lambda **_: real_client(transport=httpx.MockTransport(handler)),
+    )
+    workflow_json = copy.deepcopy(DEFAULT_WORKFLOW_DEFINITION)
+    start = workflow_json["nodes"][0]
+    start["data"]["pre_call_fetch_mode"] = "inbound"
+    start["data"]["pre_call_fetch_url"] = "https://hook.example/lookup"
+    workflow = SimpleNamespace(
+        id=7,
+        organization_id=1,
+        released_definition=SimpleNamespace(workflow_json=workflow_json),
+    )
+    graph = service.WorkflowGraph(
+        service.ReactFlowDTO.model_validate(workflow_json),
+        skip_instance_constraints_for={"trigger"},
+    )
+    request = {"call_context_vars": {}, "workflow_id": 7, "organization_id": 1}
+
+    webhook = SimpleNamespace(from_number="+15550001111", to_number="+15550002222")
+    service.start_inbound_pre_call_fetch(workflow, 51, webhook)
+    # The pipeline takes over the running fetch instead of sending its own.
+    task = service.start_pre_call_fetch(
+        graph.nodes["1"], "inbound", workflow_run_id=51, **request
+    )
+    assert task is not None
+    assert (await task).initial_context == {"customer": "Jane"}
+    assert len(requests) == 1
+    assert requests[0].headers["Idempotency-Key"] == "dograh-pre-call-51"
+    assert b'"from_number":"+15550001111"' in requests[0].content
+
+    # A run whose webhook started nothing here still fetches for itself.
+    await service.start_pre_call_fetch(
+        graph.nodes["1"], "inbound", workflow_run_id=52, **request
+    )
+    assert len(requests) == 2
 
 
 class TestExtractInitialContext:

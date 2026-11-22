@@ -8,7 +8,7 @@ Pre-Call Data Fetch lets you enrich the call context and select model settings b
 ## How It Works
 
 1. Dograh resolves and saves the call's model setup from the organization default, the workflow override, and the API-trigger override, checks billing and quota, and connects the call.
-2. As soon as the call is connected, Dograh sends a **POST** request to your endpoint. The caller hears a ringer while the request is in flight. For outbound calls this happens after the callee answers.
+2. Dograh sends a **POST** request to your endpoint: for inbound calls as soon as it accepts the call, while the carrier connects the call's audio; for outbound calls after the callee answers. The caller hears a ringer if the request is still in flight once the call is connected.
 3. Your API returns context variables, model overrides, or both.
 4. Dograh merges the context, applies supported model overrides, and validates the result.
 5. The agent starts and plays its greeting.

@@ -31,6 +31,7 @@ from api.services.call_concurrency import (
     WorkflowRunSlotAlreadyBoundError,
     call_concurrency,
 )
+from api.services.pipecat.pre_call_fetch import start_inbound_pre_call_fetch
 from api.services.quota_service import authorize_workflow_run_start
 from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
@@ -985,12 +986,14 @@ async def handle_inbound_run(request: Request):
                 workflow_run_id,
             )
 
-            return await provider_instance.start_inbound_stream(
+            response = await provider_instance.start_inbound_stream(
                 websocket_url=websocket_url,
                 workflow_run_id=workflow_run_id,
                 normalized_data=normalized_data,
                 backend_endpoint=backend_endpoint,
             )
+            start_inbound_pre_call_fetch(workflow, workflow_run_id, normalized_data)
+            return response
         except WorkflowRunSlotAlreadyBoundError:
             return provider_class.generate_validation_error_response(
                 TelephonyError.CONCURRENT_CALL_LIMIT

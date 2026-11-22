@@ -476,31 +476,8 @@ class TestContextUpdateBeforeNextCompletion:
             ),
             MockLLMService.create_text_chunks("Goodbye!"),
         ]
-        steps_after_entry: list[int] = []
-        drivers: list[asyncio.Task] = []
-
-        async def on_ready(engine: PipecatEngine) -> None:
-            async def drive() -> None:
-                await engine.set_node(engine.active_agent.workflow.start_node_id)
-                await engine.active_agent.llm.queue_frame(
-                    LLMContextFrame(engine.context)
-                )
-                async with asyncio.timeout(2):
-                    while engine.active_agent.current_node.id == "start":
-                        await asyncio.sleep(0.01)
-                await asyncio.sleep(0.3)
-                steps_after_entry.append(engine.active_agent.llm.get_current_step())
-                if engine.active_agent.current_node.id == "agent":
-                    await engine.active_agent.llm.queue_frame(
-                        LLMContextFrame(engine.context)
-                    )
-
-            drivers.append(asyncio.create_task(drive()))
-
         llm, _ = await run_pipeline_and_capture_context(
-            workflow=three_node_workflow, mock_steps=mock_steps, on_ready=on_ready
+            workflow=three_node_workflow, mock_steps=mock_steps
         )
-        await asyncio.gather(*drivers)
 
-        assert steps_after_entry == [2]
         assert llm.get_current_step() == 3

@@ -73,6 +73,35 @@ async def test_transition_from_inactive_node_is_rejected(engine):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("transcript", "expected_run_llm"),
+    [("", None), (None, None), ("How can I help?", False)],
+)
+async def test_recorded_transition_wait_requires_context_text(
+    engine, transcript, expected_run_llm
+):
+    engine.active_agent.workflow.nodes["agent"].respond_immediately = False
+    engine._fetch_recording_audio = object()
+    engine.queue_speech = AsyncMock(
+        return_value=SimpleNamespace(
+            outcome=PlaybackOutcome.PLAYED, text=transcript
+        )
+    )
+    transition = await engine._create_transition_func(
+        "move_to_agent",
+        "agent",
+        transition_speech_type="audio",
+        transition_speech_recording_id="recording-1",
+        source_node=engine.active_agent.workflow.nodes["agent"],
+    )
+    result = AsyncMock()
+
+    await transition(SimpleNamespace(arguments={}, result_callback=result))
+
+    assert result.await_args.kwargs["properties"].run_llm is expected_run_llm
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("is_realtime", [True, False])
 @pytest.mark.parametrize("playback", ["delayed", "already_started", "already_finished"])
 async def test_end_node_waits_for_goodbye_playback(engine, is_realtime, playback):

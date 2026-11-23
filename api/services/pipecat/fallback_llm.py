@@ -439,6 +439,8 @@ class FallbackLLMProcessor(LLMService):
                 data.ttfb = min(data.ttfat, max(0, data.ttfb - speculative_lead))
                 data.thinking_time = max(0, data.ttfat - data.ttfb)
         race.buffered_metrics.clear()
+        if self._active_race is race:
+            self._active_race = None
         race.changed.set()
 
     async def _run_attempt(self, attempt: _Attempt, frame: LLMContextFrame) -> None:
@@ -598,7 +600,15 @@ class FallbackLLMProcessor(LLMService):
                         for a in race.attempts
                     ],
                 )
-            if self._active_race is race:
+            if (
+                self._active_race is race
+                and (
+                    race.hedge_started is not None
+                    or race.interrupted
+                    or race.superseded
+                    or not self._speculation_gate.is_speculating
+                )
+            ):
                 self._active_race = None
             if cancelled:
                 raise asyncio.CancelledError
@@ -611,6 +621,11 @@ class FallbackLLMProcessor(LLMService):
             # Match standalone LLMService: stop the withdrawn request as well
             # as dropping its buffered output. This also retires its hedge.
             await self._handle_user_turn_response_cancel(frame)
+            if (
+                self._active_race is not None
+                and self._active_race.hedge_started is None
+            ):
+                self._active_race = None
         if isinstance(frame, StartFrame) and self._output_task is None:
             self._output_task = self.create_task(self._drain_output())
         if isinstance(frame, LLMContextFrame):

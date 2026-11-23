@@ -850,48 +850,54 @@ async def test_speculative_metrics_buffered_before_commit_are_rebased(
 ):
     from pipecat.frames.frames import UserStoppedSpeakingFrame
 
-    now = [100.3]
+    now = [100.0]
     monkeypatch.setattr(
         fallback_llm,
         "time",
         SimpleNamespace(monotonic=lambda: now[0]),
     )
-    race = fallback_llm._Race(started=100.0)
-    attempt = fallback_llm._Attempt(
-        index=index, race=race, task=asyncio.current_task()
+    ttfb = TTFBMetricsData(processor="test", model="gemini", value=0)
+    ttfat = TTFATMetricsData(
+        processor="test",
+        model="gemini",
+        ttfb=0.3,
+        ttfat=0,
+        thinking_time=0,
     )
-    race.attempts.append(attempt)
-    harness.llm._latest[index] = attempt
-    harness.llm._active_race = race
-    harness.llm._speculation_gate.begin_speculation(True)
 
-    token = fallback_llm._attempt.set(attempt)
-    try:
-        ttfb = TTFBMetricsData(processor="test", model="gemini", value=0)
-        await harness.llm._receive(
-            index, MetricsFrame(data=[ttfb]), FrameDirection.DOWNSTREAM
-        )
-        now[0] = 100.4
-        ttfat = TTFATMetricsData(
-            processor="test",
-            model="gemini",
-            ttfb=0.3,
-            ttfat=0,
-            thinking_time=0,
-        )
-        await harness.llm._receive(
-            index, MetricsFrame(data=[ttfat]), FrameDirection.DOWNSTREAM
-        )
-    finally:
-        fallback_llm._attempt.reset(token)
+    def install_attempt_service(attempt_index):
+        async def queue_frame(frame, *args, **kwargs):
+            if not isinstance(frame, LLMContextFrame):
+                return
+            if attempt_index != index:
+                raise ConnectionError("primary failed")
+            now[0] = 100.3
+            await harness.llm._receive(
+                attempt_index,
+                MetricsFrame(data=[ttfb]),
+                FrameDirection.DOWNSTREAM,
+            )
+            now[0] = 100.4
+            await harness.llm._receive(
+                attempt_index,
+                MetricsFrame(data=[ttfat]),
+                FrameDirection.DOWNSTREAM,
+            )
+            await harness.llm._receive(
+                attempt_index,
+                LLMTextFrame(text="answer"),
+                FrameDirection.DOWNSTREAM,
+            )
 
-    token = fallback_llm._attempt.set(attempt)
-    try:
-        await harness.llm._receive(
-            index, LLMTextFrame(text="answer"), FrameDirection.DOWNSTREAM
+        monkeypatch.setattr(
+            harness.llm._services[attempt_index], "queue_frame", queue_frame
         )
-    finally:
-        fallback_llm._attempt.reset(token)
+
+    for attempt_index in range(len(harness.llm._services)):
+        install_attempt_service(attempt_index)
+
+    await harness.llm._generate(LLMContextFrame(LLMContext(), speculation=True))
+    assert harness.llm._active_race is not None
     now[0] = 100.5
     await control(harness, UserStoppedSpeakingFrame())
     await harness.llm._flush_output()

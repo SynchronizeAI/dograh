@@ -20,6 +20,7 @@ def _app(authenticated=True):
 
 def test_delete_workflow_run_removes_stored_artifacts_and_row():
     run = SimpleNamespace(
+        mode="twilio",
         storage_backend="s3",
         recording_url="recordings/7.wav",
         transcript_url="transcripts/7.txt",
@@ -52,6 +53,7 @@ def test_delete_workflow_run_removes_stored_artifacts_and_row():
 def test_delete_workflow_run_returns_conflict_while_artifacts_are_publishing():
     run = SimpleNamespace(
         is_completed=True,
+        mode="twilio",
         storage_backend="s3",
         recording_url="recordings/7.wav",
         transcript_url="transcripts/7.txt",
@@ -73,6 +75,33 @@ def test_delete_workflow_run_returns_conflict_while_artifacts_are_publishing():
     assert (
         response.json()["detail"]
         == "Workflow run artifacts are still being published"
+    )
+    storage.adelete_file.assert_not_awaited()
+    db.delete_workflow_run.assert_not_awaited()
+
+
+def test_delete_workflow_run_rejects_text_chat_runs():
+    run = SimpleNamespace(
+        mode="textchat",
+        storage_backend="s3",
+        recording_url="recordings/7.wav",
+        transcript_url="transcripts/7.txt",
+        extra={
+            "recordings": {"user": {"storage_key": "recordings/7/user.wav"}}
+        },
+    )
+    storage = SimpleNamespace(adelete_file=AsyncMock(return_value=True))
+    with (
+        patch("api.routes.workflow.db_client") as db,
+        patch("api.routes.workflow.get_storage_for_backend", return_value=storage),
+    ):
+        db.get_workflow_run = AsyncMock(return_value=run)
+        db.delete_workflow_run = AsyncMock(return_value=True)
+        response = TestClient(_app()).delete("/workflow/3/runs/7")
+
+    assert response.status_code == 409
+    assert (
+        response.json()["detail"] == "Only telephony workflow runs can be deleted"
     )
     storage.adelete_file.assert_not_awaited()
     db.delete_workflow_run.assert_not_awaited()

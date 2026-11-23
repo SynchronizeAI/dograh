@@ -19,6 +19,8 @@ from api.enums import (
     CallType,
     PostHogEvent,
     StorageBackend,
+    WORKFLOW_RUN_MODES_BY_CHANNEL,
+    WorkflowRunChannel,
     WorkflowRunMode,
     WorkflowStatus,
 )
@@ -1533,6 +1535,10 @@ def _workflow_run_artifact_keys(run) -> set[tuple[str, str]]:
 async def delete_workflow_run(
     workflow_id: int, run_id: int, user: UserModel = Depends(get_user)
 ) -> Response:
+    """Delete telephony runs and artifacts; other modes are unsupported.
+
+    Text-chat sessions are synthetic and cannot be deleted through this route.
+    """
     if user.selected_organization_id is None:
         raise HTTPException(status_code=404, detail="Workflow run not found")
 
@@ -1543,6 +1549,15 @@ async def delete_workflow_run(
     )
     if not run:
         raise HTTPException(status_code=404, detail="Workflow run not found")
+
+    telephony_modes = WORKFLOW_RUN_MODES_BY_CHANNEL[
+        WorkflowRunChannel.TELEPHONY.value
+    ]
+    if run.mode not in telephony_modes:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only telephony workflow runs can be deleted",
+        )
 
     completion = (run.extra or {}).get("workflow_completion") or {}
     if completion.get("status") == "pending":

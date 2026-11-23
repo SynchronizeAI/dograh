@@ -435,6 +435,7 @@ class FallbackLLMProcessor(LLMService):
                 data.ttfat,
                 max(0, race.started + data.ttfb - race.hedge_started),
             )
+        data.thinking_time = max(0, data.ttfat - data.ttfb)
 
     async def _run_attempt(self, attempt: _Attempt, frame: LLMContextFrame) -> None:
         token = _attempt.set(attempt)

@@ -503,11 +503,17 @@ class PipecatEngine:
                         # Set context for the new node, so that when the function call result
                         # frame is received by LLMContextAggregator and an LLM generation
                         # is done, we have updated context and functions
-                        transitioned = await self.set_node(
-                            transition_to_node,
-                            origin_visit_id=agent.visit_id,
-                            expected_source_node=source_node,
-                        )
+                        if source_node is None:
+                            transitioned = await self.set_node(
+                                transition_to_node,
+                                origin_visit_id=agent.visit_id,
+                            )
+                        else:
+                            transitioned = await self.set_node(
+                                transition_to_node,
+                                origin_visit_id=agent.visit_id,
+                                expected_source_node=source_node,
+                            )
 
                 if transitioned is False:
                     await function_call_params.result_callback(

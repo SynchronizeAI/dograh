@@ -461,6 +461,138 @@ async def run_transfer(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("transition_gate", ["text", "recording", "node_callback"])
+async def test_handoff_waits_for_inflight_node_transition(monkeypatch, transition_gate):
+    from dataclasses import replace
+
+    from api.services.pipecat.speech_playback import PlaybackOutcome
+    from api.services.workflow.agent_transfer import (
+        AgentTransferCoordinator,
+        TransferRequest,
+    )
+
+    class TransitionLock:
+        def __init__(self):
+            self.lock = asyncio.Lock()
+            self.waiting = asyncio.Event()
+
+        async def __aenter__(self):
+            if self.lock.locked():
+                self.waiting.set()
+            await self.lock.acquire()
+            return self
+
+        async def __aexit__(self, *_args):
+            self.lock.release()
+
+    monkeypatch.setattr(
+        "api.services.workflow.agent_transfer.TRANSFER_MIN_HOLD_SECONDS", 0
+    )
+    workflow = build_agent_workflow(name="Reception", greeting=None)
+    destination_workflow = build_agent_workflow(name="Billing", greeting=None)
+    llm = MockLLMService(mock_steps=[], chunk_delay=0)
+    engine = PipecatEngine(
+        llm=llm,
+        context=LLMContext(),
+        workflow=workflow,
+        call_context_vars={},
+        workflow_run_id=1,
+    )
+    transition_lock = TransitionLock()
+    engine._node_transition_lock = transition_lock
+    await engine.set_node("start")
+    source = engine.active_agent
+    destination = replace(
+        source,
+        visit_id="visit-destination",
+        workflow_id=2,
+        workflow_name="Billing",
+        workflow=destination_workflow,
+        current_node=destination_workflow.nodes["start"],
+        system_prompt="Destination start prompt",
+    )
+    engine._perform_variable_extraction_if_needed = AsyncMock()
+
+    effect_started = asyncio.Event()
+    release_effect = asyncio.Event()
+
+    async def block_effect(*_args, **_kwargs):
+        effect_started.set()
+        await release_effect.wait()
+        if transition_gate == "text":
+            return True
+        return SimpleNamespace(outcome=PlaybackOutcome.PLAYED, text="Please wait.")
+
+    transition_kwargs = {"agent": source, "source_node": source.current_node}
+    if transition_gate == "text":
+        transition_kwargs["transition_speech"] = "Moving you along."
+        engine.queue_text_message = AsyncMock(side_effect=block_effect)
+    elif transition_gate == "recording":
+        engine._fetch_recording_audio = object()
+        transition_kwargs.update(
+            transition_speech_type="audio",
+            transition_speech_recording_id="1",
+        )
+        engine.queue_speech = AsyncMock(side_effect=block_effect)
+    else:
+        async def wait_for_node_callback(node_id, *_args):
+            if node_id == "end":
+                effect_started.set()
+                await release_effect.wait()
+
+        engine._node_transition_callback = wait_for_node_callback
+
+    transition = await engine._create_transition_func(
+        "finish", "end", **transition_kwargs
+    )
+    callback = AsyncMock()
+    transition_task = asyncio.create_task(
+        transition(SimpleNamespace(arguments={}, result_callback=callback))
+    )
+    transfer_task = None
+    try:
+        await asyncio.wait_for(effect_started.wait(), 1)
+
+        coordinator = AgentTransferCoordinator(engine)
+        engine._transfer_coordinator = coordinator
+        request = TransferRequest(
+            destination_workflow_id=2,
+            destination_label="Billing",
+            origin_visit_id=source.visit_id,
+        )
+        assert coordinator.accept(request)
+        coordinator._announce = AsyncMock()
+        coordinator._begin_hold = AsyncMock()
+        coordinator._stop_hold_audio = AsyncMock()
+        engine.build_agent = AsyncMock(return_value=destination)
+        engine.prepare_agent = AsyncMock()
+        engine.activate_agent = AsyncMock(return_value=True)
+        engine.pause_background_context_writers = AsyncMock()
+        engine.retune_agent_stt = AsyncMock()
+        engine.drain_call_pipeline = AsyncMock(return_value=True)
+        engine.notify_agent_entered = AsyncMock()
+        engine.queue_node_opening = AsyncMock()
+        source.retire = AsyncMock()
+
+        transfer_task = asyncio.create_task(coordinator._run(request))
+        await asyncio.wait_for(transition_lock.waiting.wait(), 1)
+        assert not transfer_task.done()
+        assert engine.active_agent is source
+    finally:
+        release_effect.set()
+        tasks = [transition_task]
+        if transfer_task is not None:
+            tasks.append(transfer_task)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    assert all(not isinstance(result, BaseException) for result in results)
+    assert callback.await_args.args[0]["status"] == "done"
+    assert source.current_node is workflow.nodes["end"]
+    assert engine.active_agent is destination
+    assert destination.system_prompt == "Destination start prompt"
+
+
+@pytest.mark.asyncio
 async def test_transfer_hands_the_call_over_without_dropping_it():
     """A → B: the caller stays connected and hears both agents in turn."""
     source_llm = MockLLMService(

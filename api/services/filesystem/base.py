@@ -139,3 +139,8 @@ class BaseFileSystem(ABC):
             bool: True if file was copied successfully, False otherwise
         """
         pass
+
+    @abstractmethod
+    async def adelete_file(self, file_path: str) -> bool:
+        """Delete a stored object; deleting a missing object is successful."""
+        pass

@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from httpx import HTTPStatusError, RequestError
 from loguru import logger
@@ -37,7 +37,7 @@ from api.services.configuration.masking import (
 from api.services.mps_service_key_client import mps_service_key_client
 from api.services.posthog_tenant import capture_tenant_event
 from api.services.reports import generate_workflow_report_csv
-from api.services.storage import storage_fs
+from api.services.storage import get_storage_for_backend, storage_fs
 from api.services.workflow.configuration_policy import (
     ExternalPBXConfigurationDisabledError,
     WorkflowConfigurationNotFoundError,
@@ -1502,6 +1502,60 @@ async def get_workflow_run(
         "logs": run.logs,
         "annotations": run.annotations,
     }
+
+
+def _workflow_run_artifact_keys(run) -> set[tuple[str, str]]:
+    artifacts = {
+        (run.storage_backend, key)
+        for key in (run.recording_url, run.transcript_url)
+        if key
+    }
+
+    def collect(value):
+        if isinstance(value, dict):
+            key = value.get("storage_key")
+            backend = value.get("storage_backend") or run.storage_backend
+            if isinstance(key, str):
+                artifacts.add((backend, key))
+            for child in value.values():
+                collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+
+    collect(run.extra)
+    return artifacts
+
+
+@router.delete(
+    "/{workflow_id}/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+async def delete_workflow_run(
+    workflow_id: int, run_id: int, user: UserModel = Depends(get_user)
+) -> Response:
+    if user.selected_organization_id is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+
+    run = await db_client.get_workflow_run(
+        run_id,
+        organization_id=user.selected_organization_id,
+        workflow_id=workflow_id,
+    )
+    if not run:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+
+    for backend, key in _workflow_run_artifact_keys(run):
+        if not await get_storage_for_backend(backend).adelete_file(key):
+            raise HTTPException(
+                status_code=500, detail="Failed to delete workflow run artifacts"
+            )
+
+    deleted = await db_client.delete_workflow_run(
+        run_id, workflow_id, user.selected_organization_id
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 class WorkflowRunsResponse(BaseModel):

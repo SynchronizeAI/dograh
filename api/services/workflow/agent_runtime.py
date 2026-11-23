@@ -80,7 +80,7 @@ class AgentRuntime:
     workflow_id: int
     definition_id: int | None
     workflow_name: str
-    workflow: "WorkflowGraph"
+    workflow: WorkflowGraph
     llm: Any
     inference_llm: Any
     variable_extraction_llm: Any
@@ -96,7 +96,7 @@ class AgentRuntime:
     # False for the call-owned runtime, whose worker is the call itself and
     # must never be shut down by a retirement.
     is_child: bool = False
-    current_node: "Node | None" = None
+    current_node: Node | None = None
     entered_at: float | None = None
     exited_at: float | None = None
     # Why this visit ended: "transferred", "call_ended", "rolled_back", or
@@ -271,7 +271,7 @@ class AgentRuntime:
             )
         )
 
-    async def run_llm(self, context: "LLMContext") -> None:
+    async def run_llm(self, context: LLMContext) -> None:
         """Ask this agent's LLM for a generation against the shared context.
 
         A child agent's LLM heads its own pipeline, so the request is queued
@@ -317,7 +317,7 @@ class AgentRuntime:
         try:
             await asyncio.wait_for(_wait(), timeout=timeout)
             return True
-        except (asyncio.TimeoutError, RuntimeError) as e:
+        except (TimeoutError, RuntimeError) as e:
             logger.warning(f"Agent visit {self.visit_id} never became ready: {e}")
             return False
 

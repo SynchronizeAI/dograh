@@ -248,7 +248,7 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
                     asyncio.shield(self._backup_connect_task),
                     timeout=_BACKUP_CONNECT_TIMEOUT_S,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("TTS fallback backup connect timed out during switch")
 
     async def setup(self, setup: FrameProcessorSetup):
@@ -279,7 +279,7 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
                 self.backup.setup(setup),
                 timeout=_BACKUP_CONNECT_TIMEOUT_S,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("TTS fallback backup lazy connect timed out")
         except Exception as exc:
             logger.warning(

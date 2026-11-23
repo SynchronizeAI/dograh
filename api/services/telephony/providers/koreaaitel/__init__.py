@@ -6,7 +6,7 @@ signature and no Twilio REST API. Inbound only: the number's VoiceML webhook
 points at ``/inbound/run``.
 """
 
-from typing import Any, Dict
+from typing import Any
 
 from api.services.telephony.registry import (
     ProviderSpec,
@@ -20,7 +20,7 @@ from .provider import KoreaAITelProvider
 from .transport import create_transport
 
 
-def _config_loader(value: Dict[str, Any]) -> Dict[str, Any]:
+def _config_loader(value: dict[str, Any]) -> dict[str, Any]:
     return {
         "provider": "koreaaitel",
         "account_id": value.get("account_id"),

@@ -1156,9 +1156,7 @@ async def test_stt_fallback_resolves_a_different_provider_and_round_trips(catalo
         **pipeline(primary),
         "stt_fallback": {
             "version": 1,
-            "rules": [
-                stt_fallback_rule(backup, model="scribe_v3_live", language="ko")
-            ],
+            "rules": [stt_fallback_rule(backup, model="scribe_v3_live", language="ko")],
         },
     }
     catalog(primary, default=True, configuration=config)

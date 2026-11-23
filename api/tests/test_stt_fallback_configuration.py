@@ -140,9 +140,7 @@ def test_rules_build_switcher():
         backup = FrameProcessor(name="backup")
         create.side_effect = [primary, backup]
         config = stt_configuration(error_target=_SCRIBE)
-        result = create_stt_service(
-            config, None, turn_stop_strategy="transcription"
-        )
+        result = create_stt_service(config, None, turn_stop_strategy="transcription")
     assert isinstance(result, FallbackSTTService)
     assert result.primary is primary
     assert result.backup is backup

@@ -8,7 +8,7 @@ generate phantom transcriptions).
 
 import asyncio
 import uuid
-from typing import Awaitable, Callable, Dict, Optional, Tuple
+from collections.abc import Awaitable, Callable
 
 import numpy as np
 from loguru import logger
@@ -35,10 +35,10 @@ except ModuleNotFoundError as e:
 # Audio file loading / caching
 # ---------------------------------------------------------------------------
 
-_audio_cache: Dict[Tuple[str, int], bytes] = {}
+_audio_cache: dict[tuple[str, int], bytes] = {}
 
 
-def load_audio_file(file_path: str, sample_rate: int) -> Optional[bytes]:
+def load_audio_file(file_path: str, sample_rate: int) -> bytes | None:
     """Load an audio file as PCM-16 bytes, caching the result.
 
     Args:
@@ -96,7 +96,7 @@ async def play_audio(
     *,
     sample_rate: int,
     queue_frame: Callable[[Frame], Awaitable[None]],
-    transcript: Optional[str] = None,
+    transcript: str | None = None,
     append_to_context: bool = False,
     persist_to_logs: bool = False,
 ) -> None:
@@ -153,8 +153,8 @@ async def play_audio_loop(
     stop_event: asyncio.Event,
     sample_rate: int,
     queue_frame: Callable[[Frame], Awaitable[None]],
-    audio_file: Optional[str] = None,
-    chunk_ms: Optional[int] = None,
+    audio_file: str | None = None,
+    chunk_ms: int | None = None,
 ) -> None:
     """Play audio in a loop until *stop_event* is set.
 
@@ -210,7 +210,7 @@ async def play_audio_loop(
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=duration + 1.5)
                     break
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
     except Exception as e:
         logger.error(f"Audio loop error: {e}")
@@ -243,7 +243,7 @@ async def _play_audio_loop_chunked(
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=chunk_seconds)
                 return
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
 
 
@@ -252,7 +252,7 @@ async def play_hold_audio_loop(
     stop_event: asyncio.Event,
     sample_rate: int,
     queue_frame: Callable[[Frame], Awaitable[None]],
-    audio_file: Optional[str] = None,
+    audio_file: str | None = None,
     chunk_ms: int = 20,
 ) -> None:
     """Play hold audio that stops within roughly one chunk of being asked to.

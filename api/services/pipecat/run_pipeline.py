@@ -1,5 +1,4 @@
 import asyncio
-from typing import Optional
 
 from fastapi import HTTPException
 from loguru import logger
@@ -956,8 +955,8 @@ async def _run_pipeline_impl(
     async def send_node_transition(
         node_id: str,
         node_name: str,
-        previous_node_id: Optional[str],
-        previous_node_name: Optional[str],
+        previous_node_id: str | None,
+        previous_node_name: str | None,
         allow_interrupt: bool = False,
     ) -> None:
         """Send node transition event to logs buffer and optionally via WebSocket."""

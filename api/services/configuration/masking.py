@@ -10,7 +10,7 @@ The rules are simple:
 from __future__ import annotations
 
 import copy
-from typing import Any, Dict, Optional
+from typing import Any
 
 from api.schemas.ai_model_configuration import EffectiveAIModelConfiguration
 from api.services.configuration.registry import ServiceConfig
@@ -63,7 +63,7 @@ def is_mask_of(masked: str, real_key: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _mask_service(service_cfg: Optional[ServiceConfig]) -> Optional[Dict[str, Any]]:
+def _mask_service(service_cfg: ServiceConfig | None) -> dict[str, Any] | None:
     if service_cfg is None:
         return None
 
@@ -77,7 +77,7 @@ def _mask_service(service_cfg: Optional[ServiceConfig]) -> Optional[Dict[str, An
     return data
 
 
-def mask_user_config(config: EffectiveAIModelConfiguration) -> Dict[str, Any]:
+def mask_user_config(config: EffectiveAIModelConfiguration) -> dict[str, Any]:
     """Return a JSON-serialisable dict of *config* with every api_key masked."""
 
     return {
@@ -134,7 +134,7 @@ def mask_user_config(config: EffectiveAIModelConfiguration) -> Dict[str, Any]:
     }
 
 
-def mask_workflow_configurations(config: Optional[Dict]) -> Optional[Dict]:
+def mask_workflow_configurations(config: dict | None) -> dict | None:
     """Expose active settings, masking secrets on unmigrated model overrides."""
     if not config:
         return config
@@ -191,7 +191,7 @@ def _secret_fields_for_node_type(node_type: str | None) -> tuple[str, ...]:
     return _NODE_SECRET_FIELDS.get(node_type, ()) or get_node_secret_fields(node_type)
 
 
-def mask_workflow_definition(workflow_definition: Optional[Dict]) -> Optional[Dict]:
+def mask_workflow_definition(workflow_definition: dict | None) -> dict | None:
     """Return a copy of *workflow_definition* with node secret fields masked."""
     if not workflow_definition:
         return workflow_definition
@@ -212,13 +212,13 @@ def mask_workflow_definition(workflow_definition: Optional[Dict]) -> Optional[Di
 
 
 def merge_workflow_api_keys(
-    incoming_definition: Optional[Dict], existing_definition: Optional[Dict]
-) -> Optional[Dict]:
+    incoming_definition: dict | None, existing_definition: dict | None
+) -> dict | None:
     """Preserve real node secret fields when the incoming value is masked."""
     if not incoming_definition or not existing_definition:
         return incoming_definition
 
-    existing_nodes: Dict[str, Dict] = {}
+    existing_nodes: dict[str, dict] = {}
     for node in existing_definition.get("nodes", []):
         if _secret_fields_for_node_type(node.get("type")):
             existing_nodes[node["id"]] = node.get("data", {})

@@ -11,7 +11,7 @@ import base64
 import hashlib
 import hmac
 import json
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any
 
 from fastapi import Response
 from loguru import logger
@@ -36,7 +36,7 @@ def _canonical(raw: str) -> str:
     return normalize_telephony_address(raw, country_hint=_COUNTRY).canonical
 
 
-def compute_signature(signing_secret: str, url: str, params: Dict[str, Any]) -> str:
+def compute_signature(signing_secret: str, url: str, params: dict[str, Any]) -> str:
     """The vendor's ``X-Signature``: Base64(HMAC-SHA256(secret, url + k1v1k2v2...))."""
     data = url + "".join(f"{k}{v}" for k, v in sorted(params.items()))
     digest = hmac.new(signing_secret.encode(), data.encode(), hashlib.sha256).digest()
@@ -46,7 +46,7 @@ def compute_signature(signing_secret: str, url: str, params: Dict[str, Any]) -> 
 class KoreaAITelProvider(TelephonyProvider):
     PROVIDER_NAME = WorkflowRunMode.KOREAAITEL.value
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         self.account_id = config.get("account_id")
         self.signing_secret = config.get("signing_secret")
         self.from_numbers = config.get("from_numbers", [])
@@ -59,22 +59,22 @@ class KoreaAITelProvider(TelephonyProvider):
     async def get_webhook_response(self, *args: Any, **kwargs: Any) -> str:
         raise NotImplementedError("한국AI통신 provider is inbound only")
 
-    async def get_call_status(self, call_id: str) -> Dict[str, Any]:
+    async def get_call_status(self, call_id: str) -> dict[str, Any]:
         raise NotImplementedError("한국AI통신 provider has no call-status API")
 
-    def parse_status_callback(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def parse_status_callback(self, data: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError("한국AI통신 status callbacks are not routed here")
 
-    async def transfer_call(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+    async def transfer_call(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         raise NotImplementedError("한국AI통신 provider does not support transfers")
 
     def supports_transfers(self) -> bool:
         return False
 
-    async def get_call_cost(self, call_id: str) -> Dict[str, Any]:
+    async def get_call_cost(self, call_id: str) -> dict[str, Any]:
         return {"cost_usd": 0.0, "duration": 0, "status": "unknown"}
 
-    async def get_available_phone_numbers(self) -> List[str]:
+    async def get_available_phone_numbers(self) -> list[str]:
         return self.from_numbers
 
     async def validate_phone_number(self, address: str) -> ProviderSyncResult:
@@ -88,7 +88,7 @@ class KoreaAITelProvider(TelephonyProvider):
 
     @classmethod
     def can_handle_webhook(
-        cls, webhook_data: Dict[str, Any], headers: Dict[str, str]
+        cls, webhook_data: dict[str, Any], headers: dict[str, str]
     ) -> bool:
         """The vendor signs with ``X-Signature`` and sends ``CallId``/``AccountId``."""
         return (
@@ -98,7 +98,7 @@ class KoreaAITelProvider(TelephonyProvider):
         )
 
     @staticmethod
-    def parse_inbound_webhook(webhook_data: Dict[str, Any]) -> NormalizedInboundData:
+    def parse_inbound_webhook(webhook_data: dict[str, Any]) -> NormalizedInboundData:
         # A withheld caller still arrives in ``From``; only the flag says so.
         restricted = str(webhook_data.get("CallerIdRestricted", "")).lower() == "true"
         from_raw = "" if restricted else webhook_data.get("From", "")
@@ -127,7 +127,7 @@ class KoreaAITelProvider(TelephonyProvider):
         )
 
     async def verify_webhook_signature(
-        self, url: str, params: Dict[str, Any], signature: str
+        self, url: str, params: dict[str, Any], signature: str
     ) -> bool:
         if not self.signing_secret or not signature:
             return False
@@ -137,8 +137,8 @@ class KoreaAITelProvider(TelephonyProvider):
     async def verify_inbound_signature(
         self,
         url: str,
-        webhook_data: Dict[str, Any],
-        headers: Dict[str, str],
+        webhook_data: dict[str, Any],
+        headers: dict[str, str],
         body: str = "",
     ) -> bool:
         signature = next(

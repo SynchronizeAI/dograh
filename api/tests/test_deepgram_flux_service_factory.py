@@ -180,9 +180,7 @@ def test_flux_eot_settings_reach_service(schema, model, factory):
 
 @pytest.mark.parametrize("schema", [DeepgramSTTConfiguration, DograhSTTService])
 @pytest.mark.parametrize("eager,committed", [(0.7, 0.5), (0.5, 0.5)])
-def test_flux_eager_threshold_must_be_below_commit_threshold(
-    schema, eager, committed
-):
+def test_flux_eager_threshold_must_be_below_commit_threshold(schema, eager, committed):
     with pytest.raises(ValueError, match="eager_eot_threshold must be lower than"):
         schema(
             api_key="test-key",

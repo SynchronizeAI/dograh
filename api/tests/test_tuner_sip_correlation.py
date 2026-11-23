@@ -44,7 +44,7 @@ def _session(run):
             run_definition=SimpleNamespace(version_number=1),
             user_config=SimpleNamespace(stt=None, llm=None, tts=None),
             is_realtime=False,
-            context_messages_provider=lambda: [],
+            context_messages_provider=list,
         )
     )[0]
 

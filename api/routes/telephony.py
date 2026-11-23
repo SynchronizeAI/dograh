@@ -5,7 +5,7 @@ Consolidated from split modules for easier maintenance.
 
 import json
 import uuid
-from typing import Optional, cast
+from typing import cast
 
 from fastapi import (
     APIRouter,
@@ -315,7 +315,7 @@ async def _verify_organization_phone_number(
     provider: str,
     to_country: str = None,
     from_country: str = None,
-) -> Optional[int]:
+) -> int | None:
     """Verify the called number is registered to the matched config and return
     its ``telephony_phone_numbers.id``, or None when no row matches.
 
@@ -407,8 +407,8 @@ async def _validate_inbound_request(
     spec = telephony_registry.get_optional(provider_class.PROVIDER_NAME)
     account_field = spec.account_id_credential_field if spec else ""
 
-    telephony_configuration_id: Optional[int] = None
-    phone_number_id: Optional[int] = None
+    telephony_configuration_id: int | None = None
+    phone_number_id: int | None = None
 
     if account_field and normalized_data.account_id:
         match = await db_client.find_inbound_route_by_account(
@@ -482,7 +482,7 @@ async def _create_inbound_workflow_run(
     provider: str,
     normalized_data,
     telephony_configuration_id: int,
-    from_phone_number_id: Optional[int] = None,
+    from_phone_number_id: int | None = None,
 ) -> tuple[int, object | None]:
     """Create an inbound workflow run and return its pinned definition."""
     call_id = normalized_data.call_id
@@ -543,7 +543,7 @@ async def _create_inbound_workflow_run(
 
 async def _resolve_inbound_telephony_config(
     organization_id: int, provider_class, account_id: str
-) -> tuple[TelephonyError, Optional[int]]:
+) -> tuple[TelephonyError, int | None]:
     """Find which of the org's telephony configs the inbound webhook came from.
 
     Returns ``(VALID, config_id)`` on success or ``(error, None)`` otherwise.

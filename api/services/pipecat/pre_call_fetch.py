@@ -6,7 +6,7 @@ call context with data from external systems (CRM, ERP, etc.).
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any
 
 import httpx
 from loguru import logger
@@ -51,7 +51,7 @@ def _extract_model_overrides(response_data: dict) -> Any:
     return container.get("model_overrides")
 
 
-def _extract_initial_context(response_data: Dict[str, Any]) -> Dict[str, Any]:
+def _extract_initial_context(response_data: dict[str, Any]) -> dict[str, Any]:
     """Pull the context variables out of a pre-call fetch response.
 
     The canonical key is ``initial_context``. The legacy ``dynamic_variables``
@@ -79,11 +79,11 @@ def _extract_initial_context(response_data: Dict[str, Any]) -> Dict[str, Any]:
 async def execute_pre_call_fetch(
     *,
     url: str,
-    credential_uuid: Optional[str],
-    call_context_vars: Dict[str, Any],
+    credential_uuid: str | None,
+    call_context_vars: dict[str, Any],
     workflow_id: int,
     organization_id: int,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Compatibility wrapper for callers that only consume context enrichment."""
     result = await execute_pre_call_fetch_result(
         url=url,
@@ -98,8 +98,8 @@ async def execute_pre_call_fetch(
 async def execute_pre_call_fetch_result(
     *,
     url: str,
-    credential_uuid: Optional[str],
-    call_context_vars: Dict[str, Any],
+    credential_uuid: str | None,
+    call_context_vars: dict[str, Any],
     workflow_id: int,
     organization_id: int,
     workflow_run_id: int | None = None,
@@ -124,7 +124,7 @@ async def execute_pre_call_fetch_result(
     }
 
     # Build headers
-    headers: Dict[str, str] = {"Content-Type": "application/json"}
+    headers: dict[str, str] = {"Content-Type": "application/json"}
     if workflow_run_id is not None:
         headers["Idempotency-Key"] = f"dograh-pre-call-{workflow_run_id}"
         payload["call_inbound"]["workflow_run_id"] = workflow_run_id

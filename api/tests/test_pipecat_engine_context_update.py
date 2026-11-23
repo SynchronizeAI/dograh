@@ -14,7 +14,6 @@ result in the context when generating the next response.
 """
 
 import asyncio
-from typing import List
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -25,6 +24,11 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMAssistantAggregatorParams,
     LLMContextAggregatorPair,
+)
+from pipecat.tests import (
+    ContextCapturingMockLLM,
+    MockLLMService,
+    MockTTSService,
 )
 from pipecat.tests.mock_transport import MockTransport
 from pipecat.transports.base_transport import TransportParams
@@ -37,16 +41,11 @@ from api.tests.conftest import (
     START_CALL_SYSTEM_PROMPT,
 )
 from api.tests.pipecat_test_utils import run_engine_test_pipeline
-from pipecat.tests import (
-    ContextCapturingMockLLM,
-    MockLLMService,
-    MockTTSService,
-)
 
 
 async def run_pipeline_and_capture_context(
     workflow: WorkflowGraph,
-    mock_steps: List[List],
+    mock_steps: list[list],
     set_node_delay: float = 0.0,
     on_ready=None,
 ) -> tuple[ContextCapturingMockLLM, LLMContext]:

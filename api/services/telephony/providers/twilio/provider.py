@@ -5,7 +5,7 @@ Twilio implementation of the TelephonyProvider interface.
 import asyncio
 import json
 import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from fastapi import HTTPException
@@ -40,7 +40,7 @@ class TwilioProvider(TelephonyProvider):
     PROVIDER_NAME = WorkflowRunMode.TWILIO.value
     WEBHOOK_ENDPOINT = "twiml"
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         """
         Initialize TwilioProvider with configuration.
 
@@ -65,8 +65,8 @@ class TwilioProvider(TelephonyProvider):
         self,
         to_number: str,
         webhook_url: str,
-        workflow_run_id: Optional[int] = None,
-        from_number: Optional[str] = None,
+        workflow_run_id: int | None = None,
+        from_number: str | None = None,
         **kwargs: Any,
     ) -> CallInitiationResult:
         """
@@ -123,7 +123,7 @@ class TwilioProvider(TelephonyProvider):
                     raw_response=response_data,
                 )
 
-    async def get_call_status(self, call_id: str) -> Dict[str, Any]:
+    async def get_call_status(self, call_id: str) -> dict[str, Any]:
         """
         Get the current status of a Twilio call.
         """
@@ -141,7 +141,7 @@ class TwilioProvider(TelephonyProvider):
 
                 return await response.json()
 
-    async def get_available_phone_numbers(self) -> List[str]:
+    async def get_available_phone_numbers(self) -> list[str]:
         """
         Get list of available Twilio phone numbers.
         """
@@ -154,7 +154,7 @@ class TwilioProvider(TelephonyProvider):
         return bool(self.account_sid and self.auth_token and self.from_numbers)
 
     async def verify_webhook_signature(
-        self, url: str, params: Dict[str, Any], signature: str
+        self, url: str, params: dict[str, Any], signature: str
     ) -> bool:
         """
         Verify Twilio webhook signature for security.
@@ -194,7 +194,7 @@ class TwilioProvider(TelephonyProvider):
         logger.info(f"Twiml content generated - {ws_auth.redact_token(twiml_content)}")
         return twiml_content
 
-    async def get_call_cost(self, call_id: str) -> Dict[str, Any]:
+    async def get_call_cost(self, call_id: str) -> dict[str, Any]:
         """
         Get cost information for a completed Twilio call.
 
@@ -241,7 +241,7 @@ class TwilioProvider(TelephonyProvider):
             logger.error(f"Exception fetching Twilio call cost: {e}")
             return {"cost_usd": 0.0, "duration": 0, "status": "error", "error": str(e)}
 
-    def parse_status_callback(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def parse_status_callback(self, data: dict[str, Any]) -> dict[str, Any]:
         """
         Parse Twilio status callback data into generic format.
         """
@@ -324,7 +324,7 @@ class TwilioProvider(TelephonyProvider):
 
     @classmethod
     def can_handle_webhook(
-        cls, webhook_data: Dict[str, Any], headers: Dict[str, str]
+        cls, webhook_data: dict[str, Any], headers: dict[str, str]
     ) -> bool:
         """
         Determine if this provider can handle the incoming webhook.
@@ -363,7 +363,7 @@ class TwilioProvider(TelephonyProvider):
         return False
 
     @staticmethod
-    def parse_inbound_webhook(webhook_data: Dict[str, Any]) -> NormalizedInboundData:
+    def parse_inbound_webhook(webhook_data: dict[str, Any]) -> NormalizedInboundData:
         """
         Parse Twilio-specific inbound webhook data into normalized format.
         """
@@ -404,8 +404,8 @@ class TwilioProvider(TelephonyProvider):
     async def verify_inbound_signature(
         self,
         url: str,
-        webhook_data: Dict[str, Any],
-        headers: Dict[str, str],
+        webhook_data: dict[str, Any],
+        headers: dict[str, str],
         body: str = "",
     ) -> bool:
         """
@@ -421,7 +421,7 @@ class TwilioProvider(TelephonyProvider):
         return await self.verify_webhook_signature(url, webhook_data, signature)
 
     async def configure_inbound(
-        self, address: str, webhook_url: Optional[str]
+        self, address: str, webhook_url: str | None
     ) -> ProviderSyncResult:
         """Set (or clear) the VoiceUrl on Twilio's IncomingPhoneNumber for ``address``.
 
@@ -528,7 +528,7 @@ class TwilioProvider(TelephonyProvider):
             ),
         )
 
-    async def _lookup_incoming_number_sid(self, e164: str) -> Optional[str]:
+    async def _lookup_incoming_number_sid(self, e164: str) -> str | None:
         """Return the Twilio SID of the IncomingPhoneNumber matching ``e164``."""
         endpoint = f"{self.base_url}/IncomingPhoneNumbers.json"
         params = {"PhoneNumber": e164}
@@ -671,7 +671,7 @@ class TwilioProvider(TelephonyProvider):
         timeout: int = 30,
         introduction_audio_url: str | None = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Initiate a call transfer via Twilio.
 

@@ -10,7 +10,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from typing import Any, AsyncGenerator, Dict, Literal, Optional, Union
+from collections.abc import AsyncGenerator
+from typing import Any, Literal
 
 from loguru import logger
 from pydantic import BaseModel, field_validator
@@ -43,30 +44,30 @@ class MurfTTSService(WebsocketTTSService):
     class InputParams(BaseModel):
         """Voice and stream settings sent to Murf."""
 
-        voice_id: Optional[str] = "Matthew"
-        style: Optional[str] = "Conversational"
-        rate: Optional[int] = 0
-        pitch: Optional[int] = 0
-        pronunciation_dictionary: Optional[Dict[str, Dict[str, str]]] = None
-        variation: Optional[int] = 1
-        multi_native_locale: Optional[str] = None
-        model: Optional[Union[Literal["falcon-2", "FALCON", "GEN2"], str]] = "falcon-2"
-        sample_rate: Optional[int] = None
-        channel_type: Optional[str] = "MONO"
-        format: Optional[str] = "PCM"
-        min_buffer_size: Optional[int] = 2
-        max_buffer_delay_in_ms: Optional[int] = 0
+        voice_id: str | None = "Matthew"
+        style: str | None = "Conversational"
+        rate: int | None = 0
+        pitch: int | None = 0
+        pronunciation_dictionary: dict[str, dict[str, str]] | None = None
+        variation: int | None = 1
+        multi_native_locale: str | None = None
+        model: Literal["falcon-2", "FALCON", "GEN2"] | str | None = "falcon-2"
+        sample_rate: int | None = None
+        channel_type: str | None = "MONO"
+        format: str | None = "PCM"
+        min_buffer_size: int | None = 2
+        max_buffer_delay_in_ms: int | None = 0
 
         @field_validator("voice_id")
         @classmethod
-        def validate_voice_id(cls, v: Optional[str]) -> Optional[str]:
+        def validate_voice_id(cls, v: str | None) -> str | None:
             if v is not None and not v.strip():
                 raise ValueError("voice_id cannot be empty or whitespace")
             return v
 
         @field_validator("sample_rate")
         @classmethod
-        def validate_sample_rate(cls, v: Optional[int]) -> Optional[int]:
+        def validate_sample_rate(cls, v: int | None) -> int | None:
             valid_rates = [8000, 16000, 24000, 44100, 48000]
             if v is not None and v not in valid_rates:
                 raise ValueError(f"sample_rate must be one of {valid_rates}, got {v}")
@@ -74,28 +75,28 @@ class MurfTTSService(WebsocketTTSService):
 
         @field_validator("rate")
         @classmethod
-        def validate_rate(cls, v: Optional[int]) -> Optional[int]:
+        def validate_rate(cls, v: int | None) -> int | None:
             if v is not None and not (-50 <= v <= 50):
                 raise ValueError(f"rate must be between -50 and 50, got {v}")
             return v
 
         @field_validator("pitch")
         @classmethod
-        def validate_pitch(cls, v: Optional[int]) -> Optional[int]:
+        def validate_pitch(cls, v: int | None) -> int | None:
             if v is not None and not (-50 <= v <= 50):
                 raise ValueError(f"pitch must be between -50 and 50, got {v}")
             return v
 
         @field_validator("variation")
         @classmethod
-        def validate_variation(cls, v: Optional[int]) -> Optional[int]:
+        def validate_variation(cls, v: int | None) -> int | None:
             if v is not None and not (0 <= v <= 5):
                 raise ValueError(f"variation must be between 0 and 5, got {v}")
             return v
 
         @field_validator("channel_type")
         @classmethod
-        def validate_channel_type(cls, v: Optional[str]) -> Optional[str]:
+        def validate_channel_type(cls, v: str | None) -> str | None:
             valid_types = ["MONO", "STEREO"]
             if v is not None and v not in valid_types:
                 raise ValueError(f"channel_type must be one of {valid_types}, got {v}")
@@ -103,7 +104,7 @@ class MurfTTSService(WebsocketTTSService):
 
         @field_validator("format")
         @classmethod
-        def validate_format(cls, v: Optional[str]) -> Optional[str]:
+        def validate_format(cls, v: str | None) -> str | None:
             valid_formats = ["MP3", "WAV", "FLAC", "ALAW", "ULAW", "PCM", "OGG"]
             if v is not None and v not in valid_formats:
                 raise ValueError(f"format must be one of {valid_formats}, got {v}")
@@ -111,7 +112,7 @@ class MurfTTSService(WebsocketTTSService):
 
         @field_validator("min_buffer_size")
         @classmethod
-        def validate_min_buffer_size(cls, v: Optional[int]) -> Optional[int]:
+        def validate_min_buffer_size(cls, v: int | None) -> int | None:
             # Official plugin documents 40–160. Dograh already aggregates
             # sentences before TTS, so we allow a lower floor (2) to flush
             # immediately instead of waiting for more characters.
@@ -121,7 +122,7 @@ class MurfTTSService(WebsocketTTSService):
 
         @field_validator("max_buffer_delay_in_ms")
         @classmethod
-        def validate_max_buffer_delay_in_ms(cls, v: Optional[int]) -> Optional[int]:
+        def validate_max_buffer_delay_in_ms(cls, v: int | None) -> int | None:
             if v is not None and not (0 <= v <= 1000):
                 raise ValueError(
                     f"max_buffer_delay_in_ms must be between 0 and 1000, got {v}"
@@ -133,8 +134,8 @@ class MurfTTSService(WebsocketTTSService):
         *,
         api_key: str,
         url: str = "wss://global.api.murf.ai/v1/speech/stream-input",
-        params: Optional[InputParams] = None,
-        text_aggregation_mode: Optional[TextAggregationMode] = None,
+        params: InputParams | None = None,
+        text_aggregation_mode: TextAggregationMode | None = None,
         **kwargs,
     ):
         params = params or MurfTTSService.InputParams()
@@ -186,8 +187,8 @@ class MurfTTSService(WebsocketTTSService):
             "max_buffer_delay_in_ms": params.max_buffer_delay_in_ms,
         }
 
-        self._receive_task: Optional[asyncio.Task[None]] = None
-        self._websocket: Optional[ClientConnection] = None
+        self._receive_task: asyncio.Task[None] | None = None
+        self._websocket: ClientConnection | None = None
 
     def can_generate_metrics(self) -> bool:
         return True
@@ -271,7 +272,7 @@ class MurfTTSService(WebsocketTTSService):
         if not self._websocket:
             return
 
-        advanced_settings: Dict[str, Any] = {}
+        advanced_settings: dict[str, Any] = {}
         if self._murf_settings.get("min_buffer_size") is not None:
             advanced_settings["min_buffer_size"] = self._murf_settings[
                 "min_buffer_size"
@@ -308,7 +309,7 @@ class MurfTTSService(WebsocketTTSService):
             return self._websocket
         raise Exception("Websocket not connected")
 
-    async def flush_audio(self, context_id: Optional[str] = None):
+    async def flush_audio(self, context_id: str | None = None):
         flush_id = context_id or self.get_active_audio_context_id()
         if not flush_id or not self._websocket:
             return
@@ -354,7 +355,7 @@ class MurfTTSService(WebsocketTTSService):
             logger.debug(f"{self} websocket connection ended, reconnecting")
             await self._connect_websocket()
 
-    async def _process_json_message(self, data: Dict[str, Any]) -> None:
+    async def _process_json_message(self, data: dict[str, Any]) -> None:
         received_ctx_id = data.get("context_id")
 
         if not received_ctx_id or not isinstance(received_ctx_id, str):
@@ -408,8 +409,8 @@ class MurfTTSService(WebsocketTTSService):
 
     def _build_voice_config_message(
         self, text: str, context_id: str, is_last: bool = False
-    ) -> Dict[str, Any]:
-        voice_config: Dict[str, Any] = {
+    ) -> dict[str, Any]:
+        voice_config: dict[str, Any] = {
             "voice_id": self._settings.voice,
             "style": self._murf_settings["style"],
             "rate": self._murf_settings["rate"],
@@ -423,7 +424,7 @@ class MurfTTSService(WebsocketTTSService):
                 "multi_native_locale"
             ]
 
-        message: Dict[str, Any] = {
+        message: dict[str, Any] = {
             "voice_config": voice_config,
             "context_id": context_id,
             "text": text,

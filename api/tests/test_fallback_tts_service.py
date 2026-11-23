@@ -322,8 +322,7 @@ async def test_llm_request_uses_default_flags_after_explicit_speak():
     )
     await eventually(
         lambda: any(
-            isinstance(frame, TTSStoppedFrame)
-            for frame in harness.downstream.frames
+            isinstance(frame, TTSStoppedFrame) for frame in harness.downstream.frames
         ),
         what="the explicit speech to complete",
     )
@@ -356,8 +355,7 @@ async def test_immediate_llm_failure_replays_current_sentence_after_transition()
     await harness.pipeline.queue_frame(TTSSpeakFrame("Transition speech"))
     await eventually(
         lambda: any(
-            isinstance(frame, TTSStoppedFrame)
-            for frame in harness.downstream.frames
+            isinstance(frame, TTSStoppedFrame) for frame in harness.downstream.frames
         ),
         what="the transition speech to complete",
     )
@@ -401,12 +399,14 @@ async def test_primary_failure_after_three_seconds_does_not_replay():
     await start(harness)
     await harness.pipeline.queue_frame(TTSSpeakFrame("Already heard sentence."))
     await eventually(
-        lambda: sum(
-            len(frame.audio) / (frame.sample_rate * frame.num_channels * 2)
-            for frame in harness.downstream.frames
-            if isinstance(frame, TTSAudioRawFrame)
-        )
-        > 3.0,
+        lambda: (
+            sum(
+                len(frame.audio) / (frame.sample_rate * frame.num_channels * 2)
+                for frame in harness.downstream.frames
+                if isinstance(frame, TTSAudioRawFrame)
+            )
+            > 3.0
+        ),
         what="more than three seconds of primary audio to reach downstream",
     )
     await eventually(
@@ -449,12 +449,14 @@ async def test_streamed_llm_text_does_not_reset_active_request_audio_duration():
         ),
     )
     await eventually(
-        lambda: sum(
-            len(f.audio) / (f.sample_rate * f.num_channels * 2)
-            for f in harness.downstream.frames
-            if isinstance(f, TTSAudioRawFrame) and f.context_id == context_id
-        )
-        > 3.0,
+        lambda: (
+            sum(
+                len(f.audio) / (f.sample_rate * f.num_channels * 2)
+                for f in harness.downstream.frames
+                if isinstance(f, TTSAudioRawFrame) and f.context_id == context_id
+            )
+            > 3.0
+        ),
         what="more than three seconds of the first sentence to reach downstream",
     )
 
@@ -462,8 +464,9 @@ async def test_streamed_llm_text_does_not_reset_active_request_audio_duration():
     await harness.pipeline.queue_frame(LLMTextFrame("The next "))
     await harness.pipeline.queue_frame(LLMTextFrame("sentence is still streaming "))
     await eventually(
-        lambda: harness.tts._pending_llm_text
-        == "The next sentence is still streaming ",
+        lambda: (
+            harness.tts._pending_llm_text == "The next sentence is still streaming "
+        ),
         what="the next streamed sentence to reach the fallback boundary",
     )
     assert harness.tts._request_context_id == context_id
@@ -471,8 +474,10 @@ async def test_streamed_llm_text_does_not_reset_active_request_audio_duration():
 
     await primary.push_error("stream failed", fatal=False)
     await eventually(
-        lambda: harness.tts.strategy.active_service is backup
-        and not harness.tts._pending_llm_text,
+        lambda: (
+            harness.tts.strategy.active_service is backup
+            and not harness.tts._pending_llm_text
+        ),
         what="the provider switch",
     )
     assert backup.speak_frames == []

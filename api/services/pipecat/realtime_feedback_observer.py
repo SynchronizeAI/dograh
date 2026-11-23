@@ -25,7 +25,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Optional
 
 from loguru import logger
-import pipecat.frames.frames as frames
 
 from api.errors.failure import (
     classify_error_frame,
@@ -43,6 +42,7 @@ from api.services.pipecat.realtime_feedback_events import (
     build_ttfb_metric_event,
     build_user_transcription_event,
 )
+from pipecat.frames import frames
 
 if TYPE_CHECKING:
     from api.services.observability.call_events.recorder import CallEventRecorder

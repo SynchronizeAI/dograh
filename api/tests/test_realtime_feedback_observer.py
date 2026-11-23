@@ -321,7 +321,9 @@ async def test_turn_stage_timestamps_are_persisted_once_with_turn_number():
     logs.set_current_turn(4)
     observer = RealtimeFeedbackObserver(ws_sender=None, logs_buffer=logs)
     user, assistant = _FakeAggregator(), _FakeAggregator()
-    register_turn_log_handlers(TranscriptLogCoordinator(logs), user, assistant, observer)
+    register_turn_log_handlers(
+        TranscriptLogCoordinator(logs), user, assistant, observer
+    )
 
     for text, timestamp in (
         ("First segment", "2026-01-01T00:00:00+00:00"),

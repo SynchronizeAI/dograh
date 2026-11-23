@@ -106,6 +106,7 @@ class KoreaAITelProvider(TelephonyProvider):
         raw_data = dict(webhook_data)
         if restricted:
             raw_data["From"] = ""
+            raw_data["ForwardedFrom"] = ""
         return NormalizedInboundData(
             provider=KoreaAITelProvider.PROVIDER_NAME,
             call_id=webhook_data.get("CallId", ""),

@@ -1,12 +1,44 @@
+import asyncio
 import copy
+from io import StringIO
 from types import SimpleNamespace
 
 import httpx
 import pytest
+from loguru import logger
 
 from api.services.pipecat import pre_call_fetch as service
 from api.services.pipecat.pre_call_fetch import _extract_initial_context
 from api.tests.conftest import DEFAULT_WORKFLOW_DEFINITION
+
+
+@pytest.mark.asyncio
+async def test_pre_call_fetch_start_log_omits_credential_bearing_url():
+    url = "https://crm-user:crm-secret@example.com/customer/lookup"
+    node = SimpleNamespace(
+        should_run_pre_call_fetch=lambda direction: True,
+        pre_call_fetch_url=url,
+        pre_call_fetch_credential_uuid=None,
+    )
+    output = StringIO()
+    sink_id = logger.add(output, format="{message}")
+    try:
+        task = service.start_pre_call_fetch(
+            node,
+            "inbound",
+            workflow_run_id=91483,
+            call_context_vars={},
+            workflow_id=7,
+            organization_id=1,
+        )
+        assert task is not None
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    finally:
+        logger.remove(sink_id)
+
+    assert "crm-secret" not in output.getvalue()
+    assert url not in output.getvalue()
 
 
 @pytest.mark.asyncio

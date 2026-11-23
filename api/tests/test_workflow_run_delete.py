@@ -255,3 +255,12 @@ def test_delete_workflow_run_requires_authentication():
         response = TestClient(_app(authenticated=False)).delete("/workflow/3/runs/7")
 
     assert response.status_code == 401
+
+
+def test_delete_workflow_run_is_in_openapi_and_generated_sdk_contract():
+    spec = TestClient(_app()).get("/openapi.json").json()
+    operation = spec["paths"]["/workflow/{workflow_id}/runs/{run_id}"]["delete"]
+
+    assert operation["x-sdk-method"] == "delete_workflow_run"
+    assert "204" in operation["responses"]
+    assert "409" in operation["responses"]

@@ -272,7 +272,7 @@ def start_pre_call_fetch(
     ):
         logger.info(
             f"Pre-call fetch enabled for {direction or 'unknown'} workflow run "
-            f"{workflow_run_id}, firing request to {start_node.pre_call_fetch_url}"
+            f"{workflow_run_id}, firing request"
         )
         task = asyncio.create_task(
             execute_pre_call_fetch_result(

@@ -1551,7 +1551,21 @@ def _workflow_run_artifact_keys(run) -> set[tuple[str, str]]:
 
 
 @router.delete(
-    "/{workflow_id}/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT
+    "/{workflow_id}/runs/{run_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        status.HTTP_404_NOT_FOUND: {"description": "Workflow run not found"},
+        status.HTTP_409_CONFLICT: {
+            "description": "Run mode is unsupported or completion has not finished"
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "description": "Failed to delete workflow run artifacts"
+        },
+    },
+    **sdk_expose(
+        method="delete_workflow_run",
+        description="Delete a completed telephony workflow run and its stored artifacts.",
+    ),
 )
 async def delete_workflow_run(
     workflow_id: int, run_id: int, user: UserModel = Depends(get_user)

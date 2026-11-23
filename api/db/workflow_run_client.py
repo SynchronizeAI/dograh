@@ -1,7 +1,9 @@
 import uuid
+from datetime import UTC, datetime, timedelta
+from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import Float, cast, func
+from sqlalchemy import Float, cast, delete, func
 from sqlalchemy.future import select
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -31,6 +33,30 @@ def append_unique_tags(existing_tags: object, new_tags: object) -> list:
         if tag not in tags:
             tags.append(tag)
     return tags
+
+
+class RunDeletion(Enum):
+    DELETED = "deleted"
+    NOT_FOUND = "not_found"
+    IN_PROGRESS = "in_progress"
+
+
+# A run older than this can no longer be written to: max_call_duration is
+# capped at 1200 s, and the post-call upload and completion steps finish well
+# inside the remaining time (the completion lease is 600 s). Past it, a run
+# that never reached "done" is abandoned, so it stays deletable.
+RUN_SETTLED_AFTER = timedelta(hours=1)
+
+
+def _run_still_writing(run: WorkflowRunModel, now: datetime) -> bool:
+    """True while the call, its artifact upload or its completion may still
+    write the row (or put new objects in storage)."""
+    if run.created_at is not None and now - run.created_at >= RUN_SETTLED_AFTER:
+        return False
+    if not run.is_completed:
+        return True
+    completion = (run.extra or {}).get("workflow_completion") or {}
+    return bool(completion) and completion.get("status") != "done"
 
 
 class WorkflowRunClient(BaseDBClient):
@@ -295,6 +321,40 @@ class WorkflowRunClient(BaseDBClient):
 
             result = await session.execute(query)
             return result.scalars().first()
+
+    async def delete_workflow_run(
+        self, run_id: int, *, workflow_id: int, organization_id: int
+    ) -> RunDeletion:
+        """Delete one run of an organization's workflow.
+
+        The row holds everything Dograh keeps about a call: the caller's
+        number (initial_context), the extraction (gathered_context), the
+        transcript (logs), the QA result (annotations), usage and storage keys.
+        Its webhook deliveries (with their payloads), text session and embed
+        sessions go with it through ON DELETE CASCADE. Storage objects are not
+        touched. A run the call or its post-call steps may still write is
+        refused, so nothing is written after the delete.
+        """
+        async with self.async_session() as session:
+            run = await session.scalar(
+                select(WorkflowRunModel)
+                .join(WorkflowModel, WorkflowRunModel.workflow_id == WorkflowModel.id)
+                .where(
+                    WorkflowRunModel.id == run_id,
+                    WorkflowRunModel.workflow_id == workflow_id,
+                    WorkflowModel.organization_id == organization_id,
+                )
+                .with_for_update(of=WorkflowRunModel)
+            )
+            if run is None:
+                return RunDeletion.NOT_FOUND
+            if _run_still_writing(run, datetime.now(UTC)):
+                return RunDeletion.IN_PROGRESS
+            await session.execute(
+                delete(WorkflowRunModel).where(WorkflowRunModel.id == run.id)
+            )
+            await session.commit()
+            return RunDeletion.DELETED
 
     async def get_workflow_run_by_id(self, run_id: int) -> WorkflowRunModel | None:
         """Get workflow run by ID without user filtering - for background tasks"""

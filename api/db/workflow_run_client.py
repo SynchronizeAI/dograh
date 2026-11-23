@@ -629,12 +629,19 @@ class WorkflowRunClient(BaseDBClient):
             return result.scalars().first()
 
     async def get_workflow_run_by_call_id(
-        self, call_id: str, mode: str | None = None
+        self,
+        call_id: str,
+        mode: str | None = None,
+        *,
+        organization_id: int | None = None,
+        telephony_configuration_id: int | None = None,
     ) -> Optional[WorkflowRunModel]:
         """Find workflow run by call_id stored in gathered_context.
 
         Args:
             call_id: The telephony call ID to search for
+            organization_id: Optional owning organization of the call
+            telephony_configuration_id: Optional provider account that owns the call
 
         Returns:
             The WorkflowRunModel if found, None otherwise
@@ -642,6 +649,20 @@ class WorkflowRunClient(BaseDBClient):
         async with self.async_session() as session:
             # Use JSON text extraction to find matching call_id
             # This leverages the idx_workflow_runs_call_id index
+            filters = (
+                [WorkflowModel.organization_id == organization_id]
+                if organization_id is not None
+                else []
+            )
+            if mode:
+                filters.append(WorkflowRunModel.mode == mode)
+            if telephony_configuration_id is not None:
+                filters.append(
+                    WorkflowRunModel.initial_context.op("->>")(
+                        "telephony_configuration_id"
+                    )
+                    == str(telephony_configuration_id)
+                )
             result = await session.execute(
                 select(WorkflowRunModel)
                 .options(
@@ -649,8 +670,9 @@ class WorkflowRunClient(BaseDBClient):
                 )
                 .where(
                     WorkflowRunModel.gathered_context.op("->>")("call_id") == call_id,
-                    *([WorkflowRunModel.mode == mode] if mode else []),
+                    *filters,
                 )
+                .join(WorkflowModel, WorkflowRunModel.workflow_id == WorkflowModel.id)
                 .order_by(WorkflowRunModel.created_at.desc())
                 .limit(1)
             )

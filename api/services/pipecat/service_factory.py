@@ -35,7 +35,6 @@ from api.services.pipecat.fallback_llm import FallbackLLMProcessor, FallbackRout
 from api.services.pipecat.gemini_json_schema_adapter import (
     DograhGeminiJSONSchemaAdapter,
 )
-from api.services.pipecat.gemini_prompt_cache import GeminiPromptCacheMixin
 from api.services.pipecat.gemini_spoken_tool_calls import GeminiSpokenToolCallMixin
 from api.services.pipecat.google_credentials import (
     get_google_credentials,
@@ -408,9 +407,7 @@ class SpeachesLLMService(OpenAISpokenToolCallMixin, BaseSpeachesLLMService):
     """Speaches streaming service with spoken-tool recovery."""
 
 
-class DograhGoogleLLMService(
-    GeminiPromptCacheMixin, GeminiSpokenToolCallMixin, GoogleLLMService
-):
+class DograhGoogleLLMService(GeminiSpokenToolCallMixin, GoogleLLMService):
     adapter_class = DograhGeminiJSONSchemaAdapter
 
 

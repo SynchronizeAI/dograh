@@ -11,8 +11,11 @@ from pipecat.frames.frames import (
     FunctionCallInProgressFrame,
     InterruptionFrame,
     LLMContextFrame,
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
     LLMTextFrame,
     MetricsFrame,
+    TTSAudioRawFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
     TTSTextFrame,
@@ -452,18 +455,54 @@ async def test_response_stages_keep_their_turn_across_barge_in():
     observer = RealtimeFeedbackObserver(ws_sender=None, logs_buffer=logs)
     user, assistant = _FakeAggregator(), _FakeAggregator()
     register_turn_log_handlers(coordinator, user, assistant, observer)
+    response_source = SimpleNamespace(pipeline_worker=SimpleNamespace())
 
     await turn_observer.handlers["on_turn_started"](turn_observer, 1)
     await observer.on_push_frame(
-        _frame_pushed(LLMContextFrame(LLMContext()), FrameDirection.DOWNSTREAM)
+        _frame_pushed(
+            LLMContextFrame(LLMContext()),
+            FrameDirection.DOWNSTREAM,
+            source=response_source,
+        )
     )
     await turn_observer.handlers["on_turn_ended"](turn_observer, 1, 1.0, True)
     await turn_observer.handlers["on_turn_started"](turn_observer, 2)
 
     await observer.on_push_frame(
         _frame_pushed(
-            TTSSpeakFrame("The previous answer.", append_to_context=False),
+            LLMContextFrame(LLMContext()),
             FrameDirection.DOWNSTREAM,
+            source=response_source,
+        )
+    )
+    await observer.on_push_frame(
+        _frame_pushed(
+            LLMFullResponseStartFrame(),
+            FrameDirection.DOWNSTREAM,
+            source=response_source,
+        )
+    )
+    await observer.on_push_frame(
+        _frame_pushed(
+            LLMTextFrame("The previous answer."),
+            FrameDirection.DOWNSTREAM,
+            source=response_source,
+        )
+    )
+    old_sentence = AggregatedTextFrame("The previous answer.", "sentence")
+    old_sentence.will_be_spoken = True
+    await observer.on_push_frame(
+        _frame_pushed(
+            old_sentence,
+            FrameDirection.DOWNSTREAM,
+            source=response_source,
+        )
+    )
+    await observer.on_push_frame(
+        _frame_pushed(
+            TTSAudioRawFrame(b"\x00\x00", 16000, 1),
+            FrameDirection.DOWNSTREAM,
+            source=response_source,
         )
     )
     await turn_observer.handlers["on_bot_started_speaking"](
@@ -474,12 +513,39 @@ async def test_response_stages_keep_their_turn_across_barge_in():
     )
 
     await observer.on_push_frame(
-        _frame_pushed(LLMContextFrame(LLMContext()), FrameDirection.DOWNSTREAM)
+        _frame_pushed(
+            LLMFullResponseEndFrame(),
+            FrameDirection.DOWNSTREAM,
+            source=response_source,
+        )
     )
-    new_sentence = AggregatedTextFrame("The current answer.", "sentence")
-    new_sentence.will_be_spoken = True
     await observer.on_push_frame(
-        _frame_pushed(new_sentence, FrameDirection.DOWNSTREAM)
+        _frame_pushed(
+            LLMFullResponseStartFrame(),
+            FrameDirection.DOWNSTREAM,
+            source=response_source,
+        )
+    )
+    await observer.on_push_frame(
+        _frame_pushed(
+            LLMTextFrame("The current answer."),
+            FrameDirection.DOWNSTREAM,
+            source=response_source,
+        )
+    )
+    await observer.on_push_frame(
+        _frame_pushed(
+            TTSSpeakFrame("The current answer.", append_to_context=False),
+            FrameDirection.DOWNSTREAM,
+            source=response_source,
+        )
+    )
+    await observer.on_push_frame(
+        _frame_pushed(
+            TTSAudioRawFrame(b"\x00\x00", 16000, 1),
+            FrameDirection.DOWNSTREAM,
+            source=response_source,
+        )
     )
     await turn_observer.handlers["on_bot_started_speaking"](
         turn_observer, 2, None
@@ -493,17 +559,27 @@ async def test_response_stages_keep_their_turn_across_barge_in():
         for event in logs.get_events()
         if event["type"] == "rtf-turn-latency"
         and event["payload"]["stage"]
-        in {"first_sentence_complete", "tts_request", "audio_out"}
+        in {
+            "llm_first_token",
+            "first_sentence_complete",
+            "tts_request",
+            "tts_first_audio",
+            "audio_out",
+        }
     ]
     assert [
         (event["payload"]["stage"], event["turn"])
         for event in stage_events
     ] == [
+        ("llm_first_token", 1),
         ("first_sentence_complete", 1),
         ("tts_request", 1),
+        ("tts_first_audio", 1),
         ("audio_out", 1),
+        ("llm_first_token", 2),
         ("first_sentence_complete", 2),
         ("tts_request", 2),
+        ("tts_first_audio", 2),
         ("audio_out", 2),
     ]
 

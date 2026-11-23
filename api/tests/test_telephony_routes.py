@@ -1,9 +1,11 @@
+import io
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, Mock, patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from loguru import logger
 
 from api.enums import WorkflowRunMode, WorkflowRunState
 from api.errors.telephony_errors import TelephonyError
@@ -554,7 +556,7 @@ def _setup_koreaaitel_webhook(
     request = SimpleNamespace(
         headers={"x-signature": "signed"}, url="https://api.example.com/inbound/run"
     )
-    provider_class = SimpleNamespace(PROVIDER_NAME="koreaaitel")
+    provider_class = KoreaAITelProvider
     data = KoreaAITelProvider.parse_inbound_webhook(
         {
             "CallId": "CA1",
@@ -633,12 +635,19 @@ async def test_unsigned_koreaaitel_webhook_does_not_log_caller_number(monkeypatc
     request, _, _, _ = _setup_koreaaitel_webhook(
         monkeypatch, [], [], signature_valid=False
     )
-    route_logger = Mock()
-    monkeypatch.setattr(routes, "logger", route_logger)
+    log_capture = io.StringIO()
+    sink_id = logger.add(log_capture, format="{message}", level="INFO")
+    try:
+        response = await handle_inbound_run(request)
+    finally:
+        logger.remove(sink_id)
 
-    assert await handle_inbound_run(request) == "invalid-signature"
-
-    assert "01012345678" not in repr(route_logger.mock_calls)
+    assert response.status_code == 200
+    assert "<Reject" in response.body.decode()
+    captured_logs = log_capture.getvalue()
+    assert "01012345678" not in captured_logs
+    assert "0212345678" not in captured_logs
+    assert "07012340001" not in captured_logs
 
 
 @pytest.mark.asyncio

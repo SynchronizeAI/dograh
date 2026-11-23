@@ -4,8 +4,6 @@ This module tests the behavior when the LLM generates tool calls (single or para
 using PipecatEngine's actual function registration and execution logic.
 """
 
-import asyncio
-from types import SimpleNamespace
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock, patch
 
@@ -185,67 +183,6 @@ class TestPipecatEngineToolCalls:
             for call in register_function.call_args_list
         )
         assert "end_call" not in llm._functions
-
-    @pytest.mark.asyncio
-    async def test_parallel_transitions_claim_the_source_node_once(
-        self, simple_workflow: WorkflowGraph
-    ):
-        engine = PipecatEngine(
-            workflow=simple_workflow,
-            call_context_vars={},
-        )
-        agent = engine.active_agent
-        source_node = agent.workflow.nodes["start"]
-        agent.current_node = source_node
-        agent.workflow.nodes["target_a"] = SimpleNamespace(
-            is_end=False, respond_immediately=False
-        )
-        agent.workflow.nodes["target_b"] = SimpleNamespace(
-            is_end=False, respond_immediately=False
-        )
-        speech_queued = asyncio.Event()
-        release_speech = asyncio.Event()
-
-        async def queue_speech(*args, **kwargs):
-            speech_queued.set()
-            await release_speech.wait()
-            return True
-
-        async def set_node(node_id, **kwargs):
-            agent.current_node = agent.workflow.nodes[node_id]
-
-        engine._perform_variable_extraction_if_needed = AsyncMock()
-        engine.queue_text_message = AsyncMock(side_effect=queue_speech)
-        engine.set_node = AsyncMock(side_effect=set_node)
-        transition_a = await engine._create_transition_func(
-            "go_a", "target_a", "One moment", agent=agent, source_node=source_node
-        )
-        transition_b = await engine._create_transition_func(
-            "go_b", "target_b", "Please wait", agent=agent, source_node=source_node
-        )
-        callback_a = AsyncMock()
-        callback_b = AsyncMock()
-
-        transition_task = asyncio.create_task(
-            transition_a(SimpleNamespace(arguments={}, result_callback=callback_a))
-        )
-        await speech_queued.wait()
-        await transition_b(
-            SimpleNamespace(arguments={}, result_callback=callback_b)
-        )
-        release_speech.set()
-        await transition_task
-
-        assert engine.queue_text_message.await_count == 1
-        engine.set_node.assert_awaited_once_with(
-            "target_a", origin_visit_id=agent.visit_id
-        )
-        assert callback_a.await_args.args[0] == {"status": "done"}
-        assert callback_b.await_args.args[0] == {
-            "status": "error",
-            "error": "Transition is no longer available",
-        }
-        assert agent._transition_claimed is False
 
     @pytest.mark.asyncio
     async def test_parallel_builtin_and_transition_calls_through_engine_1(

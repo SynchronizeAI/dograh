@@ -446,11 +446,8 @@ class PipecatEngine:
             )
             logger.info(f"Arguments: {function_call_params.arguments}")
 
-            claimed_transition = False
             try:
-                if agent._transition_claimed or (
-                    source_node is not None and agent.current_node is not source_node
-                ):
+                if source_node is not None and agent.current_node is not source_node:
                     await function_call_params.result_callback(
                         {
                             "status": "error",
@@ -459,9 +456,6 @@ class PipecatEngine:
                         properties=FunctionCallResultProperties(run_llm=False),
                     )
                     return
-
-                agent._transition_claimed = True
-                claimed_transition = True
 
                 # Perform variable extraction before transitioning to new node
                 await self._perform_variable_extraction_if_needed(
@@ -501,8 +495,6 @@ class PipecatEngine:
                 # frame is received by LLMContextAggregator and an LLM generation
                 # is done, we have updated context and functions
                 await self.set_node(transition_to_node, origin_visit_id=agent.visit_id)
-                agent._transition_claimed = False
-                claimed_transition = False
 
                 next_node = agent.workflow.nodes[transition_to_node]
                 is_end_node = next_node.is_end
@@ -550,9 +542,6 @@ class PipecatEngine:
                 logger.error(f"Error in transition function {name}: {str(e)}")
                 error_result = {"status": "error", "error": str(e)}
                 await function_call_params.result_callback(error_result)
-            finally:
-                if claimed_transition:
-                    agent._transition_claimed = False
 
         return agent.bind_tool(self, transition_func, is_node_transition=True)
 

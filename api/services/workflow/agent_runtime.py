@@ -97,7 +97,6 @@ class AgentRuntime:
     # must never be shut down by a retirement.
     is_child: bool = False
     current_node: "Node | None" = None
-    _transition_claimed: bool = field(default=False, init=False, repr=False)
     entered_at: float | None = None
     exited_at: float | None = None
     # Why this visit ended: "transferred", "call_ended", "rolled_back", or

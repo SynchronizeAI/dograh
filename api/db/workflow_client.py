@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import Optional
 
 from loguru import logger
 from sqlalchemy import func, update
@@ -843,7 +844,7 @@ class WorkflowClient(BaseDBClient):
 
     async def get_workflow_name(
         self, workflow_id: int, user_id: int = None, organization_id: int = None
-    ) -> str | None:
+    ) -> Optional[str]:
         """Get just the workflow name by ID"""
         async with self.async_session() as session:
             query = select(WorkflowModel.name).where(WorkflowModel.id == workflow_id)

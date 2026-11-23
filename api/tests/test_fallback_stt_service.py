@@ -30,8 +30,8 @@ from pipecat.turns.user_stop import (
 from pipecat.turns.user_turn_controller import UserTurnController
 from pipecat.utils.asyncio.task_manager import TaskManager
 
-from api.services.pipecat import run_pipeline as run_pipeline_module
 from api.services.pipecat.fallback_stt import FallbackSTTService
+from api.services.pipecat import run_pipeline as run_pipeline_module
 from api.services.pipecat.greeting import GreetingController
 from api.services.pipecat.run_pipeline import _bind_stt_fallback_turns
 from api.services.pipecat.termination_funnel_processor import (
@@ -165,9 +165,7 @@ async def test_deepgram_503_connection_error_switches_before_retry(monkeypatch):
     monkeypatch.setattr(deepgram_stt, "ApiError", ApiError)
     primary = DeepgramSTTService(api_key="disposable", sample_rate=16000)
     primary._client = SimpleNamespace(
-        listen=SimpleNamespace(
-            v1=SimpleNamespace(connect=UnavailableEndpoint().connect)
-        )
+        listen=SimpleNamespace(v1=SimpleNamespace(connect=UnavailableEndpoint().connect))
     )
     backup = FakeSTT("backup")
     stt, pipeline = await _pipeline(primary, backup)

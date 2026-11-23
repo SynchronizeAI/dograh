@@ -14,9 +14,8 @@ that runs them.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from loguru import logger
 
@@ -244,7 +243,7 @@ class AgentRuntimeFactory:
         # billed separately, so a visit does not quietly double its provider
         # connections.
         needs_extraction_llm = runtime.workflow.uses_variable_extraction() or bool(
-            run_configs.get("call_dispositions") or []
+            (run_configs.get("call_dispositions") or [])
         )
         variable_extraction_llm = (
             create_llm_service(

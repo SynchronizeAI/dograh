@@ -1,6 +1,6 @@
 import re
 from collections import Counter
-from collections.abc import Iterable
+from typing import Dict, Iterable, List, Set
 
 from api.services.workflow.dto import (
     EdgeDataDTO,
@@ -55,10 +55,10 @@ def validate_unique_transition_tool_names(
     return errors
 
 
-def extract_template_variables(text: str) -> set[str]:
+def extract_template_variables(text: str) -> Set[str]:
     """Extract template variable names from a string, excluding nested paths,
     variables with a fallback filter, and system-injected variables."""
-    variables: set[str] = set()
+    variables: Set[str] = set()
     for match in re.finditer(TEMPLATE_VAR_PATTERN, text):
         var_name = match.group(1).strip()
         filter_name = match.group(2).strip() if match.group(2) else None
@@ -111,8 +111,8 @@ class Edge:
 class Node:
     def __init__(self, id: str, node_type: str, data: BaseNodeData):
         self.id, self.node_type, self.data = id, node_type, data
-        self.out: dict[str, Node] = {}  # forward nodes
-        self.out_edges: list[Edge] = []  # forward edges with properties
+        self.out: Dict[str, "Node"] = {}  # forward nodes
+        self.out_edges: List[Edge] = []  # forward edges with properties
 
         # Start/end semantics are defined by node type. The persisted
         # data flags are legacy UI/runtime state and may be stale.
@@ -179,7 +179,7 @@ def validate_node_instance_constraints(
     node_types: list[str],
     *,
     enforce_min_instances: bool = True,
-    skip_types: set[str] | None = None,
+    skip_types: Set[str] | None = None,
 ) -> list[WorkflowError]:
     """Validate workflow-level node type counts from NodeSpec.graph_constraints."""
     errors: list[WorkflowError] = []
@@ -238,17 +238,17 @@ class WorkflowGraph:
         self,
         dto: ReactFlowDTO,
         *,
-        skip_instance_constraints_for: set[str] | None = None,
+        skip_instance_constraints_for: Set[str] | None = None,
     ):
         # Build adjacency list from validated DTO nodes. Core node comparisons
         # still use NodeType string enums; integration nodes remain plain
         # strings and resolve constraints through node specs.
-        self.nodes: dict[str, Node] = {
+        self.nodes: Dict[str, Node] = {
             n.id: Node(n.id, n.type, n.data) for n in dto.nodes
         }
 
         # Store all edges
-        self.edges: list[Edge] = []
+        self.edges: List[Edge] = []
 
         for e in dto.edges:
             source_node = self.nodes[e.source]
@@ -291,7 +291,7 @@ class WorkflowGraph:
     # -----------------------------------------------------------
     # template variable extraction
     # -----------------------------------------------------------
-    def get_required_template_variables(self) -> set[str]:
+    def get_required_template_variables(self) -> Set[str]:
         """Extract all template variables referenced in node prompts/greetings
         and edge transition speeches.
 
@@ -304,7 +304,7 @@ class WorkflowGraph:
         from the source data (excluding nested paths, fallback vars, and
         system-injected vars).
         """
-        variables: set[str] = set()
+        variables: Set[str] = set()
 
         for node in self.nodes.values():
             if node.node_type in (
@@ -329,7 +329,7 @@ class WorkflowGraph:
     # -----------------------------------------------------------
     # validators
     # -----------------------------------------------------------
-    def _validate_graph(self, skip_instance_constraints_for: set[str]) -> None:
+    def _validate_graph(self, skip_instance_constraints_for: Set[str]) -> None:
         errors: list[WorkflowError] = []
 
         # TODO: Figure out what kind of cyclic contraints can be applied, since there can be a cycle in the graph
@@ -359,7 +359,7 @@ class WorkflowGraph:
             raise ValueError(errors)
 
     def _assert_acyclic(self):
-        color: dict[str, str] = {}  # white / gray / black
+        color: Dict[str, str] = {}  # white / gray / black
 
         def dfs(n: Node):
             if color.get(n.id) == "gray":  # back-edge

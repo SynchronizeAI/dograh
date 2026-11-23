@@ -47,10 +47,10 @@ from api.services.pipecat.run_pipeline import (
     DEFAULT_TURN_START_MIN_WORDS,
     DEFAULT_USER_TURN_STOP_TIMEOUT,
     EXTERNAL_TURN_USER_STOP_TIMEOUT,
-    _bind_stt_fallback_turns,
     _create_non_realtime_user_turn_start_strategies,
     _create_non_realtime_user_turn_stop_strategies,
     _create_non_realtime_user_turn_strategies,
+    _bind_stt_fallback_turns,
     _create_realtime_user_turn_config,
     _resolve_user_turn_stop_timeout,
 )

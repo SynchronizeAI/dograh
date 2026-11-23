@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, List
 
 from loguru import logger
 from opentelemetry import trace
@@ -43,13 +43,13 @@ class ExtractionResponseError(ValueError):
 class VariableExtractionManager:
     """Run node extraction against the live engine's conversation."""
 
-    def __init__(self, engine: PipecatEngine) -> None:
+    def __init__(self, engine: "PipecatEngine") -> None:
         self._engine = engine
         self._context = engine.context
 
     async def _perform_extraction(
         self,
-        extraction_variables: list[ExtractionVariableDTO],
+        extraction_variables: List[ExtractionVariableDTO],
         parent_ctx: Any,
         extraction_prompt: str = "",
     ) -> dict:
@@ -64,7 +64,7 @@ class VariableExtractionManager:
 
 async def extract_variables(
     llm: Any,
-    extraction_variables: list[ExtractionVariableDTO],
+    extraction_variables: List[ExtractionVariableDTO],
     conversation_history: str,
     *,
     extraction_prompt: str = "",

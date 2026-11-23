@@ -18,7 +18,6 @@ from pipecat.processors.aggregators.llm_response_universal import (
 )
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.services.deepgram.flux.stt import DeepgramFluxSTTService
-from pipecat.tests import MockLLMService, MockTTSService
 
 from api.schemas.llm_fallback import NoOutputCondition
 from api.services.configuration.registry import DeepgramSTTConfiguration
@@ -37,6 +36,7 @@ from api.services.pipecat.worker_runner import (
     create_worker_runner,
     wait_for_pipeline_worker_started,
 )
+from pipecat.tests import MockLLMService, MockTTSService
 
 
 class Probe(FrameProcessor):

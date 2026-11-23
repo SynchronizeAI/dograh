@@ -8,7 +8,7 @@ Adding a new provider requires adding one import here.
 """
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -52,16 +52,18 @@ from api.services.telephony.registry import (
 # ``provider`` Literal field of each request class. Replaces the manual
 # if/elif chains that used to live in routes/organization.py.
 TelephonyConfigRequest = Annotated[
-    ARIConfigurationRequest
-    | CloudonixConfigurationRequest
-    | ExotelConfigurationRequest
-    | KoreaAITelConfigurationRequest
-    | PlivoConfigurationRequest
-    | TelnyxConfigurationRequest
-    | TwilioConfigurationRequest
-    | VobizConfigurationRequest
-    | VonageConfigurationRequest
-    | WhatsAppConfigurationRequest,
+    Union[
+        ARIConfigurationRequest,
+        CloudonixConfigurationRequest,
+        ExotelConfigurationRequest,
+        KoreaAITelConfigurationRequest,
+        PlivoConfigurationRequest,
+        TelnyxConfigurationRequest,
+        TwilioConfigurationRequest,
+        VobizConfigurationRequest,
+        VonageConfigurationRequest,
+        WhatsAppConfigurationRequest,
+    ],
     Field(discriminator="provider"),
 ]
 
@@ -88,8 +90,8 @@ class TelephonyConfigurationCreateRequest(BaseModel):
 class TelephonyConfigurationUpdateRequest(BaseModel):
     """Body for ``PUT /telephony-configs/{id}``. Partial update."""
 
-    name: str | None = Field(default=None, min_length=1, max_length=64)
-    config: TelephonyConfigRequest | None = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    config: Optional[TelephonyConfigRequest] = None
 
 
 class TelephonyConfigurationListItem(BaseModel):
@@ -150,13 +152,13 @@ class TrunkCreateRequest(BaseModel):
 class TrunkUpdateRequest(BaseModel):
     """Partial update — omitted fields keep their stored value."""
 
-    name: str | None = Field(default=None, min_length=1, max_length=64)
-    enabled: bool | None = None
-    settings: dict | None = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    enabled: Optional[bool] = None
+    settings: Optional[dict] = None
 
 
 class TrunkListResponse(BaseModel):
-    trunks: list[TrunkResponse]
+    trunks: List[TrunkResponse]
 
 
 class TelephonyConfigurationDetail(BaseModel):
@@ -181,7 +183,7 @@ class TelephonyConfigurationDetail(BaseModel):
     supports_trunks: bool = False
     # Empty unless the provider's Dograh integration models trunks; the
     # call-control integrations route through the account itself.
-    trunks: list[TrunkResponse] = Field(default_factory=list)
+    trunks: List[TrunkResponse] = Field(default_factory=list)
     # Whether the provider can list the numbers its account holds, so the UI
     # can offer "refresh numbers" next to (not instead of) manual entry.
     supports_phone_number_sync: bool = False
@@ -190,7 +192,7 @@ class TelephonyConfigurationDetail(BaseModel):
 
 
 class TelephonyConfigurationListResponse(BaseModel):
-    configurations: list[TelephonyConfigurationListItem]
+    configurations: List[TelephonyConfigurationListItem]
 
 
 __all__ = [
@@ -199,11 +201,11 @@ __all__ = [
     "ExotelConfigurationRequest",
     "PlivoConfigurationRequest",
     "TelephonyConfigRequest",
-    "TelnyxConfigurationRequest",
     "TrunkCreateRequest",
     "TrunkListResponse",
     "TrunkResponse",
     "TrunkUpdateRequest",
+    "TelnyxConfigurationRequest",
     "TwilioConfigurationRequest",
     "VobizConfigurationRequest",
     "VonageConfigurationRequest",

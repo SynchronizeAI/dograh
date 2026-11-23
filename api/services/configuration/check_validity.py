@@ -1,4 +1,4 @@
-from typing import TypedDict
+from typing import Optional, TypedDict
 
 import httpx
 import openai
@@ -22,7 +22,7 @@ from api.utils.url_security import validate_user_configured_service_url
 
 AuthContext = TypedDict(
     "AuthContext",
-    {"organization_id": int | None, "created_by": str | None},
+    {"organization_id": Optional[int], "created_by": Optional[str]},
     total=False,
 )
 
@@ -92,8 +92,8 @@ class UserConfigurationValidator:
     async def validate(
         self,
         configuration: EffectiveAIModelConfiguration,
-        organization_id: int | None = None,
-        created_by: str | None = None,
+        organization_id: Optional[int] = None,
+        created_by: Optional[str] = None,
     ) -> APIKeyStatusResponse:
         # A managed configuration commonly repeats one service key across LLM,
         # STT, TTS, and embeddings. Validate that credential once per request.
@@ -174,7 +174,7 @@ class UserConfigurationValidator:
 
     def _validate_service(
         self,
-        service_config: ServiceConfig | None,
+        service_config: Optional[ServiceConfig],
         service_name: str,
         required: bool = True,
     ) -> list[APIKeyStatus]:
@@ -293,7 +293,7 @@ class UserConfigurationValidator:
         self,
         provider: str,
         api_key: str,
-        service_config: ServiceConfig | None = None,
+        service_config: Optional[ServiceConfig] = None,
     ) -> bool:
         """Check if an API key for a provider is valid."""
         validator = self._validator_map.get(provider)
@@ -310,7 +310,7 @@ class UserConfigurationValidator:
         return validator(provider, api_key)
 
     def _check_openai_api_key(
-        self, model: str, api_key: str, service_config: ServiceConfig | None = None
+        self, model: str, api_key: str, service_config: Optional[ServiceConfig] = None
     ) -> bool:
         provider_name = _OPENAI_COMPATIBLE_PROVIDER_NAMES.get(model, "OpenAI")
         client_kwargs: dict[str, str] = {"api_key": api_key}

@@ -21,6 +21,7 @@ node changes.
 
 import json
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Optional
 
 from loguru import logger
@@ -68,6 +69,8 @@ from pipecat.frames.frames import (
     TTSTextFrame,
     UserMuteStartedFrame,
     UserMuteStoppedFrame,
+    UserStartedSpeakingFrame,
+    UserTurnResponseCancelFrame,
 )
 from pipecat.metrics.metrics import TTFBMetricsData
 from pipecat.observers.base_observer import BaseObserver, FramePushed
@@ -76,9 +79,10 @@ from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.utils.enums import RealtimeFeedbackType
 
 _TURN_STAGE_FRAMES = (
-    (frames.UserStoppedSpeakingFrame, "caller_stop"), (TranscriptionFrame, "final_transcript"),
-    (frames.LLMContextFrame, "llm_request"), (frames.LLMTextFrame, "llm_first_token"),
-    (frames.TTSAudioRawFrame, "tts_first_audio"), (BotStartedSpeakingFrame, "audio_out"),
+    (frames.UserStoppedSpeakingFrame, "caller_stop"),
+    (frames.LLMContextFrame, "llm_request"),
+    (frames.TTSAudioRawFrame, "tts_first_audio"),
+    (BotStartedSpeakingFrame, "audio_out"),
 )
 
 
@@ -120,15 +124,45 @@ class RealtimeFeedbackObserver(BaseObserver):
         self._call_event_recorder = call_event_recorder
         self._frames_seen: set[int] = set()
         self._turn_stages: set[tuple[int, str]] = set()
+        self._pending_llm_first_token: tuple[int, str] | None = None
 
-    async def log_turn_stage(self, stage: str) -> None:
-        key = (self._logs_buffer.current_turn, stage) if self._logs_buffer else None
-        if key is None or key[0] is None or key in self._turn_stages:
+    async def log_turn_stage(
+        self, stage: str, *, timestamp: str | None = None, turn: int | None = None
+    ) -> None:
+        if self._logs_buffer is None:
+            return
+        turn_id = self._logs_buffer.current_turn if turn is None else turn
+        if turn_id is None:
+            return
+        key = (turn_id, stage)
+        if key in self._turn_stages:
             return
         self._turn_stages.add(key)
         await self._append_to_buffer(
-            {"type": "rtf-turn-latency", "payload": {"stage": stage}}
+            {"type": "rtf-turn-latency", "payload": {"stage": stage}},
+            timestamp=timestamp,
+            turn=turn_id,
         )
+
+    def _remember_llm_first_token(self) -> None:
+        if self._logs_buffer is None or self._logs_buffer.current_turn is None:
+            return
+        turn = self._logs_buffer.current_turn
+        if (
+            self._pending_llm_first_token is None
+            or self._pending_llm_first_token[0] != turn
+        ):
+            self._pending_llm_first_token = (
+                turn,
+                datetime.now(UTC).isoformat(timespec="milliseconds"),
+            )
+
+    async def _commit_llm_first_token(self) -> None:
+        if self._pending_llm_first_token is None:
+            return
+        turn, timestamp = self._pending_llm_first_token
+        self._pending_llm_first_token = None
+        await self.log_turn_stage("llm_first_token", timestamp=timestamp, turn=turn)
 
     async def log_speech(self, text: str):
         """Persist speech that is intentionally excluded from assistant context."""
@@ -240,7 +274,19 @@ class RealtimeFeedbackObserver(BaseObserver):
                 isinstance(frame, (InterimTranscriptionFrame, TranscriptionFrame))
                 and frame.broadcast_sibling_id is None
             )
-            if not isinstance(frame, ErrorFrame) and not is_upstream_transcription:
+            is_upstream_turn_withdrawal = isinstance(
+                frame,
+                (
+                    InterruptionFrame,
+                    UserStartedSpeakingFrame,
+                    UserTurnResponseCancelFrame,
+                ),
+            )
+            if (
+                not isinstance(frame, ErrorFrame)
+                and not is_upstream_transcription
+                and not is_upstream_turn_withdrawal
+            ):
                 return
 
         # TTSTextFrame may be observed before the output transport has applied
@@ -253,6 +299,16 @@ class RealtimeFeedbackObserver(BaseObserver):
 
         self._frames_seen.add(frame.id)
 
+        if isinstance(
+            frame,
+            (
+                InterruptionFrame,
+                UserStartedSpeakingFrame,
+                UserTurnResponseCancelFrame,
+            ),
+        ):
+            self._pending_llm_first_token = None
+
         logger.trace(f"{self} Received Frame: {frame} Direction: {frame_direction}")
 
         stage = next(
@@ -260,13 +316,26 @@ class RealtimeFeedbackObserver(BaseObserver):
         )
         if stage:
             await self.log_turn_stage(stage)
+        if isinstance(frame, frames.LLMTextFrame) and frame.text.strip():
+            self._remember_llm_first_token()
+        if isinstance(frame, BotStartedSpeakingFrame):
+            await self._commit_llm_first_token()
         if isinstance(frame, TTSSpeakFrame) or (
             isinstance(frame, frames.AggregatedTextFrame) and frame.will_be_spoken
         ):
             await self.log_turn_stage("first_sentence_complete")
             await self.log_turn_stage("tts_request")
 
-        if isinstance(frame, (EndFrame, CancelFrame, StopFrame, InterruptionFrame)):
+        if isinstance(
+            frame,
+            (
+                EndFrame,
+                CancelFrame,
+                StopFrame,
+                InterruptionFrame,
+                UserTurnResponseCancelFrame,
+            ),
+        ):
             return
         # Bot speaking state - WS only (ephemeral state signals, not persisted)
         elif isinstance(frame, BotStartedSpeakingFrame):
@@ -324,6 +393,7 @@ class RealtimeFeedbackObserver(BaseObserver):
             isinstance(frame, FunctionCallInProgressFrame)
             and frame_direction == FrameDirection.DOWNSTREAM
         ):
+            await self._commit_llm_first_token()
             await self._send_message(
                 build_function_call_start_event(
                     function_name=frame.function_name,
@@ -425,11 +495,17 @@ class RealtimeFeedbackObserver(BaseObserver):
         await self._send_ws(message)
         await self._append_to_buffer(message)
 
-    async def _append_to_buffer(self, message: dict):
+    async def _append_to_buffer(
+        self,
+        message: dict,
+        *,
+        timestamp: str | None = None,
+        turn: int | None = None,
+    ):
         """Append message to logs buffer, handling errors gracefully."""
         if self._logs_buffer:
             try:
-                await self._logs_buffer.append(message)
+                await self._logs_buffer.append(message, timestamp=timestamp, turn=turn)
             except Exception as e:
                 logger.error(f"Failed to append to logs buffer: {e}")
 
@@ -449,6 +525,8 @@ def register_turn_log_handlers(
 
     @user_aggregator.event_handler("on_user_turn_message_added")
     async def on_user_turn_message_added(aggregator, message):
+        if latency_observer is not None:
+            await latency_observer.log_turn_stage("final_transcript")
         try:
             await transcript_coordinator.record_user_transcript(
                 text=message.content,

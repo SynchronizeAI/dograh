@@ -1,16 +1,23 @@
 import asyncio
 import re
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 from pipecat.frames.frames import (
     AggregatedTextFrame,
+    BotStartedSpeakingFrame,
     ErrorFrame,
+    FunctionCallInProgressFrame,
+    InterruptionFrame,
+    LLMTextFrame,
     MetricsFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
     TTSTextFrame,
+    UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
+    UserTurnResponseCancelFrame,
 )
 from pipecat.metrics.metrics import TTFBMetricsData
 from pipecat.observers.base_observer import FramePushed
@@ -316,18 +323,102 @@ async def test_turn_stage_timestamps_are_persisted_once_with_turn_number():
     user, assistant = _FakeAggregator(), _FakeAggregator()
     register_turn_log_handlers(TranscriptLogCoordinator(logs), user, assistant, observer)
 
+    for text, timestamp in (
+        ("First segment", "2026-01-01T00:00:00+00:00"),
+        ("second segment", "2026-01-01T00:00:01+00:00"),
+    ):
+        frame = TranscriptionFrame(text, user_id="caller", timestamp=timestamp)
+        await observer.on_push_frame(_frame_pushed(frame, FrameDirection.UPSTREAM))
+
     frame = UserStoppedSpeakingFrame()
     await observer.on_push_frame(_frame_pushed(frame, FrameDirection.DOWNSTREAM))
     await observer.on_push_frame(_frame_pushed(frame, FrameDirection.DOWNSTREAM))
+
+    assert [
+        event["payload"]["stage"]
+        for event in logs.get_events()
+        if event["type"] == "rtf-turn-latency"
+    ] == ["caller_stop"]
+
+    await user.handlers["on_user_turn_message_added"](
+        user,
+        SimpleNamespace(
+            content="First segment second segment",
+            timestamp="2026-01-01T00:00:00+00:00",
+        ),
+    )
     await user.handlers["on_user_turn_stopped"](user)
 
-    events = logs.get_events()
-    assert [event["payload"]["stage"] for event in events] == [
+    stage_events = [
+        event for event in logs.get_events() if event["type"] == "rtf-turn-latency"
+    ]
+    assert [event["payload"]["stage"] for event in stage_events] == [
         "caller_stop",
+        "final_transcript",
         "accepted_end_of_turn",
     ]
-    assert all(event["type"] == "rtf-turn-latency" for event in events)
-    assert all(event["turn"] == 4 and event["timestamp"] for event in events)
+    assert all(event["turn"] == 4 and event["timestamp"] for event in stage_events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cancel_frame", "direction", "commit_kind"),
+    [
+        (UserTurnResponseCancelFrame, FrameDirection.UPSTREAM, "speech"),
+        (InterruptionFrame, FrameDirection.DOWNSTREAM, "speech"),
+        (UserStartedSpeakingFrame, FrameDirection.UPSTREAM, "speech"),
+        (UserTurnResponseCancelFrame, FrameDirection.UPSTREAM, "tool"),
+    ],
+)
+async def test_llm_first_token_is_logged_from_the_committed_attempt(
+    monkeypatch, cancel_frame, direction, commit_kind
+):
+    logs = InMemoryLogsBuffer(workflow_run_id=123)
+    logs.set_current_turn(4)
+    observer = RealtimeFeedbackObserver(ws_sender=None, logs_buffer=logs)
+    token_times = iter(
+        [
+            datetime(2026, 1, 1, 0, 0, 1, tzinfo=UTC),
+            datetime(2026, 1, 1, 0, 0, 2, tzinfo=UTC),
+        ]
+    )
+
+    class _Clock:
+        @classmethod
+        def now(cls, tz):
+            return next(token_times)
+
+    monkeypatch.setattr(
+        "api.services.pipecat.realtime_feedback_observer.datetime", _Clock
+    )
+
+    await observer.on_push_frame(
+        _frame_pushed(LLMTextFrame("Withdrawn answer"), FrameDirection.DOWNSTREAM)
+    )
+    await observer.on_push_frame(_frame_pushed(cancel_frame(), direction))
+    await observer.on_push_frame(
+        _frame_pushed(LLMTextFrame("Committed answer"), FrameDirection.DOWNSTREAM)
+    )
+    await observer.on_push_frame(
+        _frame_pushed(LLMTextFrame(" continued"), FrameDirection.DOWNSTREAM)
+    )
+    commit_frame = (
+        BotStartedSpeakingFrame()
+        if commit_kind == "speech"
+        else FunctionCallInProgressFrame(
+            function_name="book", tool_call_id="tool-1", arguments={}
+        )
+    )
+    await observer.on_push_frame(_frame_pushed(commit_frame, FrameDirection.DOWNSTREAM))
+
+    [event] = [
+        event
+        for event in logs.get_events()
+        if event["type"] == "rtf-turn-latency"
+        and event["payload"]["stage"] == "llm_first_token"
+    ]
+    assert event["timestamp"] == "2026-01-01T00:00:02.000+00:00"
+    assert event["turn"] == 4
 
 
 @pytest.mark.asyncio

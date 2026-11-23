@@ -15,6 +15,12 @@ async def test_per_node_qa_uses_centralized_qa_llm_service():
     )
     llm = object()
     qa_llm_factory = AsyncMock(return_value=(llm, "default"))
+    inference_mock = AsyncMock(
+        return_value=(
+            '{"tags": [], "summary": "ok", "call_quality_score": 8, '
+            '"overall_sentiment": "positive"}'
+        )
+    )
 
     with (
         patch.object(
@@ -42,7 +48,7 @@ async def test_per_node_qa_uses_centralized_qa_llm_service():
         patch.object(
             analysis,
             "_run_llm_inference",
-            new=AsyncMock(return_value='{"tags": [], "summary": "ok"}'),
+            new=inference_mock,
         ),
         patch.object(analysis, "setup_langfuse_parent_context", return_value=None),
         patch.object(analysis, "add_qa_span_to_trace"),
@@ -56,6 +62,9 @@ async def test_per_node_qa_uses_centralized_qa_llm_service():
         )
 
     qa_llm_factory.assert_awaited_once_with(qa_data, workflow_run)
+    assert inference_mock.await_args.kwargs["response_schema"] == (
+        analysis._QA_RESPONSE_SCHEMA
+    )
 
 
 @pytest.mark.asyncio

@@ -7,6 +7,8 @@ Dograh platform supports Deepgram, OpenAI, Google, Azure Speech, AssemblyAI, Spe
 
 <Warning>
 Transcriber providers receive the data needed to transcribe speech, such as call audio, language settings, keyterms, and request metadata. Review the provider's data processing, retention, model training, and regional hosting policies before using sensitive data.
+
+For direct Deepgram STT connections, Dograh sets `mip_opt_out=true` on standard and Flux requests to opt out of Deepgram's Model Improvement Program.
 </Warning>
 
 For locally deployed or self-hosted STT models, Dograh also supports Speaches, an OpenAI API-compatible server for streaming transcription.

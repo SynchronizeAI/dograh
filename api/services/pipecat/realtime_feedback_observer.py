@@ -319,9 +319,10 @@ class RealtimeFeedbackObserver(BaseObserver):
         stage = next(
             (name for kind, name in _TURN_STAGE_FRAMES if isinstance(frame, kind)), None
         )
-        if stage:
-            if stage != "tts_first_audio" or not cascade_output:
-                await self.log_turn_stage(stage)
+        if stage and not (
+            cascade_output and stage in {"llm_request", "tts_first_audio"}
+        ):
+            await self.log_turn_stage(stage)
         if (
             not cascade_output
             and isinstance(frame, frames.LLMTextFrame)

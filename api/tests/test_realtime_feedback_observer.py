@@ -470,6 +470,7 @@ async def test_unattributed_cascade_response_stages_are_skipped():
     sentence = AggregatedTextFrame("The previous answer.", "sentence")
     sentence.will_be_spoken = True
     for frame in (
+        LLMContextFrame(LLMContext()),
         LLMTextFrame("The previous answer."),
         sentence,
         TTSSpeakFrame("The previous answer.", append_to_context=False),

@@ -629,12 +629,13 @@ class WorkflowRunClient(BaseDBClient):
             return result.scalars().first()
 
     async def get_workflow_run_by_call_id(
-        self, call_id: str, mode: str | None = None
+        self, call_id: str, organization_id: int, mode: str | None = None
     ) -> Optional[WorkflowRunModel]:
         """Find workflow run by call_id stored in gathered_context.
 
         Args:
             call_id: The telephony call ID to search for
+            organization_id: The owning organization of the call
 
         Returns:
             The WorkflowRunModel if found, None otherwise
@@ -649,8 +650,10 @@ class WorkflowRunClient(BaseDBClient):
                 )
                 .where(
                     WorkflowRunModel.gathered_context.op("->>")("call_id") == call_id,
+                    WorkflowModel.organization_id == organization_id,
                     *([WorkflowRunModel.mode == mode] if mode else []),
                 )
+                .join(WorkflowModel, WorkflowRunModel.workflow_id == WorkflowModel.id)
                 .order_by(WorkflowRunModel.created_at.desc())
                 .limit(1)
             )

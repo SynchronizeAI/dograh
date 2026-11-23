@@ -546,7 +546,9 @@ async def test_inbound_run_routes_exotel_without_account_id_by_called_number():
     assert response == '{"url":"wss://x"}'
 
 
-def _setup_koreaaitel_webhook(monkeypatch, existing_runs, new_run_ids):
+def _setup_koreaaitel_webhook(
+    monkeypatch, existing_runs, new_run_ids, *, signature_valid=True
+):
     import api.routes.telephony as routes
 
     request = SimpleNamespace(
@@ -567,8 +569,9 @@ def _setup_koreaaitel_webhook(monkeypatch, existing_runs, new_run_ids):
     )
     phone = SimpleNamespace(id=77, inbound_workflow_id=33, address="07012340001")
     provider = SimpleNamespace(
-        verify_inbound_signature=AsyncMock(return_value=True),
+        verify_inbound_signature=AsyncMock(return_value=signature_valid),
         start_inbound_stream=AsyncMock(return_value="stream"),
+        generate_validation_error_response=Mock(return_value="invalid-signature"),
     )
     db = Mock(
         find_inbound_route_by_account=AsyncMock(return_value=(config, phone)),
@@ -609,9 +612,59 @@ async def test_koreaaitel_webhook_replay_and_call_id_isolation(monkeypatch, repl
         call.args[0] for call in db.get_workflow_run_by_call_id.await_args_list
     ] == ["CA1", data.call_id]
     assert [
+        call.kwargs["organization_id"]
+        for call in db.get_workflow_run_by_call_id.await_args_list
+    ] == [11, 11]
+    assert [
         call.kwargs["workflow_run_id"]
         for call in provider.start_inbound_stream.await_args_list
     ] == ([999, 999] if replay else [999, 1000])
+
+
+@pytest.mark.asyncio
+async def test_unsigned_koreaaitel_webhook_does_not_log_caller_number(monkeypatch, caplog):
+    request, _, _, _ = _setup_koreaaitel_webhook(
+        monkeypatch, [], [], signature_valid=False
+    )
+    assert await handle_inbound_run(request) == "invalid-signature"
+    assert "01012345678" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_koreaaitel_run_log_redacts_caller_but_context_keeps_it(monkeypatch):
+    import api.routes.telephony as routes
+
+    workflow = SimpleNamespace(id=33)
+    run_inputs = SimpleNamespace(definition_id=77, definition=None, use_draft=False)
+    create_run = AsyncMock(return_value=SimpleNamespace(id=42))
+    monkeypatch.setattr(
+        routes.db_client, "get_workflow", AsyncMock(return_value=workflow)
+    )
+    monkeypatch.setattr(
+        routes, "prepare_workflow_run_inputs", AsyncMock(return_value=run_inputs)
+    )
+    monkeypatch.setattr(routes.db_client, "create_workflow_run", create_run)
+    normalized = KoreaAITelProvider.parse_inbound_webhook(
+        {
+            "CallId": "CA1",
+            "From": "01012345678",
+            "To": "07012340001",
+            "Direction": "inbound",
+        }
+    )
+
+    await routes._create_inbound_workflow_run(
+        workflow_id=33,
+        user_id=99,
+        organization_id=11,
+        provider="koreaaitel",
+        normalized_data=normalized,
+        telephony_configuration_id=55,
+    )
+
+    stored = create_run.await_args.kwargs
+    assert stored["initial_context"]["caller_number"] == "01012345678"
+    assert "From" not in stored["logs"]["inbound_webhook"]["raw_webhook_data"]
 
 
 @pytest.mark.asyncio

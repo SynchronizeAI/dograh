@@ -494,6 +494,13 @@ async def _create_inbound_workflow_run(
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
     run_inputs = await prepare_workflow_run_inputs(db_client, workflow)
+    raw_webhook_data = normalized_data.raw_data
+    if provider == WorkflowRunMode.KOREAAITEL.value:
+        raw_webhook_data = {
+            key: value
+            for key, value in normalized_data.raw_data.items()
+            if key.lower() != "from"
+        }
 
     workflow_run = await db_client.create_workflow_run(
         workflow_run_name,
@@ -522,7 +529,7 @@ async def _create_inbound_workflow_run(
                 "from_country": normalized_data.from_country,
                 "to_country": normalized_data.to_country,
                 "from_phone_number_id": from_phone_number_id,
-                "raw_webhook_data": normalized_data.raw_data,
+                "raw_webhook_data": raw_webhook_data,
                 **(
                     {"sip_headers": normalized_data.sip_headers}
                     if normalized_data.sip_headers
@@ -830,18 +837,9 @@ async def handle_inbound_run(request: Request):
             return generic_hangup_response()
 
         normalized_data = normalize_webhook_data(provider_class, webhook_data, headers)
-        logger.info(
-            f"/inbound/run normalized data — provider={normalized_data.provider} "
-            f"to={normalized_data.to_number} from={normalized_data.from_number} "
-            f"account_id={normalized_data.account_id!r} "
-            f"direction={normalized_data.direction} "
-            f"call_id={normalized_data.call_id} "
-            f"to_country={normalized_data.to_country}"
-        )
-
         if normalized_data.direction != "inbound":
             logger.warning(
-                f"Non-inbound call on /inbound/run: {normalized_data.direction}"
+                f"Non-inbound webhook on /inbound/run from {provider_class.PROVIDER_NAME}"
             )
             return generic_hangup_response()
 
@@ -874,10 +872,7 @@ async def handle_inbound_run(request: Request):
 
         if not match:
             logger.warning(
-                f"/inbound/run: no inbound route matched "
-                f"provider={provider_class.PROVIDER_NAME} "
-                f"account_id={normalized_data.account_id} "
-                f"to={normalized_data.to_number}"
+                f"/inbound/run: no inbound route matched for {provider_class.PROVIDER_NAME}"
             )
             return provider_class.generate_validation_error_response(
                 TelephonyError.PHONE_NUMBER_NOT_CONFIGURED
@@ -888,19 +883,9 @@ async def handle_inbound_run(request: Request):
         # The org the rest of this request runs as is decided here and nowhere
         # else: everything downstream (concurrency slot, workflow lookup,
         # credentials used for signature checks) follows from this row.
-        logger.info(
-            f"/inbound/run matched route — org={config.organization_id} "
-            f"config={config.id} name={config.name!r} "
-            f"config_{account_field}={(config.credentials or {}).get(account_field)!r} "
-            f"webhook_account_id={normalized_data.account_id!r} "
-            f"phone={phone_row.id} address={phone_row.address!r} "
-            f"inbound_workflow_id={phone_row.inbound_workflow_id}"
-        )
-
         if not phone_row.inbound_workflow_id:
             logger.warning(
-                f"/inbound/run: number {normalized_data.to_number} has no "
-                f"inbound_workflow_id assigned"
+                f"/inbound/run: matched number has no inbound workflow for {provider_class.PROVIDER_NAME}"
             )
             return provider_class.generate_validation_error_response(
                 TelephonyError.WORKFLOW_NOT_FOUND
@@ -935,9 +920,15 @@ async def handle_inbound_run(request: Request):
                 TelephonyError.SIGNATURE_VALIDATION_FAILED
             )
 
+        logger.info(
+            f"/inbound/run signature verified for {provider_class.PROVIDER_NAME}"
+        )
+
         if provider_class.PROVIDER_NAME == WorkflowRunMode.KOREAAITEL.value:
             existing_run = await db_client.get_workflow_run_by_call_id(
-                normalized_data.call_id, mode=provider_class.PROVIDER_NAME
+                normalized_data.call_id,
+                organization_id=config.organization_id,
+                mode=provider_class.PROVIDER_NAME,
             )
             if existing_run:
                 backend_endpoint, wss_backend_endpoint = await get_backend_endpoints()

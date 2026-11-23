@@ -903,6 +903,42 @@ async def test_buffered_speculative_metrics_rebase_when_turn_commits(
 
 
 @pytest.mark.asyncio
+async def test_winner_metrics_rebase_after_generation_finishes_before_commit(
+    harness, monkeypatch
+):
+    from pipecat.frames.frames import UserStoppedSpeakingFrame
+
+    install_streams(
+        harness, monkeypatch, Stream(chunk("answer")), Stream(chunk("backup"))
+    )
+    assert await generate(harness, speculation=True) == []
+    assert harness.llm._active_race is None
+    assert harness.llm._pending_speculative_race is not None
+
+    await control(harness, UserStoppedSpeakingFrame())
+
+    metrics = [
+        data
+        for frame in harness.downstream.frames
+        if isinstance(frame, MetricsFrame)
+        for data in frame.data
+        if isinstance(data, (TTFBMetricsData, TTFATMetricsData))
+    ]
+    assert len(metrics) == 2
+    ttfb = next(data for data in metrics if isinstance(data, TTFBMetricsData))
+    ttfat = next(data for data in metrics if isinstance(data, TTFATMetricsData))
+    assert ttfb.value == pytest.approx(0)
+    assert ttfat.ttfat == pytest.approx(0)
+    assert ttfat.ttfb == pytest.approx(0)
+    assert ttfat.thinking_time == pytest.approx(0)
+    assert [
+        frame.text
+        for frame in harness.downstream.frames
+        if isinstance(frame, LLMTextFrame)
+    ] == ["answer"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("use_backup", [False, True], ids=["primary", "backup"])
 async def test_speculative_tools_cancel_both_directions_without_execution(
     harness, monkeypatch, use_backup

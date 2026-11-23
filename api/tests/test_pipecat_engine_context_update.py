@@ -14,6 +14,7 @@ result in the context when generating the next response.
 """
 
 import asyncio
+from types import SimpleNamespace
 from typing import List
 from unittest.mock import AsyncMock, patch
 
@@ -141,6 +142,56 @@ async def run_pipeline_and_capture_context(
 
 class TestContextUpdateBeforeNextCompletion:
     """Test that context is properly updated before the next LLM completion."""
+
+    @pytest.mark.asyncio
+    async def test_parallel_transitions_only_commit_from_the_current_node(
+        self, three_node_workflow_no_variable_extraction: WorkflowGraph
+    ):
+        llm = MockLLMService(mock_steps=[], chunk_delay=0)
+        engine = PipecatEngine(
+            llm=llm,
+            context=LLMContext(),
+            workflow=three_node_workflow_no_variable_extraction,
+            call_context_vars={"customer_name": "Test User"},
+            workflow_run_id=1,
+        )
+        await engine.set_node("start")
+        source_node = engine.active_agent.current_node
+        transitions = [
+            await engine._create_transition_func(
+                name,
+                "agent",
+                agent=engine.active_agent,
+                source_node=source_node,
+            )
+            for name in ("first_transition", "second_transition")
+        ]
+
+        extraction_count = 0
+        both_extracting = asyncio.Event()
+
+        async def wait_for_parallel_extraction(*_args, **_kwargs):
+            nonlocal extraction_count
+            extraction_count += 1
+            if extraction_count == 2:
+                both_extracting.set()
+            await both_extracting.wait()
+
+        engine._perform_variable_extraction_if_needed = wait_for_parallel_extraction
+        callbacks = [AsyncMock(), AsyncMock()]
+        await asyncio.gather(
+            *(
+                transition(
+                    SimpleNamespace(arguments={}, result_callback=callback)
+                )
+                for transition, callback in zip(transitions, callbacks)
+            )
+        )
+
+        results = [callback.await_args.args[0] for callback in callbacks]
+        assert sum(result["status"] == "done" for result in results) == 1
+        assert sum(result["status"] == "error" for result in results) == 1
+        assert engine.active_agent.current_node is not source_node
 
     @pytest.mark.asyncio
     async def test_transition_speech_is_added_to_llm_context(

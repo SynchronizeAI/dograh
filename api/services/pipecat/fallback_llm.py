@@ -76,6 +76,7 @@ class _Race:
     hedge_started: float | None = None
     changed: asyncio.Event = field(default_factory=asyncio.Event)
     attempts: list[_Attempt] = field(default_factory=list)
+    metrics: list[tuple[_Attempt, MetricsFrame]] = field(default_factory=list)
     winner: _Attempt | None = None
     interrupted: bool = False
     superseded: bool = False
@@ -123,6 +124,7 @@ class FallbackLLMProcessor(LLMService):
         self._fallback_metrics = {"started": 0, "won": 0}
         self._latest: list[_Attempt | None] = [None] * len(services)
         self._active_race: _Race | None = None
+        self._pending_speculative_race: _Race | None = None
         self._outbox: asyncio.Queue[
             tuple[Frame, FrameDirection, _Attempt | None] | asyncio.Future[None]
         ] = asyncio.Queue()
@@ -373,6 +375,7 @@ class FallbackLLMProcessor(LLMService):
             ]
             if not frame.data:
                 return
+            race.metrics.append((attempt, frame))
         if race.winner is attempt:
             self._emit(frame, direction, attempt)
         elif race.winner is None and not isinstance(frame, LLMFullResponseEndFrame):
@@ -399,21 +402,18 @@ class FallbackLLMProcessor(LLMService):
         attempt.buffered.clear()
         race.changed.set()
 
-    def _rebase_buffered_metrics(self, race: _Race) -> None:
+    def _rebase_metrics(self, race: _Race) -> None:
         if race.hedge_started is None:
             return
-        for attempt in race.attempts:
-            for frame, _ in attempt.buffered:
-                if not isinstance(frame, MetricsFrame):
-                    continue
-                for data in frame.data:
-                    if isinstance(data, TTFBMetricsData):
-                        data.value = max(
-                            0,
-                            race.started + data.value - race.hedge_started,
-                        )
-                    elif isinstance(data, TTFATMetricsData):
-                        self._rebase_ttfat_metrics(data, attempt, race)
+        for attempt, frame in race.metrics:
+            for data in frame.data:
+                if isinstance(data, TTFBMetricsData):
+                    data.value = max(
+                        0,
+                        race.started + data.value - race.hedge_started,
+                    )
+                elif isinstance(data, TTFATMetricsData):
+                    self._rebase_ttfat_metrics(data, attempt, race)
 
     @staticmethod
     def _rebase_ttfat_metrics(
@@ -512,6 +512,7 @@ class FallbackLLMProcessor(LLMService):
         # A matching commit wakes this race and starts its no-output budget.
         if not self._speculation_gate.is_speculating:
             race.hedge_started = race.started
+        self._pending_speculative_race = race if frame.speculation else None
         self._active_race = race
         self._launch(race, 0, frame)
         loser_cleanup = None
@@ -603,6 +604,7 @@ class FallbackLLMProcessor(LLMService):
         if isinstance(frame, UserTurnResponseCancelFrame):
             # Match standalone LLMService: stop the withdrawn request as well
             # as dropping its buffered output. This also retires its hedge.
+            self._pending_speculative_race = None
             await self._handle_user_turn_response_cancel(frame)
         if isinstance(frame, StartFrame) and self._output_task is None:
             self._output_task = self.create_task(self._drain_output())
@@ -637,16 +639,15 @@ class FallbackLLMProcessor(LLMService):
         await self._flush_output()
         # A flush probe traverses this single ordered queue on all three legs;
         # it never splits into branches or gets deduplicated by frame ID.
-        await LLMService.push_frame(self, frame, direction)
         if (
             isinstance(frame, UserStoppedSpeakingFrame)
             and direction == FrameDirection.DOWNSTREAM
-            and (race := self._active_race) is not None
-            and race.hedge_started is None
-            and not self._speculation_gate.is_speculating
         ):
-            # Generation may start while the control frame flushes. Inspect
-            # the race only after the gate has recorded the committed turn.
-            race.hedge_started = time.monotonic()
-            self._rebase_buffered_metrics(race)
-            race.changed.set()
+            started = time.monotonic()
+            for race in (self._active_race, self._pending_speculative_race):
+                if race is not None and race.hedge_started is None:
+                    race.hedge_started = started
+                    self._rebase_metrics(race)
+                    race.changed.set()
+            self._pending_speculative_race = None
+        await LLMService.push_frame(self, frame, direction)

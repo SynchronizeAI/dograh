@@ -20,6 +20,9 @@ from api.services.pipecat.realtime_feedback_events import (
 
 if TYPE_CHECKING:
     from api.services.pipecat.in_memory_buffers import InMemoryLogsBuffer
+    from api.services.pipecat.realtime_feedback_observer import (
+        RealtimeFeedbackObserver,
+    )
     from pipecat.observers.turn_tracking_observer import TurnTrackingObserver
 
 
@@ -60,7 +63,11 @@ class TranscriptLogCoordinator:
         self._logs_buffer = logs_buffer
         self._states: dict[int, _TurnTranscriptState] = {}
         self._active_turn_id: int | None = None
+        self._latency_observer = None
         self._lock = asyncio.Lock()
+
+    def attach_latency_observer(self, observer: "RealtimeFeedbackObserver") -> None:
+        self._latency_observer = observer
 
     def attach_turn_tracking_observer(self, observer: "TurnTrackingObserver") -> None:
         """Subscribe to the canonical turn owner's correlated lifecycle events."""
@@ -90,7 +97,12 @@ class TranscriptLogCoordinator:
 
         @observer.event_handler("on_bot_started_speaking")
         async def on_bot_started_speaking(_observer, turn_number: int, _data):
-            await self.record_bot_started_speaking(turn_number)
+            callback_timestamp = _now_iso()
+            await self.record_bot_started_speaking(turn_number, callback_timestamp)
+            if self._latency_observer is not None:
+                await self._latency_observer.log_turn_stage(
+                    "audio_out", timestamp=callback_timestamp, turn=turn_number
+                )
 
         @observer.event_handler("on_bot_stopped_speaking")
         async def on_bot_stopped_speaking(_observer, turn_number: int, _data):

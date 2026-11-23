@@ -10,6 +10,7 @@ from pipecat.frames.frames import (
     ErrorFrame,
     FunctionCallInProgressFrame,
     InterruptionFrame,
+    LLMContextFrame,
     LLMTextFrame,
     MetricsFrame,
     TranscriptionFrame,
@@ -21,6 +22,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.metrics.metrics import TTFBMetricsData
 from pipecat.observers.base_observer import FramePushed
+from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.transports.base_transport import TransportParams
@@ -439,6 +441,71 @@ async def test_spoken_aggregated_sentence_marks_first_sentence_and_tts_request()
         "tts_request",
     ]
     assert all(event["turn"] == 4 and event["timestamp"] for event in events)
+
+
+@pytest.mark.asyncio
+async def test_response_stages_keep_their_turn_across_barge_in():
+    logs = InMemoryLogsBuffer(workflow_run_id=123)
+    coordinator = TranscriptLogCoordinator(logs)
+    turn_observer = _FakeAggregator()
+    coordinator.attach_turn_tracking_observer(turn_observer)
+    observer = RealtimeFeedbackObserver(ws_sender=None, logs_buffer=logs)
+    user, assistant = _FakeAggregator(), _FakeAggregator()
+    register_turn_log_handlers(coordinator, user, assistant, observer)
+
+    await turn_observer.handlers["on_turn_started"](turn_observer, 1)
+    await observer.on_push_frame(
+        _frame_pushed(LLMContextFrame(LLMContext()), FrameDirection.DOWNSTREAM)
+    )
+    await turn_observer.handlers["on_turn_ended"](turn_observer, 1, 1.0, True)
+    await turn_observer.handlers["on_turn_started"](turn_observer, 2)
+
+    await observer.on_push_frame(
+        _frame_pushed(
+            TTSSpeakFrame("The previous answer.", append_to_context=False),
+            FrameDirection.DOWNSTREAM,
+        )
+    )
+    await turn_observer.handlers["on_bot_started_speaking"](
+        turn_observer, 1, None
+    )
+    await observer.on_push_frame(
+        _frame_pushed(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    )
+
+    await observer.on_push_frame(
+        _frame_pushed(LLMContextFrame(LLMContext()), FrameDirection.DOWNSTREAM)
+    )
+    new_sentence = AggregatedTextFrame("The current answer.", "sentence")
+    new_sentence.will_be_spoken = True
+    await observer.on_push_frame(
+        _frame_pushed(new_sentence, FrameDirection.DOWNSTREAM)
+    )
+    await turn_observer.handlers["on_bot_started_speaking"](
+        turn_observer, 2, None
+    )
+    await observer.on_push_frame(
+        _frame_pushed(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    )
+
+    stage_events = [
+        event
+        for event in logs.get_events()
+        if event["type"] == "rtf-turn-latency"
+        and event["payload"]["stage"]
+        in {"first_sentence_complete", "tts_request", "audio_out"}
+    ]
+    assert [
+        (event["payload"]["stage"], event["turn"])
+        for event in stage_events
+    ] == [
+        ("first_sentence_complete", 1),
+        ("tts_request", 1),
+        ("audio_out", 1),
+        ("first_sentence_complete", 2),
+        ("tts_request", 2),
+        ("audio_out", 2),
+    ]
 
 
 @pytest.mark.asyncio

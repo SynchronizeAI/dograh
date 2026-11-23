@@ -82,7 +82,6 @@ _TURN_STAGE_FRAMES = (
     (frames.UserStoppedSpeakingFrame, "caller_stop"),
     (frames.LLMContextFrame, "llm_request"),
     (frames.TTSAudioRawFrame, "tts_first_audio"),
-    (BotStartedSpeakingFrame, "audio_out"),
 )
 
 
@@ -125,6 +124,7 @@ class RealtimeFeedbackObserver(BaseObserver):
         self._frames_seen: set[int] = set()
         self._turn_stages: set[tuple[int, str]] = set()
         self._pending_llm_first_token: tuple[int, str] | None = None
+        self._response_turn_id: int | None = None
 
     async def log_turn_stage(
         self, stage: str, *, timestamp: str | None = None, turn: int | None = None
@@ -315,6 +315,10 @@ class RealtimeFeedbackObserver(BaseObserver):
             (name for kind, name in _TURN_STAGE_FRAMES if isinstance(frame, kind)), None
         )
         if stage:
+            if stage == "llm_request":
+                self._response_turn_id = (
+                    self._logs_buffer.current_turn if self._logs_buffer else None
+                )
             await self.log_turn_stage(stage)
         if isinstance(frame, frames.LLMTextFrame) and frame.text.strip():
             self._remember_llm_first_token()
@@ -323,8 +327,9 @@ class RealtimeFeedbackObserver(BaseObserver):
         if isinstance(frame, TTSSpeakFrame) or (
             isinstance(frame, frames.AggregatedTextFrame) and frame.will_be_spoken
         ):
-            await self.log_turn_stage("first_sentence_complete")
-            await self.log_turn_stage("tts_request")
+            response_turn = self._response_turn_id
+            await self.log_turn_stage("first_sentence_complete", turn=response_turn)
+            await self.log_turn_stage("tts_request", turn=response_turn)
 
         if isinstance(
             frame,
@@ -522,6 +527,8 @@ def register_turn_log_handlers(
     complete turn text through the turn-aware coordinator. Works for both
     WebRTC and telephony calls — independent of WebSocket availability.
     """
+    if latency_observer is not None:
+        transcript_coordinator.attach_latency_observer(latency_observer)
 
     @user_aggregator.event_handler("on_user_turn_message_added")
     async def on_user_turn_message_added(aggregator, message):

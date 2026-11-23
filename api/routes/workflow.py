@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from httpx import HTTPStatusError, RequestError
 from loguru import logger
@@ -14,6 +14,7 @@ from api.constants import DEPLOYMENT_MODE
 from api.db import db_client
 from api.db.agent_trigger_client import TriggerPathConflictError
 from api.db.models import UserModel
+from api.db.workflow_run_client import RunDeletion
 from api.db.workflow_template_client import WorkflowTemplateClient
 from api.enums import (
     CallType,
@@ -1502,6 +1503,44 @@ async def get_workflow_run(
         "logs": run.logs,
         "annotations": run.annotations,
     }
+
+
+@router.delete(
+    "/{workflow_id}/runs/{run_id}",
+    status_code=204,
+    summary="Delete a workflow run",
+    responses={
+        404: {"description": "No such run of this workflow in the organization"},
+        409: {"description": "The call or its post-call processing is still running"},
+    },
+)
+async def delete_workflow_run(
+    workflow_id: int, run_id: int, user: UserModel = Depends(get_user)
+) -> Response:
+    """Delete the run's record: caller number, transcript, extraction, QA
+    result and usage, with its webhook deliveries. Recording and transcript
+    files in storage are not deleted. Retry a 409 later; a run is always
+    deletable once an hour has passed since it was created."""
+    outcome = (
+        await db_client.delete_workflow_run(
+            run_id,
+            workflow_id=workflow_id,
+            organization_id=user.selected_organization_id,
+        )
+        if user.selected_organization_id
+        else RunDeletion.NOT_FOUND
+    )
+    if outcome is RunDeletion.NOT_FOUND:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+    if outcome is RunDeletion.IN_PROGRESS:
+        raise HTTPException(status_code=409, detail="Workflow run is still in progress")
+    logger.info(
+        "Deleted workflow run {} of workflow {}, org {}",
+        run_id,
+        workflow_id,
+        user.selected_organization_id,
+    )
+    return Response(status_code=204)
 
 
 class WorkflowRunsResponse(BaseModel):

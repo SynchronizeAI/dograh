@@ -74,9 +74,9 @@ class _Attempt:
 class _Race:
     started: float = field(default_factory=time.monotonic)
     hedge_started: float | None = None
-    buffered_metrics: list[TTFBMetricsData | TTFATMetricsData] = field(
-        default_factory=list
-    )
+    buffered_metric_frames: list[
+        tuple[MetricsFrame, FrameDirection, _Attempt]
+    ] = field(default_factory=list)
     changed: asyncio.Event = field(default_factory=asyncio.Event)
     attempts: list[_Attempt] = field(default_factory=list)
     winner: _Attempt | None = None
@@ -393,11 +393,15 @@ class FallbackLLMProcessor(LLMService):
                 )
             ]
             if race.hedge_started is None:
-                race.buffered_metrics.extend(
-                    data
+                if any(
+                    isinstance(data, (TTFBMetricsData, TTFATMetricsData))
                     for data in frame.data
-                    if isinstance(data, (TTFBMetricsData, TTFATMetricsData))
-                )
+                ):
+                    # The service observer snapshots metrics as soon as they
+                    # leave this processor, so defer them until they can be
+                    # rebased to the accepted turn's start.
+                    race.buffered_metric_frames.append((frame, direction, attempt))
+                    return
             if not frame.data:
                 return
         if race.winner is attempt:
@@ -424,21 +428,32 @@ class FallbackLLMProcessor(LLMService):
         for frame, direction in attempt.buffered:
             self._emit(frame, direction, attempt)
         attempt.buffered.clear()
+        if race.hedge_started is not None:
+            self._release_buffered_metrics(race, attempt)
         race.changed.set()
+
+    def _release_buffered_metrics(self, race: _Race, winner: _Attempt) -> None:
+        pending = race.buffered_metric_frames
+        race.buffered_metric_frames = []
+        for frame, direction, attempt in pending:
+            if attempt is winner:
+                self._emit(frame, direction, attempt)
 
     def _commit_race(self, race: _Race, committed_at: float) -> None:
         if race.hedge_started is not None:
             return
         race.hedge_started = committed_at
         speculative_lead = max(0, committed_at - race.started)
-        for data in race.buffered_metrics:
-            if isinstance(data, TTFBMetricsData):
-                data.value = max(0, data.value - speculative_lead)
-            elif isinstance(data, TTFATMetricsData):
-                data.ttfat = max(0, data.ttfat - speculative_lead)
-                data.ttfb = min(data.ttfat, max(0, data.ttfb - speculative_lead))
-                data.thinking_time = max(0, data.ttfat - data.ttfb)
-        race.buffered_metrics.clear()
+        for frame, _, _ in race.buffered_metric_frames:
+            for data in frame.data:
+                if isinstance(data, TTFBMetricsData):
+                    data.value = max(0, data.value - speculative_lead)
+                elif isinstance(data, TTFATMetricsData):
+                    data.ttfat = max(0, data.ttfat - speculative_lead)
+                    data.ttfb = min(data.ttfat, max(0, data.ttfb - speculative_lead))
+                    data.thinking_time = max(0, data.ttfat - data.ttfb)
+        if race.winner is not None:
+            self._release_buffered_metrics(race, race.winner)
         if self._active_race is race:
             self._active_race = None
         race.changed.set()

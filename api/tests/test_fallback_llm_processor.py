@@ -898,6 +898,9 @@ async def test_speculative_metrics_buffered_before_commit_are_rebased(
 
     await harness.llm._generate(LLMContextFrame(LLMContext(), speculation=True))
     assert harness.llm._active_race is not None
+    assert not any(
+        isinstance(frame, MetricsFrame) for frame in harness.downstream.frames
+    )
     now[0] = 100.5
     await control(harness, UserStoppedSpeakingFrame())
     await harness.llm._flush_output()

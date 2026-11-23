@@ -47,7 +47,7 @@ Dograh sends a `POST` request with the following JSON payload:
 | `call_inbound.from_number` | The caller's phone number (`caller_number` from initial context). |
 | `call_inbound.to_number` | The called phone number (`called_number` from initial context). |
 
-The `Content-Type` header is `application/json`. If you configured a credential, its authentication header is included. Caller and callee numbers are included when known when the fetch starts; for inbound calls on `/inbound/run`, Dograh takes them from the webhook.
+The `Content-Type` header is `application/json`. If you configured a credential, its authentication header is included. Caller and callee numbers are supplied when known at the time the call connects.
 
 The request includes an `Idempotency-Key` header such as `dograh-pre-call-456`. Dograh normally sends one request per call. If the call's media stream is handled by a different process, or reaches the pipeline before the inbound webhook returns, Dograh sends a second request with the same key. Make your endpoint idempotent using this key if it performs writes or other side effects.
 

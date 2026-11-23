@@ -24,9 +24,11 @@ from pipecat.frames.frames import (
 from pipecat.metrics.metrics import TTFBMetricsData
 from pipecat.observers.base_observer import FramePushed
 from pipecat.processors.aggregators.llm_context import LLMContext
-from pipecat.processors.frame_processor import FrameDirection
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessorSetup
 from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.transports.base_transport import TransportParams
+from pipecat.clocks.system_clock import SystemClock
+from pipecat.utils.asyncio.task_manager import TaskManager
 from websockets.datastructures import Headers
 from websockets.exceptions import InvalidStatus
 from websockets.http11 import Response
@@ -60,6 +62,18 @@ def _frame_pushed(frame, direction, *, source=None):
         direction=direction,
         timestamp=0,
     )
+
+
+async def _set_up_output_transport():
+    output = BaseOutputTransport(TransportParams())
+    await output.setup(
+        FrameProcessorSetup(
+            clock=SystemClock(),
+            task_manager=TaskManager(),
+            pipeline_worker=SimpleNamespace(),
+        )
+    )
+    return output
 
 
 @pytest.mark.asyncio
@@ -127,7 +141,7 @@ async def test_agent_speech_is_logged_once_without_persisting_each_tts_word():
     # A request may be visible both in the call and at several agent processors.
     await asyncio.gather(*(feedback.on_push_frame(request) for _ in range(3)))
 
-    output = BaseOutputTransport(TransportParams())
+    output = await _set_up_output_transport()
     for word in ("Alex", " calling."):
         frame = TTSTextFrame(word, aggregated_by="word")
         frame.append_to_context = False
@@ -140,6 +154,7 @@ async def test_agent_speech_is_logged_once_without_persisting_each_tts_word():
         "Alex calling."
     ]
     assert [event["payload"]["text"] for event in messages] == ["Alex", " calling."]
+    await output.cleanup()
 
 
 @pytest.mark.asyncio
@@ -156,7 +171,7 @@ async def test_observer_waits_for_tts_text_from_output_transport():
     await observer.on_push_frame(_frame_pushed(frame, FrameDirection.DOWNSTREAM))
     assert messages == []
 
-    output_transport = BaseOutputTransport(TransportParams())
+    output_transport = await _set_up_output_transport()
     await observer.on_push_frame(
         _frame_pushed(
             frame,
@@ -171,6 +186,7 @@ async def test_observer_waits_for_tts_text_from_output_transport():
             "payload": {"text": "Hello"},
         }
     ]
+    await output_transport.cleanup()
 
 
 @pytest.mark.asyncio

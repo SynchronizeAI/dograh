@@ -129,7 +129,7 @@ Dograh 内置 MCP 服务器,因此编码智能体可以直接在你的 Dograh �
 
 ### 语音与电信
 
-- 内置 Twilio、Vonage、Telnyx、Plivo、Vobiz、Cloudonix 和 Asterisk ARI 等电信集成
+- 支持的服务商和配置方法请参阅[电信集成概览](https://docs.dograh.com/integrations/telephony/overview)。
 - 在支持的电信服务商上,可通过通话转接实现人工接管
 - 可接入自己的 LLM、TTS、STT 和电信服务商;通话产物可存储在内置 MinIO 或 AWS / S3 兼容存储中
 

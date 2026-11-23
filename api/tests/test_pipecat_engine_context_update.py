@@ -144,6 +144,59 @@ class TestContextUpdateBeforeNextCompletion:
     """Test that context is properly updated before the next LLM completion."""
 
     @pytest.mark.asyncio
+    async def test_retired_visit_does_not_queue_transition_speech_after_extraction(
+        self, three_node_workflow_no_variable_extraction: WorkflowGraph
+    ):
+        from dataclasses import replace
+
+        llm = MockLLMService(mock_steps=[], chunk_delay=0)
+        engine = PipecatEngine(
+            llm=llm,
+            context=LLMContext(),
+            workflow=three_node_workflow_no_variable_extraction,
+            call_context_vars={"customer_name": "Test User"},
+            workflow_run_id=1,
+        )
+        await engine.set_node("start")
+        source_agent = engine.active_agent
+        source_node = source_agent.current_node
+        transition = await engine._create_transition_func(
+            "transition",
+            "agent",
+            transition_speech="Let me move you along.",
+            agent=source_agent,
+            source_node=source_node,
+        )
+
+        extraction_started = asyncio.Event()
+        continue_extraction = asyncio.Event()
+
+        async def wait_for_extraction(*_args, **_kwargs):
+            extraction_started.set()
+            await continue_extraction.wait()
+
+        engine._perform_variable_extraction_if_needed = wait_for_extraction
+        engine.queue_text_message = AsyncMock(return_value=True)
+        callback = AsyncMock()
+        task = asyncio.create_task(
+            transition(
+                SimpleNamespace(arguments={}, result_callback=callback)
+            )
+        )
+        try:
+            await asyncio.wait_for(extraction_started.wait(), 1)
+            destination = replace(source_agent, visit_id="visit-destination")
+            engine.install_agent(destination, previous=source_agent)
+        finally:
+            continue_extraction.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+        assert callback.await_args.args[0]["status"] == "error"
+        engine.queue_text_message.assert_not_awaited()
+        assert engine.active_agent is destination
+        assert engine.active_agent.current_node is source_node
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("speech_type", ["text", "audio"])
     async def test_parallel_transitions_only_queue_speech_for_the_winner(
         self,

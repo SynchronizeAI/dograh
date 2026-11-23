@@ -439,6 +439,11 @@ class PipecatEngine:
         agent = agent or self.active_agent
         source_node = source_node or agent.current_node
 
+        def transition_is_current() -> bool:
+            return self.agent_can_act(agent) and (
+                source_node is None or agent.current_node is source_node
+            )
+
         async def transition_func(function_call_params: FunctionCallParams) -> None:
             """Inner function that handles the node change tool calls"""
             logger.info(f"LLM Function Call EXECUTED: {name}")
@@ -448,7 +453,7 @@ class PipecatEngine:
             logger.info(f"Arguments: {function_call_params.arguments}")
 
             try:
-                if source_node is not None and agent.current_node is not source_node:
+                if not transition_is_current():
                     await function_call_params.result_callback(
                         {
                             "status": "error",
@@ -464,11 +469,18 @@ class PipecatEngine:
                     run_in_background=self._run_transition_variable_extraction_in_background,
                 )
 
+                if not transition_is_current():
+                    await function_call_params.result_callback(
+                        {
+                            "status": "error",
+                            "error": "Transition is no longer available",
+                        },
+                        properties=FunctionCallResultProperties(run_llm=False),
+                    )
+                    return
+
                 async with self._node_transition_lock:
-                    if (
-                        source_node is not None
-                        and agent.current_node is not source_node
-                    ):
+                    if not transition_is_current():
                         transitioned = False
                         speech_queued = False
                     else:

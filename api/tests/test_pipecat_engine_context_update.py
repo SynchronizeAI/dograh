@@ -144,9 +144,14 @@ class TestContextUpdateBeforeNextCompletion:
     """Test that context is properly updated before the next LLM completion."""
 
     @pytest.mark.asyncio
-    async def test_parallel_transitions_only_commit_from_the_current_node(
-        self, three_node_workflow_no_variable_extraction: WorkflowGraph
+    @pytest.mark.parametrize("speech_type", ["text", "audio"])
+    async def test_parallel_transitions_only_queue_speech_for_the_winner(
+        self,
+        three_node_workflow_no_variable_extraction: WorkflowGraph,
+        speech_type: str,
     ):
+        from api.services.pipecat.speech_playback import PlaybackOutcome
+
         llm = MockLLMService(mock_steps=[], chunk_delay=0)
         engine = PipecatEngine(
             llm=llm,
@@ -157,10 +162,19 @@ class TestContextUpdateBeforeNextCompletion:
         )
         await engine.set_node("start")
         source_node = engine.active_agent.current_node
+        if speech_type == "text":
+            transition_speech = {"transition_speech": "Let me move you along."}
+        else:
+            engine._fetch_recording_audio = object()
+            transition_speech = {
+                "transition_speech_type": "audio",
+                "transition_speech_recording_id": "1",
+            }
         transitions = [
             await engine._create_transition_func(
                 name,
                 "agent",
+                **transition_speech,
                 agent=engine.active_agent,
                 source_node=source_node,
             )
@@ -168,29 +182,64 @@ class TestContextUpdateBeforeNextCompletion:
         ]
 
         extraction_count = 0
-        both_extracting = asyncio.Event()
+        both_extracted = asyncio.Event()
+        continue_extraction = asyncio.Event()
+        speech_entered = asyncio.Event()
+        continue_speech = asyncio.Event()
+        speech_count = 0
 
-        async def wait_for_parallel_extraction(*_args, **_kwargs):
+        async def wait_for_extraction(*_args, **_kwargs):
             nonlocal extraction_count
             extraction_count += 1
             if extraction_count == 2:
-                both_extracting.set()
-            await both_extracting.wait()
+                both_extracted.set()
+            await continue_extraction.wait()
 
-        engine._perform_variable_extraction_if_needed = wait_for_parallel_extraction
+        async def queue_speech(*_args, **_kwargs):
+            nonlocal speech_count
+            speech_count += 1
+            speech_entered.set()
+            await continue_speech.wait()
+            if speech_type == "text":
+                return True
+            return SimpleNamespace(
+                outcome=PlaybackOutcome.PLAYED, text="Please hold."
+            )
+
+        engine._perform_variable_extraction_if_needed = wait_for_extraction
+        if speech_type == "text":
+            engine.queue_text_message = AsyncMock(side_effect=queue_speech)
+        else:
+            engine.queue_speech = AsyncMock(side_effect=queue_speech)
         callbacks = [AsyncMock(), AsyncMock()]
-        await asyncio.gather(
-            *(
+        tasks = [
+            asyncio.create_task(
                 transition(
                     SimpleNamespace(arguments={}, result_callback=callback)
                 )
-                for transition, callback in zip(transitions, callbacks)
             )
-        )
+            for transition, callback in zip(transitions, callbacks)
+        ]
+        speech_count_before_release = None
+        try:
+            await asyncio.wait_for(both_extracted.wait(), 1)
+            continue_extraction.set()
+            await asyncio.wait_for(speech_entered.wait(), 1)
+            await asyncio.sleep(0)
+            speech_count_before_release = speech_count
+        finally:
+            continue_extraction.set()
+            continue_speech.set()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         results = [callback.await_args.args[0] for callback in callbacks]
+        assert speech_count_before_release == 1
         assert sum(result["status"] == "done" for result in results) == 1
         assert sum(result["status"] == "error" for result in results) == 1
+        if speech_type == "text":
+            engine.queue_text_message.assert_awaited_once()
+        else:
+            engine.queue_speech.assert_awaited_once()
         assert engine.active_agent.current_node is not source_node
 
     @pytest.mark.asyncio

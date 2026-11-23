@@ -133,7 +133,7 @@ Codex、Claude Code、Cursor、または任意の MCP クライアントを接�
 
 ### 音声と電話連携
 
-- Twilio、Vonage、Telnyx、Plivo、Vobiz、Cloudonix、Asterisk ARI などの電話連携を標準搭載
+- 対応プロバイダーと設定方法は[電話連携の概要](https://docs.dograh.com/integrations/telephony/overview)を参照してください
 - 対応する電話連携プロバイダーでは通話転送による有人対応が可能
 - 独自の LLM、TTS、STT、電話連携プロバイダーを接続可能。成果物は同梱の MinIO または AWS / S3 互換ストレージに保存できます
 

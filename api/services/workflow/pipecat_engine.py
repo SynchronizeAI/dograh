@@ -178,6 +178,7 @@ class PipecatEngine:
         self._agent_on_hold = False
         self._pending_agent: AgentRuntime | None = None
         self._retired_agents: list[AgentRuntime] = []
+        self._node_transition_lock = asyncio.Lock()
         self._agent_visits: list[dict] = []
         self._transfer_outcomes: list[dict] = []
         # Set by run setup on every cascade call; a realtime call gets none
@@ -463,38 +464,60 @@ class PipecatEngine:
                     run_in_background=self._run_transition_variable_extraction_in_background,
                 )
 
-                # Queue transition speech/audio before switching nodes
-                speech_type = transition_speech_type or "text"
-                speech_queued = False
-                if (
-                    speech_type == "audio"
-                    and transition_speech_recording_id
-                    and self._fetch_recording_audio
-                ):
-                    logger.info(
-                        f"Playing transition audio: {transition_speech_recording_id}"
-                    )
-                    speech = await self.queue_speech(
-                        recording_pk=int(transition_speech_recording_id),
-                        append_to_context=True,
-                        mute_user=True,
-                    )
-                    speech_queued = speech.outcome not in (
-                        PlaybackOutcome.FAILED,
-                        PlaybackOutcome.SKIPPED,
-                        PlaybackOutcome.CLOSED,
-                    ) and bool(speech.text and speech.text.strip())
-                elif transition_speech:
-                    speech_queued = await self.queue_text_message(
-                        transition_speech,
-                        append_to_context=True,
-                        mute_user=True,
-                    )
+                async with self._node_transition_lock:
+                    if (
+                        source_node is not None
+                        and agent.current_node is not source_node
+                    ):
+                        transitioned = False
+                        speech_queued = False
+                    else:
+                        # Queue transition speech/audio before switching nodes
+                        speech_type = transition_speech_type or "text"
+                        speech_queued = False
+                        if (
+                            speech_type == "audio"
+                            and transition_speech_recording_id
+                            and self._fetch_recording_audio
+                        ):
+                            logger.info(
+                                f"Playing transition audio: {transition_speech_recording_id}"
+                            )
+                            speech = await self.queue_speech(
+                                recording_pk=int(transition_speech_recording_id),
+                                append_to_context=True,
+                                mute_user=True,
+                            )
+                            speech_queued = speech.outcome not in (
+                                PlaybackOutcome.FAILED,
+                                PlaybackOutcome.SKIPPED,
+                                PlaybackOutcome.CLOSED,
+                            ) and bool(speech.text and speech.text.strip())
+                        elif transition_speech:
+                            speech_queued = await self.queue_text_message(
+                                transition_speech,
+                                append_to_context=True,
+                                mute_user=True,
+                            )
 
-                # Set context for the new node, so that when the function call result
-                # frame is received by LLMContextAggregator and an LLM generation
-                # is done, we have updated context and functions
-                await self.set_node(transition_to_node, origin_visit_id=agent.visit_id)
+                        # Set context for the new node, so that when the function call result
+                        # frame is received by LLMContextAggregator and an LLM generation
+                        # is done, we have updated context and functions
+                        transitioned = await self.set_node(
+                            transition_to_node,
+                            origin_visit_id=agent.visit_id,
+                            expected_source_node=source_node,
+                        )
+
+                if transitioned is False:
+                    await function_call_params.result_callback(
+                        {
+                            "status": "error",
+                            "error": "Transition is no longer available",
+                        },
+                        properties=FunctionCallResultProperties(run_llm=False),
+                    )
+                    return
 
                 next_node = agent.workflow.nodes[transition_to_node]
                 is_end_node = next_node.is_end
@@ -1044,7 +1067,8 @@ class PipecatEngine:
         emit_transition_event: bool = True,
         *,
         origin_visit_id: Optional[str] = None,
-    ):
+        expected_source_node: Node | None = None,
+    ) -> bool:
         """
         Simplified set_node implementation according to v2 PRD.
 
@@ -1055,6 +1079,8 @@ class PipecatEngine:
                 from a visit that no longer owns the call is rejected: a tool
                 call that landed just as a handoff committed must not move the
                 new agent to a node id from the old agent's graph.
+            expected_source_node: The node that must still own the transition
+                when it commits.
         """
         agent = self._active_agent
         if origin_visit_id is not None and origin_visit_id != agent.visit_id:
@@ -1062,7 +1088,12 @@ class PipecatEngine:
                 f"Rejecting node change from retired visit {origin_visit_id}; "
                 f"{agent.visit_id} owns the call"
             )
-            return
+            return False
+        if (
+            expected_source_node is not None
+            and agent.current_node is not expected_source_node
+        ):
+            return False
 
         node = self.active_agent.workflow.nodes[node_id]
 
@@ -1118,6 +1149,7 @@ class PipecatEngine:
         # to clean up tool calls from previous nodes
         if previous_node_id is not None and self._context_summarization_manager:
             await self._context_summarization_manager.start()
+        return True
 
     async def _handle_start_node(self, node: Node) -> None:
         """Set up context immediately; the answer supervisor owns initial listening."""

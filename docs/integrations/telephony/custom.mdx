@@ -311,20 +311,8 @@ register(SPEC)
 
 ### 5. Wire the package into the registry import chain
 
-Add one import line to `api/services/telephony/providers/__init__.py`:
-
-```python
-from api.services.telephony.providers import (  # noqa: F401  -- side effects
-    ari,
-    cloudonix,
-    plivo,
-    telnyx,
-    twilio,
-    vobiz,
-    vonage,
-    your_provider,        # ← add this
-)
-```
+Add an import for your package in `api/services/telephony/providers/__init__.py`.
+Importing the package registers its `ProviderSpec` during startup.
 
 ### 6. Add to the discriminated union
 

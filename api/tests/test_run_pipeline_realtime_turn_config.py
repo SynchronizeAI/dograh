@@ -363,8 +363,14 @@ async def test_assemblyai_failover_keeps_default_pause_window(monkeypatch):
     await stt.on_switched()
 
     stop_strategy = greeting.strategies.stop[0]
-    assert isinstance(stop_strategy, SpeechTimeoutUserTurnStopStrategy)
-    assert stop_strategy._user_speech_timeout == 2.0
+    assert isinstance(stop_strategy, TurnAnalyzerUserTurnStopStrategy)
+    assert (
+        type(stop_strategy._turn_analyzer)
+        is run_pipeline_module._FallbackSmartTurnAnalyzer
+    )
+    assert stop_strategy._turn_analyzer.params.stop_secs == (
+        run_pipeline_module.DEFAULT_SMART_TURN_STOP_SECS
+    )
 
 
 def test_external_turn_stt_uses_longer_stop_timeout():

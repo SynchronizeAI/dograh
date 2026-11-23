@@ -7,7 +7,12 @@ from fastapi.testclient import TestClient
 
 from api.enums import WorkflowRunMode, WorkflowRunState
 from api.errors.telephony_errors import TelephonyError
-from api.routes.telephony import _handle_telephony_websocket, handle_inbound_run, router
+from api.routes.telephony import (
+    _handle_telephony_websocket,
+    handle_inbound_run,
+    handle_inbound_telephony,
+    router,
+)
 from api.services.auth.depends import get_user
 from api.services.call_concurrency import CallConcurrencyLimitError
 from api.services.telephony.providers.koreaaitel.provider import KoreaAITelProvider
@@ -649,7 +654,9 @@ async def test_koreaaitel_run_log_redacts_caller_but_context_keeps_it(monkeypatc
             "CallId": "CA1",
             "From": "01012345678",
             "To": "07012340001",
+            "ForwardedFrom": "0212345678",
             "Direction": "inbound",
+            "CallStatus": "ringing",
         }
     )
 
@@ -664,7 +671,132 @@ async def test_koreaaitel_run_log_redacts_caller_but_context_keeps_it(monkeypatc
 
     stored = create_run.await_args.kwargs
     assert stored["initial_context"]["caller_number"] == "01012345678"
-    assert "From" not in stored["logs"]["inbound_webhook"]["raw_webhook_data"]
+    raw_webhook_data = stored["logs"]["inbound_webhook"]["raw_webhook_data"]
+    assert not {"From", "ForwardedFrom", "To"} & raw_webhook_data.keys()
+    assert raw_webhook_data["CallId"] == "CA1"
+    assert raw_webhook_data["CallStatus"] == "ringing"
+
+
+@pytest.mark.asyncio
+async def test_legacy_koreaaitel_reject_does_not_log_unverified_identifiers(monkeypatch):
+    import api.routes.telephony as routes
+
+    identifiers = [
+        "CALL-UNVERIFIED-123",
+        "ACCOUNT-UNVERIFIED-456",
+        "01012345678",
+        "+821012345678",
+        "0212345678",
+        "07012340001",
+        "HEADER-UNVERIFIED-789",
+    ]
+    webhook_data = {
+        "CallId": identifiers[0],
+        "AccountId": identifiers[1],
+        "From": identifiers[2],
+        "ForwardedFrom": identifiers[4],
+        "To": identifiers[5],
+        "Direction": "inbound",
+    }
+    normalized = KoreaAITelProvider.parse_inbound_webhook(webhook_data)
+    provider_class = SimpleNamespace(
+        PROVIDER_NAME="koreaaitel",
+        generate_validation_error_response=Mock(return_value="invalid-signature"),
+    )
+    provider = SimpleNamespace(verify_inbound_signature=AsyncMock(return_value=False))
+    workflow = SimpleNamespace(organization_id=11, user_id=99)
+    phone_row = SimpleNamespace(id=77, telephony_configuration_id=55)
+    db = Mock(
+        get_workflow_by_id=AsyncMock(return_value=workflow),
+        find_inbound_route_by_account=AsyncMock(return_value=None),
+        list_telephony_configurations_by_provider=AsyncMock(return_value=[object()]),
+        find_active_phone_number_for_inbound=AsyncMock(return_value=phone_row),
+    )
+    logger = Mock()
+    monkeypatch.setattr(routes, "logger", logger)
+    monkeypatch.setattr(routes, "db_client", db)
+    monkeypatch.setattr(
+        routes,
+        "parse_webhook_request",
+        AsyncMock(return_value=(webhook_data, "raw-body")),
+    )
+    monkeypatch.setattr(
+        routes, "_detect_provider", AsyncMock(return_value=provider_class)
+    )
+    monkeypatch.setattr(routes, "normalize_webhook_data", Mock(return_value=normalized))
+    monkeypatch.setattr(
+        routes, "get_telephony_provider_by_id", AsyncMock(return_value=provider)
+    )
+    monkeypatch.setattr(
+        "api.services.telephony.factory.find_telephony_config_for_inbound",
+        AsyncMock(return_value=(55, {})),
+    )
+
+    request = SimpleNamespace(
+        headers={"x-signature": "unsigned", "x-custom-id": identifiers[6]},
+        url="https://api.example.test/inbound/33",
+    )
+    assert await handle_inbound_telephony(33, request) == "invalid-signature"
+    messages = " ".join(
+        repr(call.args)
+        for level in (logger.info, logger.warning, logger.error)
+        for call in level.call_args_list
+    )
+    assert all(identifier not in messages for identifier in identifiers)
+    provider.verify_inbound_signature.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_inbound_fallback_does_not_log_webhook_or_headers(monkeypatch):
+    import api.routes.telephony as routes
+
+    payload = {
+        "CallSid": "CALL-UNVERIFIED-123",
+        "From": "01012345678",
+        "To": "07012340001",
+    }
+    header_value = "HEADER-UNVERIFIED-789"
+    logger = Mock()
+    provider = SimpleNamespace(
+        PROVIDER_NAME="koreaaitel",
+        generate_error_response=Mock(return_value="provider-fallback"),
+    )
+    monkeypatch.setattr(routes, "logger", logger)
+    monkeypatch.setattr(
+        routes, "parse_webhook_request", AsyncMock(return_value=(payload, "raw"))
+    )
+    monkeypatch.setattr(routes, "_detect_provider", AsyncMock(return_value=provider))
+    monkeypatch.setattr(routes, "generic_hangup_response", Mock(return_value="fallback"))
+    request = SimpleNamespace(headers={"x-custom-id": header_value})
+
+    assert await routes.handle_inbound_fallback(request) == "provider-fallback"
+    messages = " ".join(repr(call.args) for call in logger.info.call_args_list)
+    assert all(value not in messages for value in (*payload.values(), header_value))
+
+
+@pytest.mark.asyncio
+async def test_inbound_account_validation_failure_does_not_log_account_id(monkeypatch):
+    import api.routes.telephony as routes
+
+    account_id = "ACCOUNT-UNVERIFIED-456"
+    logger = Mock()
+    db = Mock(
+        list_telephony_configurations_by_provider=AsyncMock(return_value=[object()])
+    )
+    monkeypatch.setattr(routes, "logger", logger)
+    monkeypatch.setattr(routes, "db_client", db)
+    monkeypatch.setattr(
+        "api.services.telephony.factory.find_telephony_config_for_inbound",
+        AsyncMock(return_value=None),
+    )
+
+    result = await routes._resolve_inbound_telephony_config(
+        11, SimpleNamespace(PROVIDER_NAME="koreaaitel"), account_id
+    )
+
+    assert result == (TelephonyError.ACCOUNT_VALIDATION_FAILED, None)
+    messages = " ".join(repr(call.args) for call in logger.warning.call_args_list)
+    assert account_id not in messages
 
 
 @pytest.mark.asyncio

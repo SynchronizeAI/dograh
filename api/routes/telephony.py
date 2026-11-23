@@ -3,7 +3,6 @@ Telephony routes - handles all telephony-related endpoints.
 Consolidated from split modules for easier maintenance.
 """
 
-import json
 import uuid
 from typing import Optional, cast
 
@@ -328,10 +327,7 @@ async def _verify_organization_phone_number(
             organization_id, phone_number, provider, country_hint=to_country
         )
         if match and match.telephony_configuration_id == telephony_configuration_id:
-            logger.info(
-                f"Phone number {phone_number} matched row {match.id} for org "
-                f"{organization_id} / config {telephony_configuration_id}"
-            )
+            logger.info("Inbound called number matched a registered phone row")
             return match.id
 
         # Legacy fallback: scan the matched config's active numbers and apply
@@ -341,24 +337,14 @@ async def _verify_organization_phone_number(
             if not row.is_active:
                 continue
             if numbers_match(phone_number, row.address, to_country, from_country):
-                logger.info(
-                    f"Phone number {phone_number} matched (fuzzy) row {row.id} "
-                    f"for config {telephony_configuration_id}"
-                )
+                logger.info("Inbound called number matched a registered phone row")
                 return row.id
 
-        logger.warning(
-            f"Phone number {phone_number} not registered to config "
-            f"{telephony_configuration_id} (org={organization_id}, "
-            f"to_country={to_country}, from_country={from_country})"
-        )
+        logger.warning("Inbound called number is not registered")
         return None
 
-    except Exception as e:
-        logger.error(
-            f"Error verifying phone number {phone_number} for organization "
-            f"{organization_id} / config {telephony_configuration_id}: {e}"
-        )
+    except Exception:
+        logger.error("Unable to verify inbound called number")
         return None
 
 
@@ -499,7 +485,7 @@ async def _create_inbound_workflow_run(
         raw_webhook_data = {
             key: value
             for key, value in normalized_data.raw_data.items()
-            if key.lower() != "from"
+            if key.lower() not in {"from", "forwardedfrom", "to"}
         }
 
     workflow_run = await db_client.create_workflow_run(
@@ -563,10 +549,7 @@ async def _resolve_inbound_telephony_config(
             organization_id, provider_class.PROVIDER_NAME
         )
         if not candidates:
-            logger.warning(
-                f"No {provider_class.PROVIDER_NAME} configuration for org "
-                f"{organization_id}"
-            )
+            logger.warning("No telephony configuration for inbound webhook")
             return TelephonyError.PROVIDER_MISMATCH, None
 
         match = await find_telephony_config_for_inbound(
@@ -574,16 +557,15 @@ async def _resolve_inbound_telephony_config(
         )
         if not match:
             logger.warning(
-                f"Account validation failed for {provider_class.PROVIDER_NAME}: "
-                f"webhook account_id={account_id} (org {organization_id})"
+                f"Account validation failed for {provider_class.PROVIDER_NAME}"
             )
             return TelephonyError.ACCOUNT_VALIDATION_FAILED, None
 
         config_id, _ = match
         return TelephonyError.VALID, config_id
 
-    except Exception as e:
-        logger.error(f"Exception during account validation: {e}")
+    except Exception:
+        logger.error("Exception during inbound account validation")
         return TelephonyError.ACCOUNT_VALIDATION_FAILED, None
 
 
@@ -1020,11 +1002,11 @@ async def handle_inbound_run(request: Request):
                 await call_concurrency.release_slot(concurrency_slot)
             raise
 
-    except ValueError as e:
-        logger.error(f"/inbound/run request parsing error: {e}")
+    except ValueError:
+        logger.error("/inbound/run request parsing error")
         return generic_hangup_response()
-    except Exception as e:
-        logger.error(f"/inbound/run unexpected error: {e}")
+    except Exception:
+        logger.error("/inbound/run unexpected error")
         return generic_hangup_response()
 
 
@@ -1040,13 +1022,8 @@ async def handle_inbound_fallback(request: Request):
 
     if provider_class:
         # Use provider-specific error response
-        call_id = (
-            webhook_data.get("CallSid")
-            or webhook_data.get("CallUUID")
-            or webhook_data.get("call_uuid")
-        )
         logger.info(
-            f"[fallback] Received {provider_class.PROVIDER_NAME} callback for call {call_id}: {json.dumps(webhook_data)}"
+            f"[fallback] Received {provider_class.PROVIDER_NAME} callback"
         )
 
         return provider_class.generate_error_response(
@@ -1055,9 +1032,7 @@ async def handle_inbound_fallback(request: Request):
         )
     else:
         # Unknown provider - return generic XML
-        logger.info(
-            f"[fallback] Received unknown provider callback: {json.dumps(webhook_data)} and request headers: {json.dumps(headers)}"
-        )
+        logger.info("[fallback] Received unknown provider callback")
 
         return generic_hangup_response()
 
@@ -1076,13 +1051,10 @@ async def handle_inbound_telephony(
     existing provider configurations that still encode ``workflow_id``
     in the URL.
     """
-    logger.info(
-        f"[legacy /inbound/{{workflow_id}}] Inbound call received for workflow_id: {workflow_id}"
-    )
+    logger.info("[legacy inbound] Dispatch received")
 
     try:
         webhook_data, raw_body = await parse_webhook_request(request)
-        logger.info(f"Inbound call data: {dict(webhook_data)}")
         headers = dict(request.headers)
 
         # Detect provider and normalize data
@@ -1093,8 +1065,9 @@ async def handle_inbound_telephony(
 
         normalized_data = normalize_webhook_data(provider_class, webhook_data, headers)
 
-        logger.info(f"Inbound call - Provider: {normalized_data.provider}")
-        logger.info(f"Normalized data: {normalized_data}")
+        logger.info(
+            f"[legacy inbound] Provider detected: {provider_class.PROVIDER_NAME}"
+        )
 
         # Validate inbound direction
         if normalized_data.direction != "inbound":
@@ -1198,11 +1171,11 @@ async def handle_inbound_telephony(
         )
         return response
 
-    except ValueError as e:
-        logger.error(f"Request parsing error: {e}")
+    except ValueError:
+        logger.error("Legacy inbound request parsing error")
         return generic_hangup_response()
-    except Exception as e:
-        logger.error(f"Error processing inbound call: {e}")
+    except Exception:
+        logger.error("Error processing legacy inbound request")
         return generic_hangup_response()
 
 

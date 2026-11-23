@@ -37,7 +37,7 @@ async def test_large_prompt_and_tools_are_prewarmed_once():
     config = service._client.aio.caches.create.await_args.kwargs["config"]
     assert config.system_instruction == prompt
     assert config.tools[0].function_declarations[0].name == "book"
-    assert config.ttl == "3600s"
+    assert config.ttl == "1260s"
 
 
 @pytest.mark.asyncio

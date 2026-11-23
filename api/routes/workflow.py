@@ -1512,6 +1512,12 @@ def _workflow_run_artifact_keys(run) -> set[tuple[str, str]]:
         for key in (run.recording_url, run.transcript_url)
         if key
     }
+    artifacts.update(
+        {
+            (run.storage_backend, f"recordings/{run.id}.wav"),
+            (run.storage_backend, f"transcripts/{run.id}.txt"),
+        }
+    )
 
     def collect(value):
         if isinstance(value, dict):
@@ -1526,6 +1532,21 @@ def _workflow_run_artifact_keys(run) -> set[tuple[str, str]]:
                 collect(child)
 
     collect(run.extra)
+
+    noveum_payload = (run.logs or {}).get("noveum_payload")
+    audio_manifest = (
+        noveum_payload.get("audio_manifest") or []
+        if isinstance(noveum_payload, dict)
+        else []
+    )
+    if isinstance(audio_manifest, list):
+        for item in audio_manifest:
+            if not isinstance(item, dict):
+                continue
+            key = item.get("storage_key")
+            backend = item.get("storage_backend") or run.storage_backend
+            if isinstance(key, str):
+                artifacts.add((backend, key))
     return artifacts
 
 
@@ -1535,7 +1556,7 @@ def _workflow_run_artifact_keys(run) -> set[tuple[str, str]]:
 async def delete_workflow_run(
     workflow_id: int, run_id: int, user: UserModel = Depends(get_user)
 ) -> Response:
-    """Delete telephony runs and artifacts; other modes are unsupported.
+    """Delete finished telephony runs and artifacts; other modes are unsupported.
 
     Text-chat sessions are synthetic and cannot be deleted through this route.
     """
@@ -1560,13 +1581,22 @@ async def delete_workflow_run(
         )
 
     completion = (run.extra or {}).get("workflow_completion") or {}
-    if completion.get("status") == "pending":
+    if completion.get("status") != "done":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Workflow run artifacts are still being published",
+            detail="Workflow run completion has not finished",
+        )
+
+    recording_prefix = f"recordings/{run.id}/"
+    storage = get_storage_for_backend(run.storage_backend)
+    if not await storage.adelete_prefix(recording_prefix):
+        raise HTTPException(
+            status_code=500, detail="Failed to delete workflow run artifacts"
         )
 
     for backend, key in _workflow_run_artifact_keys(run):
+        if backend == run.storage_backend and key.startswith(recording_prefix):
+            continue
         if not await get_storage_for_backend(backend).adelete_file(key):
             raise HTTPException(
                 status_code=500, detail="Failed to delete workflow run artifacts"

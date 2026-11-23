@@ -51,3 +51,6 @@ class NullFileSystem(BaseFileSystem):
 
     async def adelete_file(self, file_path: str) -> bool:
         self._fail("adelete_file")
+
+    async def adelete_prefix(self, prefix: str) -> bool:
+        self._fail("adelete_prefix")

@@ -14,7 +14,6 @@ import asyncio
 import contextvars
 
 from loguru import logger
-from pipecat.services.assemblyai.stt import AssemblyAISTTService
 
 from api.errors.failure import (
     ErrorSource,
@@ -24,6 +23,7 @@ from api.errors.failure import (
 from pipecat.frames.frames import CancelFrame, EndFrame, ErrorFrame, Frame
 from pipecat.pipeline.service_switcher import ServiceSwitcher, ServiceSwitcherStrategy
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.services.assemblyai.stt import AssemblyAISTTService
 
 _CONNECTION_MARKERS = (
     "connection error",

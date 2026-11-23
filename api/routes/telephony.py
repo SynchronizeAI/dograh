@@ -798,8 +798,9 @@ async def handle_inbound_run(request: Request):
     All providers can point a single webhook at this endpoint instead of one
     URL per workflow. The dispatcher resolves the org from the webhook's
     account_id and the workflow from the called number's
-    ``inbound_workflow_id``. This is what ``configure_inbound`` writes into
-    each provider's resource so per-workflow webhook bookkeeping disappears.
+    ``inbound_workflow_id``. For providers that support programmatic routing,
+    ``configure_inbound`` writes this URL into the provider resource; other
+    providers require manual webhook setup.
 
     Provider-specific signature/timestamp headers are not enumerated here —
     each provider's ``verify_inbound_signature`` reads its own headers from

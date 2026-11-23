@@ -129,9 +129,9 @@ KoreaAITel supports inbound calls only. In Dograh, create a **한국AI통신**
 configuration with your **Account ID** and the **Webhook Signing Secret** from
 **Dashboard > 개발자 > 웹훅**. Add the phone number and assign its **Inbound
 workflow**. Dograh uses the signing secret to verify the VoiceML webhook.
-When `CallerIdRestricted` is `true`, Dograh blanks both `From` and
-`ForwardedFrom` before saving the inbound data with the run, so the original
-forwarded number is not exposed in run logs.
+When `CallerIdRestricted` is `true`, Dograh treats the caller number as
+unavailable and blanks `From` and `ForwardedFrom` in the provider data. The
+saved raw webhook data in the run log omits `From`, `ForwardedFrom`, and `To`.
 
 In KoreaAITel, set that number's VoiceML webhook to:
 

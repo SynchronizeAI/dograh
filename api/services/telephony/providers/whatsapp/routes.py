@@ -605,7 +605,11 @@ async def _answer_claimed_call(
     Meta's side, so the claim stays. Anything that escapes left the call
     untouched.
     """
-    existing_run = await db_client.get_workflow_run_by_call_id(call_id)
+    existing_run = await db_client.get_workflow_run_by_call_id(
+        call_id,
+        organization_id=config.organization_id,
+        mode="whatsapp",
+    )
     if existing_run:
         logger.warning(
             f"[WhatsApp] Call {call_id} already has workflow_run {existing_run.id}, ignoring duplicate connect"

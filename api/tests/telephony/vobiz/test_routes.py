@@ -545,4 +545,7 @@ async def test_vobiz_hangup_callback_by_workflow_rejects_missing_signature():
             )
 
     assert exc_info.value.status_code == 403
+    db_client.get_workflow_run_by_call_id.assert_awaited_once_with(
+        "call-123", organization_id=11, mode="vobiz"
+    )
     process_status.assert_not_awaited()

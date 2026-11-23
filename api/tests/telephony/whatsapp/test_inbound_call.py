@@ -277,12 +277,15 @@ class TestWhatsAppInboundConnect(IsolatedAsyncioTestCase):
                 db_client,
                 "get_workflow_run_by_call_id",
                 AsyncMock(return_value=MagicMock(id=101)),
-            ),
+            ) as existing_run_lookup,
             patch(f"{CONCURRENCY}.acquire_org_slot", AsyncMock()) as mock_acquire,
         ):
             response = await handle_whatsapp_webhook(request)
 
         self.assertEqual(response, {"status": "success"})
+        existing_run_lookup.assert_awaited_once_with(
+            call_id, organization_id=mock_config.organization_id, mode="whatsapp"
+        )
         mock_acquire.assert_not_called()
 
     async def test_connect_lost_to_another_worker_is_ignored(self):

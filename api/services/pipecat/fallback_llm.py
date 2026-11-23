@@ -495,7 +495,8 @@ class FallbackLLMProcessor(LLMService):
         await self._flush_output()
 
     async def _generate(self, frame: LLMContextFrame) -> None:
-        self._speculation_gate.begin_speculation(frame.speculation)
+        is_speculative = frame.speculation
+        self._speculation_gate.begin_speculation(is_speculative)
         # The outer gate buffers only the winner's speculative output. Let the
         # child boundary see it so arbitration doesn't depend on metrics.
         frame = replace(frame, speculation=False)
@@ -512,7 +513,7 @@ class FallbackLLMProcessor(LLMService):
         # A matching commit wakes this race and starts its no-output budget.
         if not self._speculation_gate.is_speculating:
             race.hedge_started = race.started
-        self._pending_speculative_race = race if frame.speculation else None
+        self._pending_speculative_race = race if is_speculative else None
         self._active_race = race
         self._launch(race, 0, frame)
         loser_cleanup = None

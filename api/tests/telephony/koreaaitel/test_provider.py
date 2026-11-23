@@ -71,7 +71,7 @@ def test_parse_withheld_caller_is_blank_everywhere():
     assert data.to_number == "+827012340001"
     assert data.raw_data["From"] == ""
     assert data.raw_data["CallId"] == "CA9f8e"
-    assert data.raw_data["ForwardedFrom"] == "0212345678"
+    assert data.raw_data["ForwardedFrom"] == ""
 
 
 def test_validate_account_id():

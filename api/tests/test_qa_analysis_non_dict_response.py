@@ -17,6 +17,19 @@ from api.services.workflow.qa import analysis as qa_analysis
 
 
 @pytest.mark.asyncio
+async def test_qa_inference_requests_structured_output_for_invalid_json_text():
+    llm = AsyncMock()
+    llm.run_inference.return_value = r'{"summary":"bad \\uXXXX escape"}'
+
+    response = await qa_analysis._run_llm_inference(llm, [], "prompt")
+
+    assert response == r'{"summary":"bad \\uXXXX escape"}'
+    assert llm.run_inference.call_args.kwargs["response_schema"] == (
+        qa_analysis._QA_RESPONSE_SCHEMA
+    )
+
+
+@pytest.mark.asyncio
 async def test_whole_call_qa_tolerates_array_llm_response():
     """A top-level JSON array from the QA LLM degrades to empty results."""
     qa_data = SimpleNamespace(qa_system_prompt="Summarize: {transcript}")

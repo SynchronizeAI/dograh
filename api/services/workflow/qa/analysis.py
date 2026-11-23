@@ -35,6 +35,16 @@ from api.services.workflow.qa.tracing import (
 from api.utils.template_renderer import render_template
 
 _QA_LLM_ATTEMPTS = 3
+_QA_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tags": {"type": "array", "items": {"type": "string"}},
+        "call_quality_score": {"type": ["number", "null"]},
+        "overall_sentiment": {"type": "string"},
+        "summary": {"type": "string"},
+    },
+    "additionalProperties": True,
+}
 
 
 async def _run_llm_inference(
@@ -56,7 +66,11 @@ async def _run_llm_inference(
     context.set_messages(messages)
     for attempt in range(1, _QA_LLM_ATTEMPTS + 1):
         try:
-            return await llm.run_inference(context, system_instruction=system_prompt)
+            return await llm.run_inference(
+                context,
+                system_instruction=system_prompt,
+                response_schema=_QA_RESPONSE_SCHEMA,
+            )
         except Exception as exc:
             metadata = failure_metadata_for_processor(llm)
             failure = classify_exception(

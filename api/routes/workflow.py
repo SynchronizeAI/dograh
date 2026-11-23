@@ -1544,6 +1544,13 @@ async def delete_workflow_run(
     if not run:
         raise HTTPException(status_code=404, detail="Workflow run not found")
 
+    completion = (run.extra or {}).get("workflow_completion") or {}
+    if completion.get("status") == "pending":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Workflow run artifacts are still being published",
+        )
+
     for backend, key in _workflow_run_artifact_keys(run):
         if not await get_storage_for_backend(backend).adelete_file(key):
             raise HTTPException(

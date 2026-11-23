@@ -23,7 +23,10 @@ def test_delete_workflow_run_removes_stored_artifacts_and_row():
         storage_backend="s3",
         recording_url="recordings/7.wav",
         transcript_url="transcripts/7.txt",
-        extra={"recordings": {"user": {"storage_key": "recordings/7/user.wav"}}},
+        extra={
+            "workflow_completion": {"status": "running"},
+            "recordings": {"user": {"storage_key": "recordings/7/user.wav"}},
+        },
     )
     storage = SimpleNamespace(adelete_file=AsyncMock(return_value=True))
     with (
@@ -44,6 +47,35 @@ def test_delete_workflow_run_removes_stored_artifacts_and_row():
         "recordings/7/user.wav",
     }
     db.delete_workflow_run.assert_awaited_once_with(7, 3, 11)
+
+
+def test_delete_workflow_run_returns_conflict_while_artifacts_are_publishing():
+    run = SimpleNamespace(
+        is_completed=True,
+        storage_backend="s3",
+        recording_url="recordings/7.wav",
+        transcript_url="transcripts/7.txt",
+        extra={
+            "workflow_completion": {"status": "pending"},
+            "recordings": {"user": {"storage_key": "recordings/7/user.wav"}},
+        },
+    )
+    storage = SimpleNamespace(adelete_file=AsyncMock(return_value=True))
+    with (
+        patch("api.routes.workflow.db_client") as db,
+        patch("api.routes.workflow.get_storage_for_backend", return_value=storage),
+    ):
+        db.get_workflow_run = AsyncMock(return_value=run)
+        db.delete_workflow_run = AsyncMock(return_value=True)
+        response = TestClient(_app()).delete("/workflow/3/runs/7")
+
+    assert response.status_code == 409
+    assert (
+        response.json()["detail"]
+        == "Workflow run artifacts are still being published"
+    )
+    storage.adelete_file.assert_not_awaited()
+    db.delete_workflow_run.assert_not_awaited()
 
 
 def test_delete_workflow_run_hides_cross_organization_and_missing_runs():

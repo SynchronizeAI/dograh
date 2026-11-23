@@ -4,6 +4,7 @@ from unittest.mock import ANY, AsyncMock, Mock, patch
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from loguru import logger as loguru_logger
 
 from api.enums import WorkflowRunMode, WorkflowRunState
 from api.errors.telephony_errors import TelephonyError
@@ -631,12 +632,19 @@ async def test_koreaaitel_webhook_replay_and_call_id_isolation(monkeypatch, repl
 
 
 @pytest.mark.asyncio
-async def test_unsigned_koreaaitel_webhook_does_not_log_caller_number(monkeypatch, caplog):
+async def test_unsigned_koreaaitel_webhook_does_not_log_caller_number(monkeypatch):
     request, _, _, _ = _setup_koreaaitel_webhook(
         monkeypatch, [], [], signature_valid=False
     )
-    assert await handle_inbound_run(request) == "invalid-signature"
-    assert "01012345678" not in caplog.text
+    log_records = []
+    sink_id = loguru_logger.add(
+        lambda message: log_records.append(message.record["message"])
+    )
+    try:
+        assert await handle_inbound_run(request) == "invalid-signature"
+    finally:
+        loguru_logger.remove(sink_id)
+    assert "01012345678" not in "\n".join(log_records)
 
 
 @pytest.mark.asyncio

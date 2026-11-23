@@ -4,11 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 from pipecat.frames.frames import (
+    AggregatedTextFrame,
     ErrorFrame,
     MetricsFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
     TTSTextFrame,
+    UserStoppedSpeakingFrame,
 )
 from pipecat.metrics.metrics import TTFBMetricsData
 from pipecat.observers.base_observer import FramePushed
@@ -280,7 +282,7 @@ async def test_turn_log_handlers_persist_user_message_added_events():
     register_turn_log_handlers(coordinator, user_aggregator, assistant_aggregator)
 
     assert "on_user_turn_message_added" in user_aggregator.handlers
-    assert "on_user_turn_stopped" not in user_aggregator.handlers
+    assert "on_user_turn_stopped" in user_aggregator.handlers
 
     logs_buffer.set_current_node("node-a", "Node A")
     await user_aggregator.handlers["on_user_turn_message_added"](
@@ -304,6 +306,46 @@ async def test_turn_log_handlers_persist_user_message_added_events():
     assert events[0]["turn"] == 1
     assert events[0]["node_id"] == "node-a"
     assert events[0]["node_name"] == "Node A"
+
+
+@pytest.mark.asyncio
+async def test_turn_stage_timestamps_are_persisted_once_with_turn_number():
+    logs = InMemoryLogsBuffer(workflow_run_id=123)
+    logs.set_current_turn(4)
+    observer = RealtimeFeedbackObserver(ws_sender=None, logs_buffer=logs)
+    user, assistant = _FakeAggregator(), _FakeAggregator()
+    register_turn_log_handlers(TranscriptLogCoordinator(logs), user, assistant, observer)
+
+    frame = UserStoppedSpeakingFrame()
+    await observer.on_push_frame(_frame_pushed(frame, FrameDirection.DOWNSTREAM))
+    await observer.on_push_frame(_frame_pushed(frame, FrameDirection.DOWNSTREAM))
+    await user.handlers["on_user_turn_stopped"](user)
+
+    events = logs.get_events()
+    assert [event["payload"]["stage"] for event in events] == [
+        "caller_stop",
+        "accepted_end_of_turn",
+    ]
+    assert all(event["type"] == "rtf-turn-latency" for event in events)
+    assert all(event["turn"] == 4 and event["timestamp"] for event in events)
+
+
+@pytest.mark.asyncio
+async def test_spoken_aggregated_sentence_marks_first_sentence_and_tts_request():
+    logs = InMemoryLogsBuffer(workflow_run_id=123)
+    logs.set_current_turn(4)
+    observer = RealtimeFeedbackObserver(ws_sender=None, logs_buffer=logs)
+    frame = AggregatedTextFrame("First sentence.", "sentence")
+    frame.will_be_spoken = True
+
+    await observer.on_push_frame(_frame_pushed(frame, FrameDirection.DOWNSTREAM))
+
+    events = logs.get_events()
+    assert [event["payload"]["stage"] for event in events] == [
+        "first_sentence_complete",
+        "tts_request",
+    ]
+    assert all(event["turn"] == 4 and event["timestamp"] for event in events)
 
 
 @pytest.mark.asyncio

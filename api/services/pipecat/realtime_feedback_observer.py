@@ -11,9 +11,8 @@ playback, so the UI text is emitted from the same clock as the spoken audio.
 Streaming vs. persisted data:
 - WebSocket receives all events in real-time (interim transcriptions, TTS text
   chunks, function calls, metrics) for live UI feedback.
-- The logs buffer only stores final complete transcripts per turn (via
-  register_turn_handlers hooking into aggregator events), function calls,
-  and metrics — not interim/streaming data.
+- The logs buffer stores final transcripts, function calls, metrics, and
+  timestamp-only turn stage events — not interim/streaming data.
 
 Note: Node transition events are sent directly from PipecatEngine.set_node()
 rather than being observed here, to ensure precise timing at the moment of
@@ -25,6 +24,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Optional
 
 from loguru import logger
+import pipecat.frames.frames as frames
 
 from api.errors.failure import (
     classify_error_frame,
@@ -75,6 +75,12 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.utils.enums import RealtimeFeedbackType
 
+_TURN_STAGE_FRAMES = (
+    (frames.UserStoppedSpeakingFrame, "caller_stop"), (TranscriptionFrame, "final_transcript"),
+    (frames.LLMContextFrame, "llm_request"), (frames.LLMTextFrame, "llm_first_token"),
+    (frames.TTSAudioRawFrame, "tts_first_audio"), (BotStartedSpeakingFrame, "audio_out"),
+)
+
 
 class RealtimeFeedbackObserver(BaseObserver):
     """Observer that sends real-time events via WebSocket and persists final transcripts.
@@ -113,6 +119,16 @@ class RealtimeFeedbackObserver(BaseObserver):
         self._selected_visit = selected_visit
         self._call_event_recorder = call_event_recorder
         self._frames_seen: set[int] = set()
+        self._turn_stages: set[tuple[int, str]] = set()
+
+    async def log_turn_stage(self, stage: str) -> None:
+        key = (self._logs_buffer.current_turn, stage) if self._logs_buffer else None
+        if key is None or key[0] is None or key in self._turn_stages:
+            return
+        self._turn_stages.add(key)
+        await self._append_to_buffer(
+            {"type": "rtf-turn-latency", "payload": {"stage": stage}}
+        )
 
     async def log_speech(self, text: str):
         """Persist speech that is intentionally excluded from assistant context."""
@@ -239,6 +255,17 @@ class RealtimeFeedbackObserver(BaseObserver):
 
         logger.trace(f"{self} Received Frame: {frame} Direction: {frame_direction}")
 
+        stage = next(
+            (name for kind, name in _TURN_STAGE_FRAMES if isinstance(frame, kind)), None
+        )
+        if stage:
+            await self.log_turn_stage(stage)
+        if isinstance(frame, TTSSpeakFrame) or (
+            isinstance(frame, frames.AggregatedTextFrame) and frame.will_be_spoken
+        ):
+            await self.log_turn_stage("first_sentence_complete")
+            await self.log_turn_stage("tts_request")
+
         if isinstance(frame, (EndFrame, CancelFrame, StopFrame, InterruptionFrame)):
             return
         # Bot speaking state - WS only (ephemeral state signals, not persisted)
@@ -269,8 +296,6 @@ class RealtimeFeedbackObserver(BaseObserver):
                     timestamp=frame.timestamp,
                 )
             )
-        # Handle user transcriptions (final) - WebSocket only
-        # Complete turn text is persisted via register_turn_handlers
         elif isinstance(frame, TranscriptionFrame):
             await self._send_ws(
                 build_user_transcription_event(
@@ -287,10 +312,6 @@ class RealtimeFeedbackObserver(BaseObserver):
         elif isinstance(frame, TTSSpeakFrame):
             if getattr(frame, "persist_to_logs", False):
                 await self.log_speech(frame.text)
-        # Handle bot TTS text after output transport timing, WebSocket only
-        # Complete turn text is persisted via register_turn_handlers,
-        # except for frames explicitly flagged persist_to_logs (e.g. recording
-        # transcripts from play_audio) which bypass the aggregator path.
         elif isinstance(frame, TTSTextFrame):
             message = build_bot_text_event(text=frame.text)
 
@@ -417,6 +438,7 @@ def register_turn_log_handlers(
     transcript_coordinator: "TranscriptLogCoordinator",
     user_aggregator,
     assistant_aggregator,
+    latency_observer: RealtimeFeedbackObserver | None = None,
 ):
     """Register event handlers on aggregators to persist final turn transcripts.
 
@@ -435,6 +457,11 @@ def register_turn_log_handlers(
             )
         except Exception as e:
             logger.error(f"Failed to coordinate user turn transcript: {e}")
+
+    @user_aggregator.event_handler("on_user_turn_stopped")
+    async def on_user_turn_stopped(_aggregator, *_args):
+        if latency_observer is not None:
+            await latency_observer.log_turn_stage("accepted_end_of_turn")
 
     @assistant_aggregator.event_handler("on_assistant_turn_stopped")
     async def on_assistant_turn_stopped(aggregator, message):

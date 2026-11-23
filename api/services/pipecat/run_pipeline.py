@@ -1409,6 +1409,7 @@ async def _run_pipeline_impl(
         transcript_log_coordinator,
         user_context_aggregator,
         assistant_context_aggregator,
+        latency_observer=feedback_observer,
     )
 
     # Register event handlers — resolve provider_id for PostHog tracking

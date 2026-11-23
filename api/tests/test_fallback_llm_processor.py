@@ -844,6 +844,78 @@ async def test_committed_ttfat_measures_ttfb_from_the_commit(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("index", [0, 1], ids=["primary", "backup"])
+async def test_speculative_metrics_buffered_before_commit_are_rebased(
+    harness, monkeypatch, index
+):
+    from pipecat.frames.frames import UserStoppedSpeakingFrame
+
+    now = [100.3]
+    monkeypatch.setattr(
+        fallback_llm,
+        "time",
+        SimpleNamespace(monotonic=lambda: now[0]),
+    )
+    race = fallback_llm._Race(started=100.0)
+    attempt = fallback_llm._Attempt(
+        index=index, race=race, task=asyncio.current_task()
+    )
+    race.attempts.append(attempt)
+    harness.llm._latest[index] = attempt
+    harness.llm._active_race = race
+    harness.llm._speculation_gate.begin_speculation(True)
+
+    token = fallback_llm._attempt.set(attempt)
+    try:
+        ttfb = TTFBMetricsData(processor="test", model="gemini", value=0)
+        await harness.llm._receive(
+            index, MetricsFrame(data=[ttfb]), FrameDirection.DOWNSTREAM
+        )
+        now[0] = 100.4
+        ttfat = TTFATMetricsData(
+            processor="test",
+            model="gemini",
+            ttfb=0.3,
+            ttfat=0,
+            thinking_time=0,
+        )
+        await harness.llm._receive(
+            index, MetricsFrame(data=[ttfat]), FrameDirection.DOWNSTREAM
+        )
+    finally:
+        fallback_llm._attempt.reset(token)
+
+    token = fallback_llm._attempt.set(attempt)
+    try:
+        await harness.llm._receive(
+            index, LLMTextFrame(text="answer"), FrameDirection.DOWNSTREAM
+        )
+    finally:
+        fallback_llm._attempt.reset(token)
+    now[0] = 100.5
+    await control(harness, UserStoppedSpeakingFrame())
+    await harness.llm._flush_output()
+
+    emitted_metrics = [
+        data
+        for frame in harness.downstream.frames
+        if isinstance(frame, MetricsFrame)
+        for data in frame.data
+    ]
+    assert ttfb in emitted_metrics
+    assert ttfat in emitted_metrics
+    assert ttfb.value == pytest.approx(0)
+    assert ttfat.ttfat == pytest.approx(0)
+    assert ttfat.ttfb == pytest.approx(0)
+    assert ttfat.thinking_time == pytest.approx(0)
+    assert [
+        frame.text
+        for frame in harness.downstream.frames
+        if isinstance(frame, LLMTextFrame)
+    ] == ["answer"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("use_backup", [False, True], ids=["primary", "backup"])
 async def test_speculative_tools_cancel_both_directions_without_execution(
     harness, monkeypatch, use_backup

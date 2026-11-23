@@ -725,6 +725,7 @@ def create_single_stt_service(
                 settings=DeepgramFluxSTTSettings(**settings_kwargs),
                 should_interrupt=False,  # Let UserAggregator take care of sending InterruptionFrame
                 sample_rate=audio_config.transport_in_sample_rate,
+                mip_opt_out=True,  # Keep caller audio out of Deepgram model training.
                 **eager_kwargs,
             )
 
@@ -743,6 +744,7 @@ def create_single_stt_service(
             ),
             should_interrupt=False,  # Let UserAggregator take care of sending InterruptionFrame
             sample_rate=audio_config.transport_in_sample_rate,
+            mip_opt_out=True,
         )
     elif user_config.stt.provider == ServiceProviders.OPENAI.value:
         kwargs = {}

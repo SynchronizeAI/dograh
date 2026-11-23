@@ -494,7 +494,20 @@ class PipecatEngine:
                 # Set context for the new node, so that when the function call result
                 # frame is received by LLMContextAggregator and an LLM generation
                 # is done, we have updated context and functions
-                await self.set_node(transition_to_node, origin_visit_id=agent.visit_id)
+                transitioned = await self.set_node(
+                    transition_to_node,
+                    origin_visit_id=agent.visit_id,
+                    expected_source_node=source_node,
+                )
+                if transitioned is False:
+                    await function_call_params.result_callback(
+                        {
+                            "status": "error",
+                            "error": "Transition is no longer available",
+                        },
+                        properties=FunctionCallResultProperties(run_llm=False),
+                    )
+                    return
 
                 next_node = agent.workflow.nodes[transition_to_node]
                 is_end_node = next_node.is_end
@@ -1044,7 +1057,8 @@ class PipecatEngine:
         emit_transition_event: bool = True,
         *,
         origin_visit_id: Optional[str] = None,
-    ):
+        expected_source_node: Node | None = None,
+    ) -> bool:
         """
         Simplified set_node implementation according to v2 PRD.
 
@@ -1055,6 +1069,8 @@ class PipecatEngine:
                 from a visit that no longer owns the call is rejected: a tool
                 call that landed just as a handoff committed must not move the
                 new agent to a node id from the old agent's graph.
+            expected_source_node: The node that must still own the transition
+                when it commits.
         """
         agent = self._active_agent
         if origin_visit_id is not None and origin_visit_id != agent.visit_id:
@@ -1062,7 +1078,12 @@ class PipecatEngine:
                 f"Rejecting node change from retired visit {origin_visit_id}; "
                 f"{agent.visit_id} owns the call"
             )
-            return
+            return False
+        if (
+            expected_source_node is not None
+            and agent.current_node is not expected_source_node
+        ):
+            return False
 
         node = self.active_agent.workflow.nodes[node_id]
 
@@ -1118,6 +1139,7 @@ class PipecatEngine:
         # to clean up tool calls from previous nodes
         if previous_node_id is not None and self._context_summarization_manager:
             await self._context_summarization_manager.start()
+        return True
 
     async def _handle_start_node(self, node: Node) -> None:
         """Set up context immediately; the answer supervisor owns initial listening."""

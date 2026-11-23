@@ -47,7 +47,7 @@ class GeminiPromptCacheMixin:
                     system_instruction=system_instruction,
                     tools=tools,
                     tool_config=tool_config,
-                    ttl="3600s",
+                    ttl="1260s",
                 ),
             )
         except Exception as exc:  # noqa: BLE001 - cache failure must preserve the uncached path

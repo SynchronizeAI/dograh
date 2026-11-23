@@ -190,3 +190,41 @@ class S3FileSystem(BaseFileSystem):
             return True
         except ClientError:
             return False
+
+    async def adelete_file(self, file_path: str) -> bool:
+        try:
+            async with self.session.client("s3", **self._client_kwargs()) as s3_client:
+                await s3_client.delete_object(Bucket=self.bucket_name, Key=file_path)
+            return True
+        except ClientError:
+            return False
+
+    async def adelete_prefix(self, prefix: str) -> bool:
+        if not prefix:
+            return False
+        try:
+            async with self.session.client("s3", **self._client_kwargs()) as s3_client:
+                continuation_token = None
+                while True:
+                    request = {"Bucket": self.bucket_name, "Prefix": prefix}
+                    if continuation_token:
+                        request["ContinuationToken"] = continuation_token
+                    page = await s3_client.list_objects_v2(**request)
+                    objects = [
+                        {"Key": item["Key"]}
+                        for item in page.get("Contents") or []
+                    ]
+                    if objects:
+                        result = await s3_client.delete_objects(
+                            Bucket=self.bucket_name,
+                            Delete={"Objects": objects, "Quiet": True},
+                        )
+                        if result.get("Errors"):
+                            return False
+                    if not page.get("IsTruncated"):
+                        return True
+                    continuation_token = page.get("NextContinuationToken")
+                    if not continuation_token:
+                        return False
+        except ClientError:
+            return False

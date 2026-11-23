@@ -208,3 +208,29 @@ class MinioFileSystem(BaseFileSystem):
             return True
         except S3Error:
             return False
+
+    async def adelete_file(self, file_path: str) -> bool:
+        try:
+            await asyncio.to_thread(
+                self.client.remove_object, self.bucket_name, file_path
+            )
+            return True
+        except S3Error:
+            return False
+
+    async def adelete_prefix(self, prefix: str) -> bool:
+        if not prefix:
+            return False
+
+        def _delete_prefix():
+            try:
+                for obj in self.client.list_objects(
+                    self.bucket_name, prefix=prefix, recursive=True
+                ):
+                    if obj.object_name:
+                        self.client.remove_object(self.bucket_name, obj.object_name)
+                return True
+            except S3Error:
+                return False
+
+        return await asyncio.to_thread(_delete_prefix)

@@ -40,6 +40,7 @@ from api.services.pipecat.google_credentials import (
     get_google_credentials,
     prepare_google_credentials,
 )
+from api.services.pipecat.korean_sentence_aggregator import KoreanSentenceAggregator
 from api.services.pipecat.murf_tts import MurfTTSService
 from api.services.pipecat.openai_spoken_tool_calls import OpenAISpokenToolCallMixin
 from api.services.pipecat.spoken_tool_calls import SpokenToolCallMixin
@@ -1517,6 +1518,10 @@ def create_tts_service(
         organization_id=organization_id,
         tts_cache_enabled=tts_cache_enabled,
     )
+    speech_language = getattr(user_config.tts, "language", None) or getattr(
+        getattr(user_config, "stt", None), "language", None
+    )
+    _enable_korean_sentence_aggregation(primary, speech_language)
     policy = getattr(user_config, "tts_fallback", None)
     if policy is None or not policy.rules:
         return primary
@@ -1530,6 +1535,7 @@ def create_tts_service(
             tts_cache_enabled=tts_cache_enabled,
             register_campaign_errors=False,
         )
+        _enable_korean_sentence_aggregation(backup, speech_language)
     except Exception as exc:
         logger.warning(
             f"TTS fallback backup could not be constructed ({type(exc).__name__}); "
@@ -1537,6 +1543,11 @@ def create_tts_service(
         )
         return primary
     return FallbackTTSService(primary, backup)
+
+
+def _enable_korean_sentence_aggregation(service, language: str | None) -> None:
+    if language and language.lower().startswith("ko"):
+        service._text_aggregator = KoreanSentenceAggregator(language=language)
 
 
 def _migrate_deprecated_google_model(model: str) -> str:

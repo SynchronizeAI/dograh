@@ -12,6 +12,26 @@ from api.services.filesystem.minio import MinioFileSystem
 from api.services.filesystem.s3 import S3FileSystem
 
 
+class _PrefixDeleteLocalFileSystem(LocalFileSystem):
+    async def acopy_file(self, source_path, destination_path):
+        raise NotImplementedError
+
+    async def adownload_file(self, source_path, local_path):
+        raise NotImplementedError
+
+    async def aget_file_metadata(self, file_path):
+        raise NotImplementedError
+
+    async def aget_presigned_put_url(
+        self,
+        file_path,
+        expiration=900,
+        content_type="text/csv",
+        max_size=10_485_760,
+    ):
+        raise NotImplementedError
+
+
 def _app(authenticated=True):
     app = FastAPI()
     app.include_router(router)
@@ -169,7 +189,7 @@ def test_local_filesystem_deletes_only_the_requested_prefix(tmp_path):
     sibling_file.parent.mkdir(parents=True)
     run_file.write_bytes(b"run")
     sibling_file.write_bytes(b"sibling")
-    storage = LocalFileSystem(str(storage_root))
+    storage = _PrefixDeleteLocalFileSystem(str(storage_root))
 
     assert asyncio.run(storage.adelete_prefix("recordings/7/"))
     assert not run_file.exists()

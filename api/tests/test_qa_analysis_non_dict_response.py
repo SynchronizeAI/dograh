@@ -12,21 +12,56 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from api.services.workflow.qa import analysis as qa_analysis
 
 
+def test_qa_response_schema_requires_the_rubric_shape():
+    validator = Draft202012Validator(qa_analysis._QA_RESPONSE_SCHEMA)
+    valid_result = {
+        "tags": [{"tag": "USER_FRUSTRATED", "reason": "Caller complained."}],
+        "call_quality_score": 6,
+        "overall_sentiment": "negative",
+        "summary": "The caller was frustrated.",
+    }
+
+    assert validator.is_valid(valid_result)
+    assert not validator.is_valid({})
+    assert not validator.is_valid({**valid_result, "call_quality_score": None})
+    assert not validator.is_valid({**valid_result, "overall_sentiment": "mixed"})
+    assert not validator.is_valid(
+        {**valid_result, "tags": ["USER_FRUSTRATED"]}
+    )
+
+
 @pytest.mark.asyncio
-async def test_qa_inference_requests_structured_output_for_invalid_json_text():
+async def test_qa_inference_passes_requested_schema_for_invalid_json_text():
     llm = AsyncMock()
     llm.run_inference.return_value = r'{"summary":"bad \\uXXXX escape"}'
 
-    response = await qa_analysis._run_llm_inference(llm, [], "prompt")
+    response = await qa_analysis._run_llm_inference(
+        llm, [], "prompt", response_schema=qa_analysis._QA_RESPONSE_SCHEMA
+    )
 
     assert response == r'{"summary":"bad \\uXXXX escape"}'
     assert llm.run_inference.call_args.kwargs["response_schema"] == (
         qa_analysis._QA_RESPONSE_SCHEMA
     )
+
+
+@pytest.mark.asyncio
+async def test_conversation_summary_inference_omits_qa_response_schema():
+    llm = AsyncMock()
+    llm.run_inference.return_value = "Summary of the conversation."
+
+    with patch.object(qa_analysis, "add_qa_span_to_trace"):
+        summary = await qa_analysis._generate_conversation_summary(
+            llm, "gpt-4o", "user: hello", None, "Next node"
+        )
+
+    assert summary == "Summary of the conversation."
+    assert "response_schema" not in llm.run_inference.call_args.kwargs
 
 
 @pytest.mark.asyncio
@@ -44,6 +79,7 @@ async def test_whole_call_qa_tolerates_array_llm_response():
     )
     warning_mock = Mock()
     llm = object()
+    inference_mock = AsyncMock(return_value='["tag1", "tag2"]')
 
     with (
         patch.object(
@@ -59,7 +95,7 @@ async def test_whole_call_qa_tolerates_array_llm_response():
         patch.object(
             qa_analysis,
             "_run_llm_inference",
-            new=AsyncMock(return_value='["tag1", "tag2"]'),
+            new=inference_mock,
         ),
         patch.object(qa_analysis, "setup_langfuse_parent_context", return_value=None),
         patch.object(qa_analysis, "add_qa_span_to_trace", return_value=None),
@@ -71,6 +107,9 @@ async def test_whole_call_qa_tolerates_array_llm_response():
             qa_data, workflow_run, workflow_run_id=99
         )
 
+    assert inference_mock.await_args.kwargs["response_schema"] == (
+        qa_analysis._QA_RESPONSE_SCHEMA
+    )
     node_result = result["node_results"]["whole_call"]
     assert node_result["tags"] == []
     assert node_result["summary"] == ""

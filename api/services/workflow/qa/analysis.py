@@ -38,12 +38,27 @@ _QA_LLM_ATTEMPTS = 3
 _QA_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
-        "tags": {"type": "array", "items": {"type": "string"}},
-        "call_quality_score": {"type": ["number", "null"]},
-        "overall_sentiment": {"type": "string"},
+        "tags": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "tag": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["tag", "reason"],
+                "additionalProperties": False,
+            },
+        },
+        "call_quality_score": {"type": "number", "minimum": 1, "maximum": 10},
+        "overall_sentiment": {
+            "type": "string",
+            "enum": ["positive", "neutral", "negative"],
+        },
         "summary": {"type": "string"},
     },
-    "additionalProperties": True,
+    "required": ["tags", "call_quality_score", "overall_sentiment", "summary"],
+    "additionalProperties": False,
 }
 
 
@@ -52,6 +67,7 @@ async def _run_llm_inference(
     messages: list[dict],
     system_prompt: str,
     *,
+    response_schema: dict[str, Any] | None = None,
     workflow_run_id: int | None = None,
     failure_log_level: str = "ERROR",
 ) -> str | None:
@@ -66,11 +82,10 @@ async def _run_llm_inference(
     context.set_messages(messages)
     for attempt in range(1, _QA_LLM_ATTEMPTS + 1):
         try:
-            return await llm.run_inference(
-                context,
-                system_instruction=system_prompt,
-                response_schema=_QA_RESPONSE_SCHEMA,
-            )
+            inference_kwargs: dict[str, Any] = {"system_instruction": system_prompt}
+            if response_schema is not None:
+                inference_kwargs["response_schema"] = response_schema
+            return await llm.run_inference(context, **inference_kwargs)
         except Exception as exc:
             metadata = failure_metadata_for_processor(llm)
             failure = classify_exception(
@@ -235,7 +250,11 @@ async def run_per_node_qa_analysis(
         # Call QA LLM
         try:
             raw_response = await _run_llm_inference(
-                llm, messages, system_content, workflow_run_id=workflow_run_id
+                llm,
+                messages,
+                system_content,
+                response_schema=_QA_RESPONSE_SCHEMA,
+                workflow_run_id=workflow_run_id,
             )
         except Exception as e:
             logger.warning(
@@ -348,7 +367,11 @@ async def _run_whole_call_qa_analysis(
 
     try:
         raw_response = await _run_llm_inference(
-            llm, messages, system_content, workflow_run_id=workflow_run_id
+            llm,
+            messages,
+            system_content,
+            response_schema=_QA_RESPONSE_SCHEMA,
+            workflow_run_id=workflow_run_id,
         )
     except Exception as e:
         logger.warning(f"QA analysis degraded for run {workflow_run_id}: {e}")

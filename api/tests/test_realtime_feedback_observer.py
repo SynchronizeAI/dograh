@@ -11,8 +11,6 @@ from pipecat.frames.frames import (
     FunctionCallInProgressFrame,
     InterruptionFrame,
     LLMContextFrame,
-    LLMFullResponseEndFrame,
-    LLMFullResponseStartFrame,
     LLMTextFrame,
     MetricsFrame,
     TTSAudioRawFrame,
@@ -33,6 +31,7 @@ from websockets.datastructures import Headers
 from websockets.exceptions import InvalidStatus
 from websockets.http11 import Response
 
+from api.services.pipecat.agent_bridge import AgentWorker
 from api.services.pipecat.in_memory_buffers import InMemoryLogsBuffer
 from api.services.pipecat.realtime_feedback_observer import (
     RealtimeFeedbackObserver,
@@ -447,7 +446,7 @@ async def test_spoken_aggregated_sentence_marks_first_sentence_and_tts_request()
 
 
 @pytest.mark.asyncio
-async def test_response_stages_keep_their_turn_across_barge_in():
+async def test_unattributed_cascade_response_stages_are_skipped():
     logs = InMemoryLogsBuffer(workflow_run_id=123)
     coordinator = TranscriptLogCoordinator(logs)
     turn_observer = _FakeAggregator()
@@ -455,103 +454,37 @@ async def test_response_stages_keep_their_turn_across_barge_in():
     observer = RealtimeFeedbackObserver(ws_sender=None, logs_buffer=logs)
     user, assistant = _FakeAggregator(), _FakeAggregator()
     register_turn_log_handlers(coordinator, user, assistant, observer)
-    response_source = SimpleNamespace(pipeline_worker=SimpleNamespace())
+    call_source = SimpleNamespace(pipeline_worker=SimpleNamespace())
+    child_source = SimpleNamespace(pipeline_worker=object.__new__(AgentWorker))
 
     await turn_observer.handlers["on_turn_started"](turn_observer, 1)
     await observer.on_push_frame(
         _frame_pushed(
             LLMContextFrame(LLMContext()),
             FrameDirection.DOWNSTREAM,
-            source=response_source,
+            source=call_source,
         )
     )
-    await turn_observer.handlers["on_turn_ended"](turn_observer, 1, 1.0, True)
     await turn_observer.handlers["on_turn_started"](turn_observer, 2)
 
-    await observer.on_push_frame(
-        _frame_pushed(
-            LLMContextFrame(LLMContext()),
-            FrameDirection.DOWNSTREAM,
-            source=response_source,
+    sentence = AggregatedTextFrame("The previous answer.", "sentence")
+    sentence.will_be_spoken = True
+    for frame in (
+        LLMTextFrame("The previous answer."),
+        sentence,
+        TTSSpeakFrame("The previous answer.", append_to_context=False),
+        TTSAudioRawFrame(b"\x00\x00", 16000, 1),
+    ):
+        await observer.on_push_frame(
+            _frame_pushed(
+                frame,
+                FrameDirection.DOWNSTREAM,
+                source=child_source,
+            )
         )
-    )
-    await observer.on_push_frame(
-        _frame_pushed(
-            LLMFullResponseStartFrame(),
-            FrameDirection.DOWNSTREAM,
-            source=response_source,
-        )
-    )
-    await observer.on_push_frame(
-        _frame_pushed(
-            LLMTextFrame("The previous answer."),
-            FrameDirection.DOWNSTREAM,
-            source=response_source,
-        )
-    )
-    old_sentence = AggregatedTextFrame("The previous answer.", "sentence")
-    old_sentence.will_be_spoken = True
-    await observer.on_push_frame(
-        _frame_pushed(
-            old_sentence,
-            FrameDirection.DOWNSTREAM,
-            source=response_source,
-        )
-    )
-    await observer.on_push_frame(
-        _frame_pushed(
-            TTSAudioRawFrame(b"\x00\x00", 16000, 1),
-            FrameDirection.DOWNSTREAM,
-            source=response_source,
-        )
-    )
+
     await turn_observer.handlers["on_bot_started_speaking"](
         turn_observer, 1, None
-    )
-    await observer.on_push_frame(
-        _frame_pushed(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-    )
-
-    await observer.on_push_frame(
-        _frame_pushed(
-            LLMFullResponseEndFrame(),
-            FrameDirection.DOWNSTREAM,
-            source=response_source,
-        )
-    )
-    await observer.on_push_frame(
-        _frame_pushed(
-            LLMFullResponseStartFrame(),
-            FrameDirection.DOWNSTREAM,
-            source=response_source,
-        )
-    )
-    await observer.on_push_frame(
-        _frame_pushed(
-            LLMTextFrame("The current answer."),
-            FrameDirection.DOWNSTREAM,
-            source=response_source,
-        )
-    )
-    await observer.on_push_frame(
-        _frame_pushed(
-            TTSSpeakFrame("The current answer.", append_to_context=False),
-            FrameDirection.DOWNSTREAM,
-            source=response_source,
-        )
-    )
-    await observer.on_push_frame(
-        _frame_pushed(
-            TTSAudioRawFrame(b"\x00\x00", 16000, 1),
-            FrameDirection.DOWNSTREAM,
-            source=response_source,
-        )
-    )
-    await turn_observer.handlers["on_bot_started_speaking"](
-        turn_observer, 2, None
-    )
-    await observer.on_push_frame(
-        _frame_pushed(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
     )
 
     stage_events = [
@@ -560,6 +493,7 @@ async def test_response_stages_keep_their_turn_across_barge_in():
         if event["type"] == "rtf-turn-latency"
         and event["payload"]["stage"]
         in {
+            "llm_request",
             "llm_first_token",
             "first_sentence_complete",
             "tts_request",
@@ -570,18 +504,7 @@ async def test_response_stages_keep_their_turn_across_barge_in():
     assert [
         (event["payload"]["stage"], event["turn"])
         for event in stage_events
-    ] == [
-        ("llm_first_token", 1),
-        ("first_sentence_complete", 1),
-        ("tts_request", 1),
-        ("tts_first_audio", 1),
-        ("audio_out", 1),
-        ("llm_first_token", 2),
-        ("first_sentence_complete", 2),
-        ("tts_request", 2),
-        ("tts_first_audio", 2),
-        ("audio_out", 2),
-    ]
+    ] == [("llm_request", 1), ("audio_out", 1)]
 
 
 @pytest.mark.asyncio

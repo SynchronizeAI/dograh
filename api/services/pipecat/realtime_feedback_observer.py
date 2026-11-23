@@ -124,8 +124,6 @@ class RealtimeFeedbackObserver(BaseObserver):
         self._frames_seen: set[int] = set()
         self._turn_stages: set[tuple[int, str]] = set()
         self._pending_llm_first_token: tuple[int, str] | None = None
-        self._pending_response_turns: dict[int | None, list[int | None]] = {}
-        self._active_response_turns: dict[int | None, int | None] = {}
 
     async def log_turn_stage(
         self, stage: str, *, timestamp: str | None = None, turn: int | None = None
@@ -144,10 +142,6 @@ class RealtimeFeedbackObserver(BaseObserver):
             timestamp=timestamp,
             turn=turn_id,
         )
-
-    def _response_scope_key(self, source) -> int | None:
-        worker = getattr(source, "pipeline_worker", None)
-        return id(worker) if worker is not None else None
 
     def _remember_llm_first_token(self, turn: int | None = None) -> None:
         if self._logs_buffer is None:
@@ -318,52 +312,32 @@ class RealtimeFeedbackObserver(BaseObserver):
 
         logger.trace(f"{self} Received Frame: {frame} Direction: {frame_direction}")
 
-        response_scope = self._response_scope_key(source)
-        if isinstance(frame, frames.LLMFullResponseStartFrame):
-            pending = self._pending_response_turns.get(response_scope)
-            if pending:
-                response_turn = pending.pop(0)
-                if not pending:
-                    self._pending_response_turns.pop(response_scope, None)
-            else:
-                response_turn = (
-                    self._logs_buffer.current_turn if self._logs_buffer else None
-                )
-            self._active_response_turns[response_scope] = response_turn
-        elif isinstance(frame, frames.LLMFullResponseEndFrame):
-            self._active_response_turns.pop(response_scope, None)
+        cascade_output = isinstance(
+            getattr(source, "pipeline_worker", None), AgentWorker
+        )
 
         stage = next(
             (name for kind, name in _TURN_STAGE_FRAMES if isinstance(frame, kind)), None
         )
         if stage:
-            if stage == "llm_request":
-                response_turn = (
-                    self._logs_buffer.current_turn if self._logs_buffer else None
-                )
-                if self._logs_buffer is not None:
-                    self._pending_response_turns.setdefault(response_scope, []).append(
-                        response_turn
-                    )
-                await self.log_turn_stage(stage, turn=response_turn)
-            elif stage == "tts_first_audio":
-                await self.log_turn_stage(
-                    stage, turn=self._active_response_turns.get(response_scope)
-                )
-            else:
+            if stage != "tts_first_audio" or not cascade_output:
                 await self.log_turn_stage(stage)
-        if isinstance(frame, frames.LLMTextFrame) and frame.text.strip():
-            self._remember_llm_first_token(
-                self._active_response_turns.get(response_scope)
-            )
+        if (
+            not cascade_output
+            and isinstance(frame, frames.LLMTextFrame)
+            and frame.text.strip()
+        ):
+            self._remember_llm_first_token()
         if isinstance(frame, BotStartedSpeakingFrame):
             await self._commit_llm_first_token()
-        if isinstance(frame, TTSSpeakFrame) or (
-            isinstance(frame, frames.AggregatedTextFrame) and frame.will_be_spoken
+        if not cascade_output and (
+            isinstance(frame, TTSSpeakFrame)
+            or (
+                isinstance(frame, frames.AggregatedTextFrame) and frame.will_be_spoken
+            )
         ):
-            response_turn = self._active_response_turns.get(response_scope)
-            await self.log_turn_stage("first_sentence_complete", turn=response_turn)
-            await self.log_turn_stage("tts_request", turn=response_turn)
+            await self.log_turn_stage("first_sentence_complete")
+            await self.log_turn_stage("tts_request")
 
         if isinstance(
             frame,

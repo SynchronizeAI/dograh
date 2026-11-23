@@ -356,7 +356,7 @@ async def _detect_provider(webhook_data: dict, headers: dict):
         if provider_class.can_handle_webhook(webhook_data, headers):
             return provider_class
 
-    logger.warning(f"No provider found for webhook data: {webhook_data.keys()}")
+    logger.warning("No provider found for webhook")
     return None
 
 
@@ -820,9 +820,7 @@ async def handle_inbound_run(request: Request):
 
         normalized_data = normalize_webhook_data(provider_class, webhook_data, headers)
         if normalized_data.direction != "inbound":
-            logger.warning(
-                f"Non-inbound webhook on /inbound/run from {provider_class.PROVIDER_NAME}"
-            )
+            logger.warning("Non-inbound webhook on /inbound/run")
             return generic_hangup_response()
 
         # 1. Resolve (config, phone_number) in a single SQL roundtrip that
@@ -911,6 +909,7 @@ async def handle_inbound_run(request: Request):
                 normalized_data.call_id,
                 organization_id=config.organization_id,
                 mode=provider_class.PROVIDER_NAME,
+                telephony_configuration_id=telephony_configuration_id,
             )
             if existing_run:
                 backend_endpoint, wss_backend_endpoint = await get_backend_endpoints()
@@ -1071,7 +1070,7 @@ async def handle_inbound_telephony(
 
         # Validate inbound direction
         if normalized_data.direction != "inbound":
-            logger.warning(f"Non-inbound call received: {normalized_data.direction}")
+            logger.warning("Non-inbound call received")
             return generic_hangup_response()
 
         (

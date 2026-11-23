@@ -621,6 +621,10 @@ async def test_koreaaitel_webhook_replay_and_call_id_isolation(monkeypatch, repl
         for call in db.get_workflow_run_by_call_id.await_args_list
     ] == [11, 11]
     assert [
+        call.kwargs["telephony_configuration_id"]
+        for call in db.get_workflow_run_by_call_id.await_args_list
+    ] == [55, 55]
+    assert [
         call.kwargs["workflow_run_id"]
         for call in provider.start_inbound_stream.await_args_list
     ] == ([999, 999] if replay else [999, 1000])
@@ -671,6 +675,7 @@ async def test_koreaaitel_run_log_redacts_caller_but_context_keeps_it(monkeypatc
 
     stored = create_run.await_args.kwargs
     assert stored["initial_context"]["caller_number"] == "01012345678"
+    assert stored["initial_context"]["telephony_configuration_id"] == 55
     raw_webhook_data = stored["logs"]["inbound_webhook"]["raw_webhook_data"]
     assert not {"From", "ForwardedFrom", "To"} & raw_webhook_data.keys()
     assert raw_webhook_data["CallId"] == "CA1"
@@ -744,6 +749,55 @@ async def test_legacy_koreaaitel_reject_does_not_log_unverified_identifiers(monk
     )
     assert all(identifier not in messages for identifier in identifiers)
     provider.verify_inbound_signature.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_legacy_non_inbound_direction_is_not_logged(monkeypatch):
+    import api.routes.telephony as routes
+
+    direction = "forged-direction-value"
+    logger = Mock()
+    provider_class = SimpleNamespace(PROVIDER_NAME="koreaaitel")
+    monkeypatch.setattr(routes, "logger", logger)
+    monkeypatch.setattr(
+        routes,
+        "parse_webhook_request",
+        AsyncMock(return_value=({"Direction": direction}, "raw-body")),
+    )
+    monkeypatch.setattr(
+        routes, "_detect_provider", AsyncMock(return_value=provider_class)
+    )
+    monkeypatch.setattr(
+        routes,
+        "normalize_webhook_data",
+        Mock(return_value=SimpleNamespace(direction=direction)),
+    )
+    monkeypatch.setattr(
+        routes, "generic_hangup_response", Mock(return_value="hangup")
+    )
+
+    request = SimpleNamespace(headers={}, url="https://api.example.test/inbound/33")
+    assert await handle_inbound_telephony(33, request) == "hangup"
+
+    logger.warning.assert_called_once_with("Non-inbound call received")
+    assert direction not in repr(logger.mock_calls)
+
+
+@pytest.mark.asyncio
+async def test_unknown_provider_detection_does_not_log_webhook_keys(monkeypatch):
+    import api.routes.telephony as routes
+
+    untrusted_key = "account-identifier-as-field-name"
+    logger = Mock()
+    monkeypatch.setattr(routes, "logger", logger)
+    monkeypatch.setattr(
+        routes, "get_all_telephony_providers", AsyncMock(return_value=[])
+    )
+
+    assert await routes._detect_provider({untrusted_key: "value"}, {}) is None
+
+    logger.warning.assert_called_once_with("No provider found for webhook")
+    assert untrusted_key not in repr(logger.mock_calls)
 
 
 @pytest.mark.asyncio

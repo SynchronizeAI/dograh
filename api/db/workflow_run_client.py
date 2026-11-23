@@ -631,15 +631,16 @@ class WorkflowRunClient(BaseDBClient):
     async def get_workflow_run_by_call_id(
         self,
         call_id: str,
-        organization_id: int,
         mode: str | None = None,
+        *,
+        organization_id: int | None = None,
         telephony_configuration_id: int | None = None,
     ) -> Optional[WorkflowRunModel]:
         """Find workflow run by call_id stored in gathered_context.
 
         Args:
             call_id: The telephony call ID to search for
-            organization_id: The owning organization of the call
+            organization_id: Optional owning organization of the call
             telephony_configuration_id: Optional provider account that owns the call
 
         Returns:
@@ -648,7 +649,11 @@ class WorkflowRunClient(BaseDBClient):
         async with self.async_session() as session:
             # Use JSON text extraction to find matching call_id
             # This leverages the idx_workflow_runs_call_id index
-            filters = [WorkflowModel.organization_id == organization_id]
+            filters = (
+                [WorkflowModel.organization_id == organization_id]
+                if organization_id is not None
+                else []
+            )
             if mode:
                 filters.append(WorkflowRunModel.mode == mode)
             if telephony_configuration_id is not None:

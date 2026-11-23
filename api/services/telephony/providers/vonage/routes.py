@@ -12,7 +12,6 @@ from pipecat.utils.run_context import set_current_run_id
 
 from api.db import db_client
 from api.services.telephony.factory import get_telephony_provider_for_run
-from api.services.telephony.providers.vonage.provider import VonageProvider
 
 router = APIRouter()
 
@@ -117,25 +116,8 @@ async def handle_vonage_events_without_run(request: Request):
     """Handle application-level events by resolving the run from call UUID."""
     event_data, _ = await _read_json_body(request)
     call_id = event_data.get("uuid")
-    claims = VonageProvider._decode_unverified_signed_claims(dict(request.headers))
-    credentials = {
-        key: str(claims[key])
-        for key in ("application_id", "api_key")
-        if claims.get(key)
-    }
-    configuration = (
-        await db_client.get_unique_active_telephony_configuration_by_credentials(
-            VonageProvider.PROVIDER_NAME, credentials
-        )
-        if credentials
-        else None
-    )
-    if call_id and configuration:
-        workflow_run = await db_client.get_workflow_run_by_call_id(
-            call_id,
-            organization_id=configuration.organization_id,
-            mode=VonageProvider.PROVIDER_NAME,
-        )
+    if call_id:
+        workflow_run = await db_client.get_workflow_run_by_call_id(call_id)
         if workflow_run:
             return await _handle_vonage_event_request(request, workflow_run.id)
 

@@ -269,11 +269,7 @@ async def handle_vobiz_hangup_callback_by_workflow(
         return {"status": "error", "message": "workflow_not_found"}
 
     try:
-        workflow_run = await db_client.get_workflow_run_by_call_id(
-            call_uuid,
-            organization_id=workflow.organization_id,
-            mode="vobiz",
-        )
+        workflow_run = await db_client.get_workflow_run_by_call_id(call_uuid)
     except Exception as e:
         logger.error(
             f"[workflow {workflow_id}] Error finding workflow run for call {call_uuid}: {e}"

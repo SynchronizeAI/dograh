@@ -13,7 +13,6 @@ from pipecat.utils.run_context import set_current_run_id
 from api.db import db_client
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
 from api.services.telephony.factory import get_telephony_provider_for_run
-from api.services.telephony.providers.cloudonix.config import normalize_cloudonix_domain
 from api.services.telephony.providers.cloudonix.provider import CloudonixProvider
 from api.services.telephony.status_processor import (
     StatusCallbackRequest,
@@ -204,24 +203,8 @@ async def handle_cloudonix_cdr(request: Request):
         logger.warning("Cloudonix CDR missing call_id field")
         return {"status": "error", "message": "Missing call_id field"}
 
-    domain = normalize_cloudonix_domain(domain) if isinstance(domain, str) else None
-    configuration = (
-        await db_client.get_unique_active_telephony_configuration_by_credentials(
-            CloudonixProvider.PROVIDER_NAME, {"domain_id": domain}
-        )
-        if domain
-        else None
-    )
-    if not configuration:
-        logger.warning("No Cloudonix configuration found for CDR domain")
-        return {"status": "ignored", "reason": "telephony_configuration_not_found"}
-
     # Find workflow run by call_id in gathered_context
-    workflow_run = await db_client.get_workflow_run_by_call_id(
-        call_id,
-        organization_id=configuration.organization_id,
-        mode=CloudonixProvider.PROVIDER_NAME,
-    )
+    workflow_run = await db_client.get_workflow_run_by_call_id(call_id)
     if not workflow_run:
         logger.warning(f"No workflow run found for Cloudonix call_id: {call_id}")
         return {"status": "ignored", "reason": "workflow_run_not_found"}

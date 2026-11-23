@@ -181,28 +181,6 @@ class TelephonyConfigurationClient(BaseDBClient):
             )
             return list(result.scalars().all())
 
-    async def get_unique_active_telephony_configuration_by_credentials(
-        self, provider: str, credentials: Dict[str, str]
-    ) -> Optional[TelephonyConfigurationModel]:
-        """Resolve one active provider configuration from its external identity."""
-        if not credentials:
-            return None
-
-        filters = [
-            TelephonyConfigurationModel.provider == provider,
-            TelephonyConfigurationModel.inactive.is_(False),
-            *[
-                TelephonyConfigurationModel.credentials.op("->>")(key) == value
-                for key, value in credentials.items()
-            ],
-        ]
-        async with self.async_session() as session:
-            result = await session.execute(
-                select(TelephonyConfigurationModel).where(*filters).limit(2)
-            )
-            rows = result.scalars().all()
-            return rows[0] if len(rows) == 1 else None
-
     async def list_active_whatsapp_configurations_by_waba_id(
         self, waba_id: str
     ) -> list[TelephonyConfigurationModel]:

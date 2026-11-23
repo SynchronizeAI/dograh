@@ -146,44 +146,6 @@ async def test_agent_stream_reads_call_metadata_from_start_message():
 
 
 @pytest.mark.asyncio
-async def test_cdr_lookup_is_scoped_to_the_configured_domain_organization():
-    request = _json_request(
-        b'{"domain":"ACME.CLOUDONIX.NET.","session":{"token":"call-123"},'
-        b'"disposition":"ANSWER"}'
-    )
-    configuration = SimpleNamespace(organization_id=44)
-    workflow_run = SimpleNamespace(id=303)
-
-    with (
-        patch(
-            "api.services.telephony.providers.cloudonix.routes.db_client"
-        ) as db_client,
-        patch(
-            "api.services.telephony.providers.cloudonix.routes._process_status_update",
-            new_callable=AsyncMock,
-        ) as process_status,
-    ):
-        db_client.get_unique_active_telephony_configuration_by_credentials = AsyncMock(
-            return_value=configuration
-        )
-        db_client.get_workflow_run_by_call_id = AsyncMock(return_value=workflow_run)
-
-        result = await handle_cloudonix_cdr(request)
-
-    assert result == {"status": "success"}
-    credential_lookup = (
-        db_client.get_unique_active_telephony_configuration_by_credentials
-    )
-    credential_lookup.assert_awaited_once_with(
-        "cloudonix", {"domain_id": "acme.cloudonix.net"}
-    )
-    db_client.get_workflow_run_by_call_id.assert_awaited_once_with(
-        "call-123", organization_id=44, mode="cloudonix"
-    )
-    process_status.assert_awaited_once()
-
-
-@pytest.mark.asyncio
 async def test_cdr_route_handles_payload_without_session():
     """A CDR payload missing the ``session`` object returns a graceful error
     instead of raising ``AttributeError`` on ``None.get("token")``."""

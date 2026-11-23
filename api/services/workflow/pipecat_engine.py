@@ -418,6 +418,10 @@ class PipecatEngine:
         await self.active_agent.llm._update_settings(
             LLMSettings(system_instruction=system_prompt)
         )
+        primary_llm = getattr(self.active_agent.llm, "primary", self.active_agent.llm)
+        prewarm = getattr(primary_llm, "prepare_prompt_cache", None)
+        if prewarm:
+            await prewarm(self.context, system_prompt)
 
     def _format_prompt(self, prompt: str) -> str:
         """Delegate prompt formatting to the shared workflow.utils implementation."""

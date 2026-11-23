@@ -97,6 +97,7 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
         # and whose Stopped frame has not; the switch closes them (see
         # _close_primary_contexts).
         self._open_primary_contexts: dict[str, TTSStartedFrame] = {}
+        self._closed_primary_contexts: set[str] = set()
         self._visit_ending = False
         self._backup_setup: FrameProcessorSetup | None = None
         self._backup_connect_task: asyncio.Task | None = None
@@ -144,6 +145,9 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
             )
 
     def _on_primary_tts_request(self, _primary, context_id: str, text: str) -> None:
+        if context_id in self._closed_primary_contexts:
+            self._closed_primary_contexts.remove(context_id)
+            return
         if self.strategy.active_service is self.primary:
             self._request_context_id = context_id
             self._request_text = text
@@ -359,4 +363,6 @@ class FallbackTTSService(ServiceSwitcher[_SwitchOnFirstError]):
                     self._request_context_id = None
                     self._request_audio_duration = 0.0
                     self._request_speak_flags = None
+                elif context_id and self._request_context_id is None and self._request_text:
+                    self._closed_primary_contexts.add(context_id)
         await super().push_frame(frame, direction)

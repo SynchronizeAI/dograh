@@ -178,8 +178,12 @@ class AgentTransferCoordinator:
             if destination.error:
                 raise AgentBuildError("destination_unusable", destination.error)
             self._phase = TransferPhase.COMMITTING
-            engine.commit_agent(destination, snapshot)
-            committed = True
+            async with engine._node_transition_lock:
+                self._check_current(request)
+                if destination.error:
+                    raise AgentBuildError("destination_unusable", destination.error)
+                engine.commit_agent(destination, snapshot)
+                committed = True
             # Only committed visits change the shared transcriber. Hold audio
             # still covers the update and destination generation stays gated.
             # A provider failure must not strand an already committed handoff.

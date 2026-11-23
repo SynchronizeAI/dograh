@@ -14,6 +14,7 @@ result in the context when generating the next response.
 """
 
 import asyncio
+from types import SimpleNamespace
 from typing import List
 from unittest.mock import AsyncMock, patch
 
@@ -141,6 +142,158 @@ async def run_pipeline_and_capture_context(
 
 class TestContextUpdateBeforeNextCompletion:
     """Test that context is properly updated before the next LLM completion."""
+
+    @pytest.mark.asyncio
+    async def test_retired_visit_does_not_queue_transition_speech_after_extraction(
+        self, three_node_workflow_no_variable_extraction: WorkflowGraph
+    ):
+        from dataclasses import replace
+
+        llm = MockLLMService(mock_steps=[], chunk_delay=0)
+        engine = PipecatEngine(
+            llm=llm,
+            context=LLMContext(),
+            workflow=three_node_workflow_no_variable_extraction,
+            call_context_vars={"customer_name": "Test User"},
+            workflow_run_id=1,
+        )
+        await engine.set_node("start")
+        source_agent = engine.active_agent
+        source_node = source_agent.current_node
+        transition = await engine._create_transition_func(
+            "transition",
+            "agent",
+            transition_speech="Let me move you along.",
+            agent=source_agent,
+            source_node=source_node,
+        )
+
+        extraction_started = asyncio.Event()
+        continue_extraction = asyncio.Event()
+
+        async def wait_for_extraction(*_args, **_kwargs):
+            extraction_started.set()
+            await continue_extraction.wait()
+
+        engine._perform_variable_extraction_if_needed = wait_for_extraction
+        engine.queue_text_message = AsyncMock(return_value=True)
+        callback = AsyncMock()
+        task = asyncio.create_task(
+            transition(
+                SimpleNamespace(arguments={}, result_callback=callback)
+            )
+        )
+        try:
+            await asyncio.wait_for(extraction_started.wait(), 1)
+            destination = replace(source_agent, visit_id="visit-destination")
+            engine.install_agent(destination, previous=source_agent)
+        finally:
+            continue_extraction.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+        assert callback.await_args.args[0]["status"] == "error"
+        engine.queue_text_message.assert_not_awaited()
+        assert engine.active_agent is destination
+        assert engine.active_agent.current_node is source_node
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("speech_type", ["text", "audio"])
+    async def test_parallel_transitions_only_queue_speech_for_the_winner(
+        self,
+        three_node_workflow_no_variable_extraction: WorkflowGraph,
+        speech_type: str,
+    ):
+        from api.services.pipecat.speech_playback import PlaybackOutcome
+
+        llm = MockLLMService(mock_steps=[], chunk_delay=0)
+        engine = PipecatEngine(
+            llm=llm,
+            context=LLMContext(),
+            workflow=three_node_workflow_no_variable_extraction,
+            call_context_vars={"customer_name": "Test User"},
+            workflow_run_id=1,
+        )
+        await engine.set_node("start")
+        source_node = engine.active_agent.current_node
+        if speech_type == "text":
+            transition_speech = {"transition_speech": "Let me move you along."}
+        else:
+            engine._fetch_recording_audio = object()
+            transition_speech = {
+                "transition_speech_type": "audio",
+                "transition_speech_recording_id": "1",
+            }
+        transitions = [
+            await engine._create_transition_func(
+                name,
+                "agent",
+                **transition_speech,
+                agent=engine.active_agent,
+                source_node=source_node,
+            )
+            for name in ("first_transition", "second_transition")
+        ]
+
+        extraction_count = 0
+        both_extracted = asyncio.Event()
+        continue_extraction = asyncio.Event()
+        speech_entered = asyncio.Event()
+        continue_speech = asyncio.Event()
+        speech_count = 0
+
+        async def wait_for_extraction(*_args, **_kwargs):
+            nonlocal extraction_count
+            extraction_count += 1
+            if extraction_count == 2:
+                both_extracted.set()
+            await continue_extraction.wait()
+
+        async def queue_speech(*_args, **_kwargs):
+            nonlocal speech_count
+            speech_count += 1
+            speech_entered.set()
+            await continue_speech.wait()
+            if speech_type == "text":
+                return True
+            return SimpleNamespace(
+                outcome=PlaybackOutcome.PLAYED, text="Please hold."
+            )
+
+        engine._perform_variable_extraction_if_needed = wait_for_extraction
+        if speech_type == "text":
+            engine.queue_text_message = AsyncMock(side_effect=queue_speech)
+        else:
+            engine.queue_speech = AsyncMock(side_effect=queue_speech)
+        callbacks = [AsyncMock(), AsyncMock()]
+        tasks = [
+            asyncio.create_task(
+                transition(
+                    SimpleNamespace(arguments={}, result_callback=callback)
+                )
+            )
+            for transition, callback in zip(transitions, callbacks)
+        ]
+        speech_count_before_release = None
+        try:
+            await asyncio.wait_for(both_extracted.wait(), 1)
+            continue_extraction.set()
+            await asyncio.wait_for(speech_entered.wait(), 1)
+            await asyncio.sleep(0)
+            speech_count_before_release = speech_count
+        finally:
+            continue_extraction.set()
+            continue_speech.set()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        results = [callback.await_args.args[0] for callback in callbacks]
+        assert speech_count_before_release == 1
+        assert sum(result["status"] == "done" for result in results) == 1
+        assert sum(result["status"] == "error" for result in results) == 1
+        if speech_type == "text":
+            engine.queue_text_message.assert_awaited_once()
+        else:
+            engine.queue_speech.assert_awaited_once()
+        assert engine.active_agent.current_node is not source_node
 
     @pytest.mark.asyncio
     async def test_transition_speech_is_added_to_llm_context(

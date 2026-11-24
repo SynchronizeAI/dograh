@@ -79,6 +79,44 @@ def test_created_service_is_pipecats_anthropic_service():
     assert service._settings.model == "claude-haiku-5-5"
 
 
+@pytest.mark.asyncio
+async def test_inference_usage_counts_cached_tokens_as_prompt_tokens():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from anthropic.types.beta import BetaUsage
+    from pipecat.processors.aggregators.llm_context import LLMContext
+
+    from api.services.pipecat.usage_metrics import on_inference_usage
+
+    service = create_llm_service(
+        EffectiveAIModelConfiguration(llm=AnthropicLLMConfiguration(api_key="k"))
+    )
+    service._client = AsyncMock()
+    service._client.beta.messages.create.return_value = SimpleNamespace(
+        content=[SimpleNamespace(text="ok")],
+        stop_reason="end_turn",
+        usage=BetaUsage(
+            input_tokens=60,
+            output_tokens=20,
+            cache_read_input_tokens=40,
+            cache_creation_input_tokens=10,
+        ),
+    )
+    reports = []
+    on_inference_usage(service, lambda _service, data: reports.append(data.value))
+    await service.run_inference(
+        LLMContext(messages=[{"role": "user", "content": "hi"}])
+    )
+    [usage] = reports
+    assert (usage.prompt_tokens, usage.completion_tokens) == (110, 20)
+    assert (usage.cache_read_input_tokens, usage.cache_creation_input_tokens) == (
+        40,
+        10,
+    )
+    assert usage.total_tokens == 130
+
+
 def test_anthropic_api_key_validation(monkeypatch):
     calls = []
 

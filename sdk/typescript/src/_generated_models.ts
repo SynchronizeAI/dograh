@@ -774,6 +774,10 @@ export interface components {
             type: "http_api";
             /** @description HTTP API configuration. */
             config: components["schemas"]["HttpApiConfig"];
+            /** @description Return this object as the tool result instead of making the HTTP call in text-chat runs only. */
+            mock_response?: {
+                [key: string]: unknown;
+            } | null;
         };
         /**
          * HttpTransferResolverConfig

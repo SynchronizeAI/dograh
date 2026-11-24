@@ -607,6 +607,13 @@ class HttpApiToolDefinition(ToolDefinitionBase):
 
     type: Literal["http_api"] = Field(description="Tool type.")
     config: HttpApiConfig = Field(description="HTTP API configuration.")
+    mock_response: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Return this object as the tool result instead of making the HTTP call "
+            "in text-chat runs only."
+        ),
+    )
 
 
 class EndCallToolDefinition(ToolDefinitionBase):

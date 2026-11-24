@@ -2334,6 +2334,14 @@ export type HttpApiToolDefinition = {
      * HTTP API configuration.
      */
     config: HttpApiConfig;
+    /**
+     * Mock Response
+     *
+     * Return this object as the tool result instead of making the HTTP call in text-chat runs only.
+     */
+    mock_response?: {
+        [key: string]: unknown;
+    } | null;
 };
 
 /**

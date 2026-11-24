@@ -994,6 +994,10 @@ class HttpApiToolDefinition(BaseModel):
     """
     HTTP API configuration.
     """
+    mock_response: Annotated[dict[str, Any] | None, Field(title='Mock Response')] = None
+    """
+    Return this object as the tool result instead of making the HTTP call in text-chat runs only.
+    """
 
 
 class HttpTransferResolverConfig(BaseModel):

@@ -308,6 +308,49 @@ async def test_post_tool_mcp_returns_200(test_client_factory, db_session):
     assert body["category"] == "mcp"
 
 
+async def test_http_tool_mock_response_survives_api_create_and_update(
+    test_client_factory, db_session
+):
+    user, _ = await db_session.get_or_create_user_by_provider_id(
+        "http_mock_tool_route_user"
+    )
+    org, _ = await db_session.get_or_create_organization_by_provider_id(
+        "http_mock_tool_route_org", user.id
+    )
+    await db_session.update_user_selected_organization(user.id, org.id)
+    user = await db_session.get_user_by_id(user.id)
+
+    mock_response = {"id": "mock-123", "available": True}
+    definition = {
+        "schema_version": 1,
+        "type": "http_api",
+        "config": {"method": "POST", "url": "https://example.com/reserve"},
+        "mock_response": mock_response,
+    }
+    async with test_client_factory(user) as client:
+        created = await client.post(
+            "/api/v1/tools/",
+            json={
+                "name": "Reservation Mock",
+                "category": "http_api",
+                "definition": definition,
+            },
+        )
+        assert created.status_code == 200, created.text
+        created_body = created.json()
+        assert created_body["definition"]["mock_response"] == mock_response
+
+        updated_mock_response = {"id": "mock-456", "available": False}
+        definition["mock_response"] = updated_mock_response
+        updated = await client.put(
+            f"/api/v1/tools/{created_body['tool_uuid']}",
+            json={"definition": definition},
+        )
+
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["definition"]["mock_response"] == updated_mock_response
+
+
 async def test_post_tool_mcp_invalid_url_returns_422(test_client_factory, db_session):
     """POST /api/v1/tools/ with an ftp:// URL must return HTTP 422."""
     user, _ = await db_session.get_or_create_user_by_provider_id(

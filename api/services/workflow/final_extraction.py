@@ -17,14 +17,8 @@ from api.errors.failure import (
     log_failure,
 )
 from api.schemas.workflow_configurations import CallDispositionOption
-from api.services.configuration.ai_model_configuration import (
-    get_effective_ai_model_configuration_for_workflow,
-)
 from api.services.configuration.model_connections import (
     hydrate_model_configuration_snapshot,
-)
-from api.services.configuration.run_model_configuration import (
-    get_effective_ai_model_configuration_for_run,
 )
 from api.services.managed_model_services import MPS_CORRELATION_ID_CONTEXT_KEY
 from api.services.pipecat.fallback_llm import FallbackLLMProcessor
@@ -149,31 +143,12 @@ async def run_final_extraction(run_id: int, organization_id: int, token: str) ->
         if definition is None:
             raise ValueError("Extraction definition is unavailable")
         snapshot = request.get("model_configuration_snapshot")
-        if snapshot:
-            config = await hydrate_model_configuration_snapshot(
-                organization_id, snapshot
-            )
-        elif request["definition_id"] == run.definition_id:
-            config = await get_effective_ai_model_configuration_for_run(
-                organization_id=organization_id,
-                workflow_run=run,
-            )
-        else:
-            raise ValueError("Transferred agent has no model snapshot")
-        extraction_model = (definition.workflow_configurations or {}).get(
-            "extraction_model"
-        ) or None
-        if extraction_model is not None:
-            workflow_config = await get_effective_ai_model_configuration_for_workflow(
-                organization_id=organization_id,
-                workflow_configurations=definition.workflow_configurations,
-            )
-            if (
-                config.llm is None
-                or workflow_config.llm is None
-                or config.llm.provider != workflow_config.llm.provider
-            ):
-                extraction_model = None
+        if not snapshot and request["definition_id"] == run.definition_id:
+            snapshot = getattr(run, "model_configuration_snapshot", None)
+        if not snapshot:
+            raise ValueError("Final extraction model snapshot is unavailable")
+        config = await hydrate_model_configuration_snapshot(organization_id, snapshot)
+        extraction_model = snapshot.get("extraction_model")
         llm = await _create_llm(
             config,
             (run.initial_context or {}).get(MPS_CORRELATION_ID_CONTEXT_KEY),

@@ -97,6 +97,52 @@ async def test_resolve_pins_api_over_workflow_once_and_reuses_the_pin(
 
 
 @pytest.mark.asyncio
+async def test_pins_extraction_model_when_workflow_provider_matches(catalog, run_state):
+    dograh = connection(keys="dograh-key")
+    catalog(dograh, default=True, configuration=pipeline(dograh))
+    openai = catalog(connection("openai", keys="openai-key"))
+    run_state.definition.workflow_configurations.update(
+        {
+            "model_configuration_override": {
+                "llm": {"provider_connection_uuid": openai.uuid}
+            },
+            "extraction_model": "gpt-4.1-mini",
+        }
+    )
+
+    effective = await service.resolve_run_model_configuration(
+        organization_id=1, workflow_run=run_state
+    )
+
+    assert effective.llm.provider == "openai"
+    assert run_state.model_configuration_snapshot["workflow_llm_provider"] == "openai"
+    assert run_state.model_configuration_snapshot["extraction_model"] == "gpt-4.1-mini"
+
+
+@pytest.mark.asyncio
+async def test_api_provider_override_does_not_pin_workflow_extraction_model(
+    catalog, run_state
+):
+    run_state.definition.workflow_configurations["extraction_model"] = (
+        "gpt-4.1-mini"
+    )
+    openai = connection("openai", keys="openai-key")
+    catalog(openai, default=True, configuration=pipeline(openai))
+    anthropic = catalog(connection("anthropic", keys="anthropic-key"))
+    run_state.model_configuration_overrides = {
+        "llm": {"provider_connection_uuid": anthropic.uuid}
+    }
+
+    effective = await service.resolve_run_model_configuration(
+        organization_id=1, workflow_run=run_state
+    )
+
+    assert effective.llm.provider == "anthropic"
+    assert run_state.model_configuration_snapshot["workflow_llm_provider"] == "openai"
+    assert "extraction_model" not in run_state.model_configuration_snapshot
+
+
+@pytest.mark.asyncio
 async def test_concurrent_resolution_executes_whatever_was_stored_first(
     catalog, run_state
 ):
@@ -154,6 +200,9 @@ async def test_embedding_check_uses_documents_from_pinned_definition(
 async def test_pre_call_overrides_patch_visit_services_within_the_run_key(
     catalog, run_state, failures
 ):
+    run_state.definition.workflow_configurations["extraction_model"] = (
+        "gpt-4.1-mini"
+    )
     catalog(connection(keys=["secret-a", "secret-b"]), default=True)
     pinned = await service.resolve_run_model_configuration(
         organization_id=1, workflow_run=run_state
@@ -176,9 +225,42 @@ async def test_pre_call_overrides_patch_visit_services_within_the_run_key(
     assert patched.stt.provider == pinned.stt.provider
     snapshot = run_state.model_configuration_snapshot
     assert snapshot["services"]["tts"]["settings"]["voice"] == "Alice"
+    assert snapshot["extraction_model"] == "gpt-4.1-mini"
     assert "secret-" not in str(snapshot)
     assert [entry["source"] for entry in snapshot["provenance"]][-1] == "pre_call"
     failures.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pre_call_provider_override_removes_pinned_extraction_model(
+    catalog, run_state
+):
+    run_state.definition.workflow_configurations["extraction_model"] = (
+        "gpt-4.1-mini"
+    )
+    openai = connection("openai", keys="openai-key")
+    catalog(openai, default=True, configuration=pipeline(openai))
+    anthropic = catalog(connection("anthropic", keys="anthropic-key"))
+    pinned = await service.resolve_run_model_configuration(
+        organization_id=1, workflow_run=run_state
+    )
+    assert run_state.model_configuration_snapshot["extraction_model"] == (
+        "gpt-4.1-mini"
+    )
+
+    patched = await service.apply_pre_call_model_overrides(
+        organization_id=1,
+        workflow_run=run_state,
+        run_model_configuration=pinned,
+        fetched=PreCallFetchResult(
+            model_overrides={"llm": {"provider_connection_uuid": anthropic.uuid}},
+            outcome="completed",
+        ),
+    )
+
+    assert patched.llm.provider == "anthropic"
+    assert run_state.model_configuration_snapshot["workflow_llm_provider"] == "openai"
+    assert "extraction_model" not in run_state.model_configuration_snapshot
 
 
 @pytest.mark.asyncio

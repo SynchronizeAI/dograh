@@ -256,16 +256,6 @@ def worker(monkeypatch):
             return_value=SimpleNamespace(llm=SimpleNamespace(provider="openai"))
         ),
     )
-    monkeypatch.setattr(
-        service, "get_effective_ai_model_configuration_for_run", AsyncMock()
-    )
-    monkeypatch.setattr(
-        service,
-        "get_effective_ai_model_configuration_for_workflow",
-        AsyncMock(
-            return_value=SimpleNamespace(llm=SimpleNamespace(provider="openai"))
-        ),
-    )
     llm = SimpleNamespace(
         run_inference=AsyncMock(return_value='{"name":"Ada"}'), cleanup=AsyncMock()
     )
@@ -298,7 +288,6 @@ async def test_worker_uses_child_model_and_is_idempotent(worker, variable):
     service.hydrate_model_configuration_snapshot.assert_awaited_once_with(
         7, {"visit": "child"}
     )
-    service.get_effective_ai_model_configuration_for_run.assert_not_awaited()
     create = service.create_llm_service_with_model_override
     assert create.call_args.kwargs["correlation_id"] == "existing"
     assert create.call_args.args[1] is None
@@ -634,20 +623,36 @@ def test_extraction_schema_requires_every_variable_and_allows_null():
 
 @pytest.mark.asyncio
 async def test_final_extraction_sends_the_schema_on_the_workflow_extraction_model(
-    worker,
+    worker, monkeypatch
 ):
+    from api.services.configuration import ai_model_configuration
     from api.services.workflow.pipecat_engine_variable_extractor import (
         extraction_response_schema,
     )
 
-    _, llm, saved = worker
+    run, llm, saved = worker
+    request = run.logs["final_extraction"]["requests"][0]
+    request["model_configuration_snapshot"].update(
+        {"workflow_llm_provider": "openai", "extraction_model": "gpt-4.1-mini"}
+    )
     service.db_client.get_workflow_definition.return_value = SimpleNamespace(
         workflow_configurations={"extraction_model": "gpt-4.1-mini"}
     )
+    changed_default = AsyncMock(
+        return_value=SimpleNamespace(
+            effective=SimpleNamespace(llm=SimpleNamespace(provider="anthropic"))
+        )
+    )
+    monkeypatch.setattr(
+        ai_model_configuration, "get_resolved_ai_model_configuration", changed_default
+    )
+
     await service.run_final_extraction(1, 7, "lease")
+
     assert service.create_llm_service_with_model_override.call_args.args[1] == (
         "gpt-4.1-mini"
     )
+    changed_default.assert_not_awaited()
     assert llm.run_inference.call_args.kwargs[
         "response_schema"
     ] == extraction_response_schema(
@@ -659,6 +664,9 @@ async def test_final_extraction_sends_the_schema_on_the_workflow_extraction_mode
 @pytest.mark.asyncio
 async def test_provider_override_ignores_workflow_extraction_model(worker):
     run, llm, saved = worker
+    run.logs["final_extraction"]["requests"][0]["model_configuration_snapshot"][
+        "workflow_llm_provider"
+    ] = "openai"
     definition = SimpleNamespace(
         workflow_configurations={"extraction_model": "gpt-4.1-mini"}
     )

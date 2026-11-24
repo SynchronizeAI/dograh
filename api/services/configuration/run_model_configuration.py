@@ -63,6 +63,28 @@ def get_workflow_model_override(configurations: dict) -> dict | None:
     return configurations.get(WORKFLOW_MODEL_CONFIGURATION_OVERRIDE_KEY)
 
 
+def pin_workflow_extraction_model(
+    snapshot: dict,
+    workflow_configurations: dict | None,
+    *,
+    workflow_llm_provider: str | None,
+    effective_llm_provider: str | None,
+) -> None:
+    extraction_model = (workflow_configurations or {}).get("extraction_model")
+    if not extraction_model:
+        snapshot.pop("workflow_llm_provider", None)
+        snapshot.pop("extraction_model", None)
+        return
+    snapshot["workflow_llm_provider"] = workflow_llm_provider
+    if (
+        workflow_llm_provider is not None
+        and effective_llm_provider == workflow_llm_provider
+    ):
+        snapshot["extraction_model"] = extraction_model
+    else:
+        snapshot.pop("extraction_model", None)
+
+
 async def validate_workflow_model_compatibility(
     organization_id: int, effective: EffectiveAIModelConfiguration, definition
 ) -> None:
@@ -154,6 +176,16 @@ async def resolve_run_model_configuration(
 
     configurations, api_override = _run_inputs(workflow_run)
     try:
+        workflow_model = None
+        if configurations.get("extraction_model"):
+            from api.services.configuration.ai_model_configuration import (
+                get_effective_ai_model_configuration_for_workflow,
+            )
+
+            workflow_model = await get_effective_ai_model_configuration_for_workflow(
+                organization_id=organization_id,
+                workflow_configurations=configurations,
+            )
         resolved = await resolve_model_configuration(
             organization_id,
             workflow_override=get_workflow_model_override(configurations),
@@ -161,6 +193,20 @@ async def resolve_run_model_configuration(
         )
         await validate_workflow_model_compatibility(
             organization_id, resolved.effective, workflow_run.definition
+        )
+        pin_workflow_extraction_model(
+            resolved.snapshot,
+            configurations,
+            workflow_llm_provider=(
+                workflow_model.llm.provider
+                if workflow_model is not None and workflow_model.llm is not None
+                else None
+            ),
+            effective_llm_provider=(
+                resolved.effective.llm.provider
+                if resolved.effective.llm is not None
+                else None
+            ),
         )
     except (HTTPException, ValidationError, ValueError) as exc:
         raise _configuration_failure(exc) from exc
@@ -205,6 +251,25 @@ async def apply_pre_call_model_overrides(
         )
         await validate_workflow_model_compatibility(
             organization_id, resolved.effective, workflow_run.definition
+        )
+        pinned_snapshot = workflow_run.model_configuration_snapshot or {}
+        configurations = (
+            getattr(
+                getattr(workflow_run, "definition", None),
+                "workflow_configurations",
+                None,
+            )
+            or {}
+        )
+        pin_workflow_extraction_model(
+            resolved.snapshot,
+            configurations,
+            workflow_llm_provider=pinned_snapshot.get("workflow_llm_provider"),
+            effective_llm_provider=(
+                resolved.effective.llm.provider
+                if resolved.effective.llm is not None
+                else None
+            ),
         )
     except (HTTPException, ValidationError, ValueError) as exc:
         failure = _configuration_failure(exc)

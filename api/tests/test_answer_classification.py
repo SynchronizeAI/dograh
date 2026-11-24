@@ -463,7 +463,8 @@ async def test_classifier_uses_provider_safe_temperature_and_preserves_omissions
     llm = create_llm_service_from_provider(provider, model, "test-key")
     llm._client.chat.completions.create = AsyncMock(
         return_value=SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="CONVERSATION"))]
+            choices=[SimpleNamespace(message=SimpleNamespace(content="CONVERSATION"))],
+            usage=None,
         )
     )
     try:

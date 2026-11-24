@@ -512,3 +512,71 @@ async def test_fallback_cleanup_closes_every_owned_sdk_client(
     await service._close_llm(llm)
     assert primary._client.is_closed()
     assert fallback._client.is_closed()
+
+
+@pytest.mark.asyncio
+async def test_extraction_usage_counts_under_the_fallback_that_answered(
+    monkeypatch, worker
+):
+    from openai.types import CompletionUsage
+    from pipecat.services.openai.llm import OpenAILLMService
+
+    from api.schemas.llm_fallback import ErrorCondition
+    from api.services.pipecat.fallback_llm import FallbackLLMProcessor, FallbackRoute
+
+    _, _, saved = worker
+    primary, fallback = (
+        OpenAILLMService(
+            api_key="test",
+            enable_direct_mode=True,
+            settings=OpenAILLMService.Settings(model=model),
+        )
+        for model in ("primary-model", "backup-model")
+    )
+    primary._client = AsyncMock()
+    primary._client.chat.completions.create.side_effect = HTTPException(500)
+    fallback._client = AsyncMock()
+    fallback._client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{"name":"Ada"}'))],
+        usage=CompletionUsage(
+            prompt_tokens=100,
+            completion_tokens=20,
+            total_tokens=120,
+            prompt_tokens_details={"cached_tokens": 40},
+        ),
+    )
+    llm = FallbackLLMProcessor(
+        primary, routes=[FallbackRoute(condition=ErrorCondition(), service=fallback)]
+    )
+    monkeypatch.setattr(service, "create_llm_service", Mock(return_value=llm))
+    await service.run_final_extraction(1, 7, "lease")
+    assert saved.call_args.kwargs["variables"] == {"name": "Ada"}
+    [(key, usage)] = saved.call_args.kwargs["usage_info"]["llm"].items()
+    assert key == f"{fallback.name}|||backup-model"
+    assert (usage["prompt_tokens"], usage["cache_read_input_tokens"]) == (100, 40)
+    assert (usage["completion_tokens"], usage["total_tokens"]) == (20, 120)
+
+
+@pytest.mark.asyncio
+async def test_extraction_without_reported_usage_leaves_usage_info(worker):
+    _, _, saved = worker
+    await service.run_final_extraction(1, 7, "lease")
+    assert saved.call_args.kwargs["usage_info"] is None
+
+
+def test_merge_llm_usage_adds_counts_and_keeps_unreported_fields():
+    from api.services.pipecat.usage_metrics import merge_llm_usage
+
+    live = {"LLM#0|||m": {"prompt_tokens": 10, "cache_read_input_tokens": None}}
+    merged = merge_llm_usage(
+        live,
+        {
+            "LLM#0|||m": {"prompt_tokens": 5, "cache_read_input_tokens": 2},
+            "LLM#1|||n": {"prompt_tokens": 1, "reasoning_tokens": None},
+        },
+    )
+    assert merged == {
+        "LLM#0|||m": {"prompt_tokens": 15, "cache_read_input_tokens": 2},
+        "LLM#1|||n": {"prompt_tokens": 1, "reasoning_tokens": None},
+    }
+    assert live["LLM#0|||m"]["prompt_tokens"] == 10

@@ -444,7 +444,8 @@ async def test_one_shot_inference_filters_metadata_before_pipeline_setup(monkeyp
     context = LLMContext([*messages, metadata])
     request = AsyncMock(
         return_value=SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="Hi"))]
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Hi"))],
+            usage=None,
         )
     )
     monkeypatch.setattr(primary._client.chat.completions, "create", request)

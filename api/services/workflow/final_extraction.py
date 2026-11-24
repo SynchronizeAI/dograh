@@ -26,6 +26,7 @@ from api.services.configuration.run_model_configuration import (
 from api.services.managed_model_services import MPS_CORRELATION_ID_CONTEXT_KEY
 from api.services.pipecat.fallback_llm import FallbackLLMProcessor
 from api.services.pipecat.service_factory import create_llm_service
+from api.services.pipecat.usage_metrics import merge_llm_usage, on_inference_usage
 from api.services.workflow.conversation_history import (
     build_conversation_history,
     has_user_turns,
@@ -127,6 +128,11 @@ async def run_final_extraction(run_id: int, organization_id: int, token: str) ->
     disposition = None
     disposition_request: dict = {}
     errors: list[str] = []
+    usage: dict = {}
+
+    def record_usage(_service, data):
+        key = f"{data.processor}|||{data.model}"
+        usage.update(merge_llm_usage(usage, {key: data.value.model_dump(mode="json")}))
 
     async def with_llm(request, operation):
         # Validate the pinned definition through the run's organization even
@@ -151,6 +157,7 @@ async def run_final_extraction(run_id: int, organization_id: int, token: str) ->
         llm = await _create_llm(
             config, (run.initial_context or {}).get(MPS_CORRELATION_ID_CONTEXT_KEY)
         )
+        on_inference_usage(llm, record_usage)
         try:
             return await _retry(
                 lambda: operation(llm),
@@ -226,6 +233,7 @@ async def run_final_extraction(run_id: int, organization_id: int, token: str) ->
         ),
         status=status,
         error_class=errors[-1] if errors else None,
+        usage_info={"llm": usage} if usage else None,
     )
     if not saved:
         raise RuntimeError("Completion lease expired before extraction was saved")

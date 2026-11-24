@@ -15,13 +15,17 @@ from api.errors.failure import (
     mark_failure_reported,
 )
 from api.services.gen_ai.json_parser import parse_llm_json
+from api.services.pipecat.usage_metrics import on_inference_usage
 from api.services.workflow.dto import QANodeData
 from api.services.workflow.qa.conversation import (
     build_conversation_structure,
     format_transcript,
     split_events_by_node,
 )
-from api.services.workflow.qa.llm_config import create_qa_llm_service
+from api.services.workflow.qa.llm_config import (
+    accumulate_token_usage,
+    create_qa_llm_service,
+)
 from api.services.workflow.qa.metrics import compute_call_metrics
 from api.services.workflow.qa.node_summary import (
     CONVERSATION_SUMMARY_SYSTEM_PROMPT,
@@ -197,6 +201,10 @@ async def run_per_node_qa_analysis(
         )
         return {"error": "no_api_key", "node_results": {}}
     llm, model = resolved_llm
+    token_usage: dict = {}
+    on_inference_usage(
+        llm, lambda _s, data: accumulate_token_usage(token_usage, data.value)
+    )
 
     # Ensure node summaries
     node_summaries = await ensure_node_summaries(
@@ -310,6 +318,7 @@ async def run_per_node_qa_analysis(
     return {
         "node_results": node_results,
         "model": model,
+        "token_usage": token_usage,
     }
 
 
@@ -352,6 +361,10 @@ async def _run_whole_call_qa_analysis(
         )
         return {"error": "no_api_key", "node_results": {}}
     llm, model = resolved_llm
+    token_usage: dict = {}
+    on_inference_usage(
+        llm, lambda _s, data: accumulate_token_usage(token_usage, data.value)
+    )
 
     # Build messages — substitute all placeholders with sensible defaults
     template_context = {
@@ -412,4 +425,5 @@ async def _run_whole_call_qa_analysis(
     return {
         "node_results": {"whole_call": node_result},
         "model": model,
+        "token_usage": token_usage,
     }

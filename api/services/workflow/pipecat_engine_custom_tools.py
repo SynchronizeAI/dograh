@@ -412,9 +412,8 @@ class CustomToolManager:
                 definition = tool.definition or {}
                 mock_response = definition.get("mock_response")
                 workflow_run = None
-                if (
-                    tool.category == ToolCategory.HTTP_API.value
-                    and isinstance(mock_response, dict)
+                if tool.category == ToolCategory.HTTP_API.value and isinstance(
+                    mock_response, dict
                 ):
                     workflow_run = await db_client.get_workflow_run_by_id(
                         self._engine._workflow_run_id

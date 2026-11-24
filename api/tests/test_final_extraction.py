@@ -261,9 +261,7 @@ def worker(monkeypatch):
     llm = SimpleNamespace(
         run_inference=AsyncMock(return_value='{"name":"Ada"}'), cleanup=AsyncMock()
     )
-    monkeypatch.setattr(
-        service, "create_llm_service", Mock(return_value=llm)
-    )
+    monkeypatch.setattr(service, "create_llm_service", Mock(return_value=llm))
     monkeypatch.setattr(service, "RETRY_DELAYS", (0, 0))
 
     async def save(*_args, **kwargs):
@@ -554,9 +552,7 @@ async def test_extraction_usage_counts_under_the_fallback_that_answered(
     llm = FallbackLLMProcessor(
         primary, routes=[FallbackRoute(condition=ErrorCondition(), service=fallback)]
     )
-    monkeypatch.setattr(
-        service, "create_llm_service", Mock(return_value=llm)
-    )
+    monkeypatch.setattr(service, "create_llm_service", Mock(return_value=llm))
     await service.run_final_extraction(1, 7, "lease")
     assert saved.call_args.kwargs["variables"] == {"name": "Ada"}
     [(key, usage)] = saved.call_args.kwargs["usage_info"]["llm"].items()

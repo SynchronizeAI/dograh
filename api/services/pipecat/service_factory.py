@@ -45,8 +45,10 @@ from api.services.pipecat.murf_tts import MurfTTSService
 from api.services.pipecat.openai_spoken_tool_calls import OpenAISpokenToolCallMixin
 from api.services.pipecat.spoken_tool_calls import SpokenToolCallMixin
 from api.utils.url_security import validate_user_configured_service_url
+from pipecat.metrics.metrics import LLMTokenUsage
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameProcessorSetup
+from pipecat.services.anthropic.llm import AnthropicLLMService, AnthropicLLMSettings
 from pipecat.services.assemblyai.stt import (
     AssemblyAISTTService,
     AssemblyAISTTSettings,
@@ -369,6 +371,16 @@ def stt_uses_eager_end_of_turn(user_config) -> bool:
     return _stt_uses_flux(user_config) and getattr(
         user_config.stt, "enable_eager_end_of_turn", False
     )
+
+
+class DograhAnthropicLLMService(AnthropicLLMService):
+    """Anthropic reports input tokens net of the prompt cache. Dograh's usage
+    consumers read cached tokens as part of prompt_tokens, as OpenAI and Gemini
+    report them, so the cached tokens are added back."""
+
+    async def start_llm_usage_metrics(self, tokens: LLMTokenUsage):
+        tokens.prompt_tokens = tokens.total_tokens - tokens.completion_tokens
+        await super().start_llm_usage_metrics(tokens)
 
 
 class AzureLLMService(OpenAISpokenToolCallMixin, BaseAzureLLMService):
@@ -1744,6 +1756,16 @@ def create_llm_service_from_provider(
             correlation_id=correlation_id,
             usage_context=usage_context,
             settings=OpenAILLMSettings(model=model, **sampling_settings),
+        )
+    elif provider == ServiceProviders.ANTHROPIC.value:
+        # Pipecat sends each Claude model's lowest thinking setting when none is
+        # configured (disabled on Haiku 5.5); caching marks the system prompt.
+        return DograhAnthropicLLMService(
+            enable_direct_mode=enable_direct_mode,
+            api_key=api_key,
+            settings=AnthropicLLMSettings(
+                model=model, enable_prompt_caching=True, **sampling_settings
+            ),
         )
     elif provider == ServiceProviders.AWS_BEDROCK.value:
         return AWSBedrockLLMService(

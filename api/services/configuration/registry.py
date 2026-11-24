@@ -90,6 +90,7 @@ class ServiceType(Enum):
 
 class ServiceProviders(str, Enum):
     OPENAI = "openai"
+    ANTHROPIC = "anthropic"
     ATLASCLOUD = "atlascloud"
     HOPPER = "hopper"
     DEEPGRAM = "deepgram"
@@ -156,6 +157,7 @@ class BaseServiceConfiguration(BaseModel):
     provider_definition: ClassVar[Provider]
     provider: Literal[
         ServiceProviders.OPENAI,
+        ServiceProviders.ANTHROPIC,
         ServiceProviders.ATLASCLOUD,
         ServiceProviders.HOPPER,
         ServiceProviders.DEEPGRAM,
@@ -423,6 +425,7 @@ HOPPER_PROVIDER = Provider(
     provider_docs_url="https://docs.withhopper.com",
 )
 GOOGLE_PROVIDER = Provider("google", "Google")
+ANTHROPIC_PROVIDER = Provider("anthropic", "Anthropic")
 GROQ_PROVIDER = Provider("groq", "Groq")
 OPENROUTER_PROVIDER = Provider("openrouter", "Open Router")
 AZURE_OPENAI_PROVIDER = Provider("azure", "Azure OpenAI")
@@ -604,6 +607,21 @@ class GoogleLLMService(BaseChatLLMConfiguration):
         default="gemini-3.5-flash",
         description="Gemini model on Google AI Studio (not Vertex).",
         json_schema_extra={"examples": GOOGLE_MODELS, "allow_custom_input": True},
+    )
+
+
+# Dograh 1.51 has no Anthropic LLM provider; this wires Pipecat's own service.
+@register_llm(provider=ANTHROPIC_PROVIDER)
+class AnthropicLLMConfiguration(BaseChatLLMConfiguration):
+    temperature: float | None = temperature_field("anthropic", None)
+    provider: Literal[ServiceProviders.ANTHROPIC] = ServiceProviders.ANTHROPIC
+    model: str = Field(
+        default="claude-haiku-5-5",
+        description="Claude model on the Anthropic API.",
+        json_schema_extra={
+            "examples": ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"],
+            "allow_custom_input": True,
+        },
     )
 
 
@@ -1241,6 +1259,7 @@ REALTIME_PROVIDERS = {
 LLMConfig = Annotated[
     Union[
         OpenAILLMService,
+        AnthropicLLMConfiguration,
         AtlasCloudLLMService,
         HopperLLMConfiguration,
         GoogleVertexLLMConfiguration,

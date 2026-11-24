@@ -20,12 +20,10 @@ from api.schemas.workflow_configurations import CallDispositionOption
 from api.services.configuration.model_connections import (
     hydrate_model_configuration_snapshot,
 )
-from api.services.configuration.run_model_configuration import (
-    get_effective_ai_model_configuration_for_run,
-)
 from api.services.managed_model_services import MPS_CORRELATION_ID_CONTEXT_KEY
 from api.services.pipecat.fallback_llm import FallbackLLMProcessor
 from api.services.pipecat.service_factory import create_llm_service
+from api.services.pipecat.usage_metrics import merge_llm_usage, on_inference_usage
 from api.services.workflow.conversation_history import (
     build_conversation_history,
     has_user_turns,
@@ -127,6 +125,11 @@ async def run_final_extraction(run_id: int, organization_id: int, token: str) ->
     disposition = None
     disposition_request: dict = {}
     errors: list[str] = []
+    usage: dict = {}
+
+    def record_usage(_service, data):
+        key = f"{data.processor}|||{data.model}"
+        usage.update(merge_llm_usage(usage, {key: data.value.model_dump(mode="json")}))
 
     async def with_llm(request, operation):
         # Validate the pinned definition through the run's organization even
@@ -137,20 +140,16 @@ async def run_final_extraction(run_id: int, organization_id: int, token: str) ->
         if definition is None:
             raise ValueError("Extraction definition is unavailable")
         snapshot = request.get("model_configuration_snapshot")
-        if snapshot:
-            config = await hydrate_model_configuration_snapshot(
-                organization_id, snapshot
-            )
-        elif request["definition_id"] == run.definition_id:
-            config = await get_effective_ai_model_configuration_for_run(
-                organization_id=organization_id,
-                workflow_run=run,
-            )
-        else:
-            raise ValueError("Transferred agent has no model snapshot")
+        if not snapshot and request["definition_id"] == run.definition_id:
+            snapshot = getattr(run, "model_configuration_snapshot", None)
+        if not snapshot:
+            raise ValueError("Final extraction model snapshot is unavailable")
+        config = await hydrate_model_configuration_snapshot(organization_id, snapshot)
         llm = await _create_llm(
-            config, (run.initial_context or {}).get(MPS_CORRELATION_ID_CONTEXT_KEY)
+            config,
+            (run.initial_context or {}).get(MPS_CORRELATION_ID_CONTEXT_KEY),
         )
+        on_inference_usage(llm, record_usage)
         try:
             return await _retry(
                 lambda: operation(llm),
@@ -226,6 +225,7 @@ async def run_final_extraction(run_id: int, organization_id: int, token: str) ->
         ),
         status=status,
         error_class=errors[-1] if errors else None,
+        usage_info={"llm": usage} if usage else None,
     )
     if not saved:
         raise RuntimeError("Completion lease expired before extraction was saved")

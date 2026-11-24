@@ -382,6 +382,10 @@ class DograhAnthropicLLMService(AnthropicLLMService):
         tokens.prompt_tokens = tokens.total_tokens - tokens.completion_tokens
         await super().start_llm_usage_metrics(tokens)
 
+    async def _report_inference_usage(self, usage: LLMTokenUsage):
+        usage.prompt_tokens = usage.total_tokens - usage.completion_tokens
+        await super()._report_inference_usage(usage)
+
 
 class AzureLLMService(OpenAISpokenToolCallMixin, BaseAzureLLMService):
     """Azure streaming service with spoken-tool recovery."""

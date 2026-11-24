@@ -125,6 +125,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workflow/{workflow_id}/runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Workflow Run
+         * @description Delete finished telephony runs and artifacts; other modes are unsupported.
+         *
+         *     Text-chat sessions are synthetic and cannot be deleted through this route.
+         */
+        delete: operations["delete_workflow_run_api_v1_workflow__workflow_id__runs__run_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/credentials/": {
         parameters: {
             query?: never;
@@ -752,6 +774,10 @@ export interface components {
             type: "http_api";
             /** @description HTTP API configuration. */
             config: components["schemas"]["HttpApiConfig"];
+            /** @description Return this object as the tool result instead of making the HTTP call in text-chat runs only. */
+            mock_response?: {
+                [key: string]: unknown;
+            } | null;
         };
         /**
          * HttpTransferResolverConfig
@@ -1169,6 +1195,22 @@ export interface components {
             /** Is Active */
             is_active: boolean;
         };
+        /** STTFallbackPolicy[ServiceSelection] */
+        STTFallbackPolicy_ServiceSelection_: {
+            /**
+             * Version
+             * @default 1
+             * @constant
+             */
+            version: 1;
+            /** Rules */
+            rules?: components["schemas"]["STTFallbackRule_ServiceSelection_"][];
+        };
+        /** STTFallbackRule[ServiceSelection] */
+        STTFallbackRule_ServiceSelection_: {
+            condition: components["schemas"]["ErrorCondition"];
+            target: components["schemas"]["ServiceSelection"];
+        };
         /** ServiceOverride */
         ServiceOverride: {
             /** Settings */
@@ -1189,22 +1231,6 @@ export interface components {
              * Format: uuid
              */
             provider_connection_uuid: string;
-        };
-        /** STTFallbackPolicy[ServiceSelection] */
-        STTFallbackPolicy_ServiceSelection_: {
-            /**
-             * Version
-             * @default 1
-             * @constant
-             */
-            version: 1;
-            /** Rules */
-            rules?: components["schemas"]["STTFallbackRule_ServiceSelection_"][];
-        };
-        /** STTFallbackRule[ServiceSelection] */
-        STTFallbackRule_ServiceSelection_: {
-            condition: components["schemas"]["ErrorCondition"];
-            target: components["schemas"]["ServiceSelection"];
         };
         /** TTSFallbackPolicy[ServiceSelection] */
         TTSFallbackPolicy_ServiceSelection_: {
@@ -1542,6 +1568,7 @@ export interface components {
             turn_start_min_words: number;
             /**
              * Turn Stop Strategy
+             * @description How a cascade call decides the caller has finished speaking. transcription waits on the transcript, turn_analyzer runs Smart Turn, and assemblyai uses AssemblyAI's own end of turn when that speech model supports it.
              * @default transcription
              * @enum {string}
              */
@@ -1689,10 +1716,10 @@ export type PropertySpec = components['schemas']['PropertySpec'];
 export type PropertyType = components['schemas']['PropertyType'];
 export type RecordingListResponseSchema = components['schemas']['RecordingListResponseSchema'];
 export type RecordingResponseSchema = components['schemas']['RecordingResponseSchema'];
-export type ServiceOverride = components['schemas']['ServiceOverride'];
-export type ServiceSelection = components['schemas']['ServiceSelection'];
 export type SttFallbackPolicyServiceSelection = components['schemas']['STTFallbackPolicy_ServiceSelection_'];
 export type SttFallbackRuleServiceSelection = components['schemas']['STTFallbackRule_ServiceSelection_'];
+export type ServiceOverride = components['schemas']['ServiceOverride'];
+export type ServiceSelection = components['schemas']['ServiceSelection'];
 export type TtsFallbackPolicyServiceSelection = components['schemas']['TTSFallbackPolicy_ServiceSelection_'];
 export type TtsFallbackRuleServiceSelection = components['schemas']['TTSFallbackRule_ServiceSelection_'];
 export type ToolDelayedAudioMessage = components['schemas']['ToolDelayedAudioMessage'];
@@ -1923,6 +1950,60 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+        };
+    };
+    delete_workflow_run_api_v1_workflow__workflow_id__runs__run_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "X-API-Key"?: string | null;
+            };
+            path: {
+                workflow_id: number;
+                run_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Workflow run not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Run mode is unsupported or completion has not finished */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Failed to delete workflow run artifacts */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

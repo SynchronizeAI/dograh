@@ -274,3 +274,31 @@ def test_model_override_wrapper_preserves_provider_specific_fields():
     assert delegated_config.llm.base_url == "https://router.huggingface.co/v1"
     assert delegated_config.llm.bill_to == "billing-org"
     assert config.llm.model == "configured-model"
+
+
+@pytest.mark.asyncio
+async def test_qa_inference_usage_accumulates_across_calls():
+    from openai.types import CompletionUsage
+    from pipecat.processors.aggregators.llm_context import LLMContext
+    from pipecat.services.openai.llm import OpenAILLMService
+
+    from api.services.pipecat.usage_metrics import on_inference_usage
+    from api.services.workflow.qa.llm_config import accumulate_token_usage
+
+    llm = OpenAILLMService(api_key="test")
+    llm._client = AsyncMock()
+    llm._client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+        usage=CompletionUsage(prompt_tokens=10, completion_tokens=2, total_tokens=12),
+    )
+    total: dict = {}
+    on_inference_usage(llm, lambda _s, data: accumulate_token_usage(total, data.value))
+    context = LLMContext(messages=[{"role": "user", "content": "hi"}])
+    await llm.run_inference(context, system_instruction="QA")
+    await llm.run_inference(context, system_instruction="QA")
+    assert total == {
+        "prompt_tokens": 20,
+        "completion_tokens": 4,
+        "total_tokens": 24,
+        "cache_read_input_tokens": 0,
+    }

@@ -2334,6 +2334,14 @@ export type HttpApiToolDefinition = {
      * HTTP API configuration.
      */
     config: HttpApiConfig;
+    /**
+     * Mock Response
+     *
+     * Return this object as the tool result instead of making the HTTP call in text-chat runs only.
+     */
+    mock_response?: {
+        [key: string]: unknown;
+    } | null;
 };
 
 /**
@@ -2507,6 +2515,30 @@ export type InitiateCallRequest = {
  * ItemKind
  */
 export type ItemKind = 'node' | 'edge' | 'workflow';
+
+/**
+ * KoreaAITelConfigurationRequest
+ *
+ * Request schema for 한국AI통신 configuration.
+ */
+export type KoreaAiTelConfigurationRequest = {
+    /**
+     * Provider
+     */
+    provider?: 'koreaaitel';
+    /**
+     * Account Id
+     *
+     * 한국AI통신 account ID
+     */
+    account_id: string;
+    /**
+     * Signing Secret
+     *
+     * Webhook Signing Secret
+     */
+    signing_secret: string;
+};
 
 /**
  * LangfuseCredentialsRequest
@@ -4379,6 +4411,28 @@ export type SipTransportDetails = {
 };
 
 /**
+ * STTFallbackPolicy[ServiceSelection]
+ */
+export type SttFallbackPolicyServiceSelection = {
+    /**
+     * Version
+     */
+    version?: 1;
+    /**
+     * Rules
+     */
+    rules?: Array<SttFallbackRuleServiceSelection>;
+};
+
+/**
+ * STTFallbackRule[ServiceSelection]
+ */
+export type SttFallbackRuleServiceSelection = {
+    condition: ErrorCondition;
+    target: ServiceSelection;
+};
+
+/**
  * ScheduleConfigRequest
  */
 export type ScheduleConfigRequest = {
@@ -4711,28 +4765,6 @@ export type TtsCacheList = {
 };
 
 /**
- * STTFallbackPolicy[ServiceSelection]
- */
-export type SttFallbackPolicyServiceSelection = {
-    /**
-     * Version
-     */
-    version?: 1;
-    /**
-     * Rules
-     */
-    rules?: Array<SttFallbackRuleServiceSelection>;
-};
-
-/**
- * STTFallbackRule[ServiceSelection]
- */
-export type SttFallbackRuleServiceSelection = {
-    condition: ErrorCondition;
-    target: ServiceSelection;
-};
-
-/**
  * TTSFallbackPolicy[ServiceSelection]
  */
 export type TtsFallbackPolicyServiceSelection = {
@@ -4803,6 +4835,8 @@ export type TelephonyConfigurationCreateRequest = {
     } & CloudonixConfigurationRequest) | ({
         provider: 'exotel';
     } & ExotelConfigurationRequest) | ({
+        provider: 'koreaaitel';
+    } & KoreaAiTelConfigurationRequest) | ({
         provider: 'plivo';
     } & PlivoConfigurationRequest) | ({
         provider: 'telnyx';
@@ -4983,6 +5017,8 @@ export type TelephonyConfigurationUpdateRequest = {
     } & CloudonixConfigurationRequest) | ({
         provider: 'exotel';
     } & ExotelConfigurationRequest) | ({
+        provider: 'koreaaitel';
+    } & KoreaAiTelConfigurationRequest) | ({
         provider: 'plivo';
     } & PlivoConfigurationRequest) | ({
         provider: 'telnyx';
@@ -6701,6 +6737,8 @@ export type WorkflowConfigurationDefaults = {
     turn_start_min_words?: number;
     /**
      * Turn Stop Strategy
+     *
+     * How a cascade call decides the caller has finished speaking. transcription waits on the transcript, turn_analyzer runs Smart Turn, and assemblyai uses AssemblyAI's own end of turn when that speech model supports it.
      */
     turn_stop_strategy?: 'transcription' | 'turn_analyzer' | 'assemblyai';
     /**
@@ -8990,6 +9028,62 @@ export type CreateWorkflowRunApiV1WorkflowWorkflowIdRunsPostResponses = {
 };
 
 export type CreateWorkflowRunApiV1WorkflowWorkflowIdRunsPostResponse = CreateWorkflowRunApiV1WorkflowWorkflowIdRunsPostResponses[keyof CreateWorkflowRunApiV1WorkflowWorkflowIdRunsPostResponses];
+
+export type DeleteWorkflowRunApiV1WorkflowWorkflowIdRunsRunIdDeleteData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Workflow Id
+         */
+        workflow_id: number;
+        /**
+         * Run Id
+         */
+        run_id: number;
+    };
+    query?: never;
+    url: '/api/v1/workflow/{workflow_id}/runs/{run_id}';
+};
+
+export type DeleteWorkflowRunApiV1WorkflowWorkflowIdRunsRunIdDeleteErrors = {
+    /**
+     * Workflow run not found
+     */
+    404: unknown;
+    /**
+     * Run mode is unsupported or completion has not finished
+     */
+    409: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+    /**
+     * Failed to delete workflow run artifacts
+     */
+    500: unknown;
+};
+
+export type DeleteWorkflowRunApiV1WorkflowWorkflowIdRunsRunIdDeleteError = DeleteWorkflowRunApiV1WorkflowWorkflowIdRunsRunIdDeleteErrors[keyof DeleteWorkflowRunApiV1WorkflowWorkflowIdRunsRunIdDeleteErrors];
+
+export type DeleteWorkflowRunApiV1WorkflowWorkflowIdRunsRunIdDeleteResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type DeleteWorkflowRunApiV1WorkflowWorkflowIdRunsRunIdDeleteResponse = DeleteWorkflowRunApiV1WorkflowWorkflowIdRunsRunIdDeleteResponses[keyof DeleteWorkflowRunApiV1WorkflowWorkflowIdRunsRunIdDeleteResponses];
 
 export type GetWorkflowRunApiV1WorkflowWorkflowIdRunsRunIdGetData = {
     body?: never;

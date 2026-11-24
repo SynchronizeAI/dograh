@@ -284,6 +284,46 @@ async def test_user_variable_is_separate_from_extraction_metadata(completion_db)
 
 
 @pytest.mark.asyncio
+async def test_extraction_usage_merges_into_live_usage_info(completion_db):
+    client, organization_id, run_id = completion_db
+    await prepare(client, run_id)
+    live = {"prompt_tokens": 10, "completion_tokens": 2, "reasoning_tokens": None}
+    await client.update_workflow_run(
+        run_id, usage_info={"llm": {"LLM#0|||m": live}, "call_duration_seconds": 30}
+    )
+    await client.claim_workflow_completion(run_id, organization_id, "owner")
+    assert await client.finish_final_extraction(
+        run_id,
+        organization_id,
+        "owner",
+        variables={},
+        disposition=None,
+        fallback="end_call",
+        mapped_disposition=None,
+        status="done",
+        error_class=None,
+        usage_info={
+            "llm": {
+                "LLM#0|||m": {"prompt_tokens": 5, "completion_tokens": 1},
+                "LLM#1|||n": {"prompt_tokens": 7, "cache_read_input_tokens": 3},
+            }
+        },
+    )
+    run = await client.get_workflow_run_by_id(run_id)
+    assert run.usage_info == {
+        "llm": {
+            "LLM#0|||m": {
+                "prompt_tokens": 15,
+                "completion_tokens": 3,
+                "reasoning_tokens": None,
+            },
+            "LLM#1|||n": {"prompt_tokens": 7, "cache_read_input_tokens": 3},
+        },
+        "call_duration_seconds": 30,
+    }
+
+
+@pytest.mark.asyncio
 async def test_expired_worker_cannot_commit_after_recovery(completion_db):
     client, organization_id, run_id = completion_db
     await prepare(client, run_id)

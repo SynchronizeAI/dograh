@@ -409,13 +409,30 @@ class CustomToolManager:
             logger.info(f"Arguments: {function_call_params.arguments}")
 
             try:
-                result = await execute_http_tool(
-                    tool=tool,
-                    arguments=function_call_params.arguments,
-                    call_context_vars=self._engine._call_context_vars,
-                    gathered_context_vars=self._engine._gathered_context,
-                    organization_id=await self.get_organization_id(),
-                )
+                definition = tool.definition or {}
+                mock_response = definition.get("mock_response")
+                workflow_run = None
+                if (
+                    tool.category == ToolCategory.HTTP_API.value
+                    and isinstance(mock_response, dict)
+                ):
+                    workflow_run = await db_client.get_workflow_run_by_id(
+                        self._engine._workflow_run_id
+                    )
+
+                if (
+                    workflow_run is not None
+                    and workflow_run.mode == WorkflowRunMode.TEXTCHAT.value
+                ):
+                    result = mock_response
+                else:
+                    result = await execute_http_tool(
+                        tool=tool,
+                        arguments=function_call_params.arguments,
+                        call_context_vars=self._engine._call_context_vars,
+                        gathered_context_vars=self._engine._gathered_context,
+                        organization_id=await self.get_organization_id(),
+                    )
 
                 await function_call_params.result_callback(result)
 

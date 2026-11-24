@@ -1372,10 +1372,6 @@ class WorkflowConfigurationDefaults(BaseModel):
     How a cascade call decides the caller has finished speaking. transcription waits on the transcript, turn_analyzer runs Smart Turn, and assemblyai uses AssemblyAI's own end of turn when that speech model supports it.
     """
     dictionary: Annotated[str | None, Field(title='Dictionary')] = ''
-    extraction_model: Annotated[str | None, Field(title='Extraction Model')] = None
-    """
-    Model of the workflow's LLM provider for post-call extraction.
-    """
     context_compaction_enabled: Annotated[
         bool | None, Field(title='Context Compaction Enabled')
     ] = False

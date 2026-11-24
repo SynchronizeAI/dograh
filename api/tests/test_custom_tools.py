@@ -30,7 +30,7 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.services.llm_service import FunctionCallParams
 
-from api.enums import WorkflowRunMode
+from api.enums import ToolCategory, WorkflowRunMode
 from api.services.configuration.masking import mask_key
 from api.services.workflow.pipecat_engine_custom_tools import get_function_schema
 from api.services.workflow.tools.custom_tool import (
@@ -1842,6 +1842,73 @@ class TestCustomToolManagerUnit:
 
             # Verify result was returned
             assert result_received["status"] == "success"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("mode", "mock_response", "uses_mock"),
+        [
+            (WorkflowRunMode.TEXTCHAT.value, {"answer": "mocked"}, True),
+            (WorkflowRunMode.TEXTCHAT.value, None, False),
+            (WorkflowRunMode.WEBRTC.value, {"answer": "mocked"}, False),
+        ],
+    )
+    async def test_http_tool_mock_response_is_limited_to_textchat(
+        self, mode, mock_response, uses_mock
+    ):
+        from types import SimpleNamespace
+
+        from api.services.workflow.pipecat_engine_custom_tools import CustomToolManager
+
+        engine = Mock()
+        engine._workflow_run_id = 42
+        engine._call_context_vars = {}
+        engine._gathered_context = {}
+        engine._get_organization_id = AsyncMock(return_value=7)
+        manager = CustomToolManager(engine)
+        definition = {
+            "schema_version": 1,
+            "type": "http_api",
+            "config": {"method": "POST", "url": "https://example.com"},
+        }
+        if mock_response is not None:
+            definition["mock_response"] = mock_response
+        tool = MockToolModel(
+            tool_uuid="http-tool",
+            name="HTTP Tool",
+            description="Make an HTTP request",
+            category=ToolCategory.HTTP_API.value,
+            definition=definition,
+        )
+        http_result = {"status": "success", "data": {"source": "http"}}
+        callback = AsyncMock()
+        params = SimpleNamespace(arguments={"city": "Paris"}, result_callback=callback)
+        handler = manager._create_http_tool_handler(tool, "http_tool")
+
+        with (
+            patch(
+                "api.services.workflow.pipecat_engine_custom_tools.db_client.get_workflow_run_by_id",
+                new_callable=AsyncMock,
+                return_value=SimpleNamespace(mode=mode),
+            ) as get_run,
+            patch(
+                "api.services.workflow.pipecat_engine_custom_tools.execute_http_tool",
+                new_callable=AsyncMock,
+                return_value=http_result,
+            ) as execute_http,
+        ):
+            await handler(params)
+
+        if uses_mock:
+            callback.assert_awaited_once_with(mock_response)
+            execute_http.assert_not_awaited()
+            get_run.assert_awaited_once_with(42)
+        else:
+            callback.assert_awaited_once_with(http_result)
+            execute_http.assert_awaited_once()
+            if mock_response is None:
+                get_run.assert_not_awaited()
+            else:
+                get_run.assert_awaited_once_with(42)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("category", ["end_call", "transfer_call"])

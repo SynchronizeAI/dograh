@@ -6738,12 +6738,6 @@ export type WorkflowConfigurationDefaults = {
      */
     dictionary?: string;
     /**
-     * Extraction Model
-     *
-     * Model of the workflow's LLM provider for post-call extraction.
-     */
-    extraction_model?: string | null;
-    /**
      * Context Compaction Enabled
      */
     context_compaction_enabled?: boolean;

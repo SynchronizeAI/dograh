@@ -22,9 +22,7 @@ from api.services.configuration.model_connections import (
 )
 from api.services.managed_model_services import MPS_CORRELATION_ID_CONTEXT_KEY
 from api.services.pipecat.fallback_llm import FallbackLLMProcessor
-from api.services.pipecat.service_factory import (
-    create_llm_service_with_model_override,
-)
+from api.services.pipecat.service_factory import create_llm_service
 from api.services.pipecat.usage_metrics import merge_llm_usage, on_inference_usage
 from api.services.workflow.conversation_history import (
     build_conversation_history,
@@ -68,14 +66,13 @@ async def _close_llm(llm: Any) -> None:
                     )
 
 
-async def _create_llm(user_config, correlation_id, model):
+async def _create_llm(user_config, correlation_id):
     # Vertex constructors refresh credentials synchronously. Keep that network
     # request off the worker loop, including when the extraction deadline expires.
     task = asyncio.create_task(
         asyncio.to_thread(
-            create_llm_service_with_model_override,
+            create_llm_service,
             user_config,
-            model,
             correlation_id=correlation_id,
             usage_context="variable_extraction",
         )
@@ -148,11 +145,9 @@ async def run_final_extraction(run_id: int, organization_id: int, token: str) ->
         if not snapshot:
             raise ValueError("Final extraction model snapshot is unavailable")
         config = await hydrate_model_configuration_snapshot(organization_id, snapshot)
-        extraction_model = snapshot.get("extraction_model")
         llm = await _create_llm(
             config,
             (run.initial_context or {}).get(MPS_CORRELATION_ID_CONTEXT_KEY),
-            extraction_model,
         )
         on_inference_usage(llm, record_usage)
         try:

@@ -1575,11 +1575,6 @@ export interface components {
              */
             dictionary: string;
             /**
-             * Extraction Model
-             * @description Model of the workflow's LLM provider for post-call extraction.
-             */
-            extraction_model?: string | null;
-            /**
              * Context Compaction Enabled
              * @default false
              */

@@ -177,7 +177,6 @@ class AgentRuntimeFactory:
         )
         from api.services.configuration.run_model_configuration import (
             get_workflow_model_override,
-            pin_workflow_extraction_model,
             validate_workflow_model_compatibility,
         )
         from api.services.managed_model_services import get_dograh_service_api_key
@@ -202,16 +201,6 @@ class AgentRuntimeFactory:
                 )
             await validate_workflow_model_compatibility(
                 self._organization_id, user_config, definition
-            )
-            pin_workflow_extraction_model(
-                resolved.snapshot,
-                run_configs,
-                workflow_llm_provider=(
-                    user_config.llm.provider if user_config.llm is not None else None
-                ),
-                effective_llm_provider=(
-                    user_config.llm.provider if user_config.llm is not None else None
-                ),
             )
         except (HTTPException, ValueError) as exc:
             raise AgentBuildError(

@@ -25,7 +25,9 @@ from api.services.configuration.run_model_configuration import (
 )
 from api.services.managed_model_services import MPS_CORRELATION_ID_CONTEXT_KEY
 from api.services.pipecat.fallback_llm import FallbackLLMProcessor
-from api.services.pipecat.service_factory import create_llm_service
+from api.services.pipecat.service_factory import (
+    create_llm_service_with_model_override,
+)
 from api.services.pipecat.usage_metrics import merge_llm_usage, on_inference_usage
 from api.services.workflow.conversation_history import (
     build_conversation_history,
@@ -69,13 +71,14 @@ async def _close_llm(llm: Any) -> None:
                     )
 
 
-async def _create_llm(user_config, correlation_id):
+async def _create_llm(user_config, correlation_id, model):
     # Vertex constructors refresh credentials synchronously. Keep that network
     # request off the worker loop, including when the extraction deadline expires.
     task = asyncio.create_task(
         asyncio.to_thread(
-            create_llm_service,
+            create_llm_service_with_model_override,
             user_config,
+            model,
             correlation_id=correlation_id,
             usage_context="variable_extraction",
         )
@@ -155,7 +158,9 @@ async def run_final_extraction(run_id: int, organization_id: int, token: str) ->
         else:
             raise ValueError("Transferred agent has no model snapshot")
         llm = await _create_llm(
-            config, (run.initial_context or {}).get(MPS_CORRELATION_ID_CONTEXT_KEY)
+            config,
+            (run.initial_context or {}).get(MPS_CORRELATION_ID_CONTEXT_KEY),
+            (definition.workflow_configurations or {}).get("extraction_model") or None,
         )
         on_inference_usage(llm, record_usage)
         try:

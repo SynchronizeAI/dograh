@@ -245,7 +245,9 @@ def worker(monkeypatch):
         AsyncMock(return_value=(run, 7)),
     )
     monkeypatch.setattr(
-        service.db_client, "get_workflow_definition", AsyncMock(return_value=object())
+        service.db_client,
+        "get_workflow_definition",
+        AsyncMock(return_value=SimpleNamespace(workflow_configurations={})),
     )
     monkeypatch.setattr(
         service,
@@ -258,7 +260,9 @@ def worker(monkeypatch):
     llm = SimpleNamespace(
         run_inference=AsyncMock(return_value='{"name":"Ada"}'), cleanup=AsyncMock()
     )
-    monkeypatch.setattr(service, "create_llm_service", Mock(return_value=llm))
+    monkeypatch.setattr(
+        service, "create_llm_service_with_model_override", Mock(return_value=llm)
+    )
     monkeypatch.setattr(service, "RETRY_DELAYS", (0, 0))
 
     async def save(*_args, **kwargs):
@@ -286,7 +290,9 @@ async def test_worker_uses_child_model_and_is_idempotent(worker, variable):
         7, {"visit": "child"}
     )
     service.get_effective_ai_model_configuration_for_run.assert_not_awaited()
-    assert service.create_llm_service.call_args.kwargs["correlation_id"] == "existing"
+    create = service.create_llm_service_with_model_override
+    assert create.call_args.kwargs["correlation_id"] == "existing"
+    assert create.call_args.args[1] is None
     llm.cleanup.assert_awaited_once()
     await service.run_final_extraction(1, 7, "lease")
     assert llm.run_inference.await_count == 1
@@ -484,7 +490,7 @@ async def test_standalone_client_can_be_created_and_closed_off_pipeline():
     config = EffectiveAIModelConfiguration.model_validate(USER_CONFIGURATION)
     # Client construction and cleanup must work without a running pipeline;
     # no inference request is made with the dummy provider credentials.
-    llm = await service._create_llm(config, None)
+    llm = await service._create_llm(config, None, None)
     assert not llm._client.is_closed()
     await service._close_llm(llm)
     assert llm._client.is_closed()
@@ -548,7 +554,9 @@ async def test_extraction_usage_counts_under_the_fallback_that_answered(
     llm = FallbackLLMProcessor(
         primary, routes=[FallbackRoute(condition=ErrorCondition(), service=fallback)]
     )
-    monkeypatch.setattr(service, "create_llm_service", Mock(return_value=llm))
+    monkeypatch.setattr(
+        service, "create_llm_service_with_model_override", Mock(return_value=llm)
+    )
     await service.run_final_extraction(1, 7, "lease")
     assert saved.call_args.kwargs["variables"] == {"name": "Ada"}
     [(key, usage)] = saved.call_args.kwargs["usage_info"]["llm"].items()
@@ -580,3 +588,72 @@ def test_merge_llm_usage_adds_counts_and_keeps_unreported_fields():
         "LLM#1|||n": {"prompt_tokens": 1, "reasoning_tokens": None},
     }
     assert live["LLM#0|||m"]["prompt_tokens"] == 10
+
+
+def test_extraction_schema_requires_every_variable_and_allows_null():
+    from api.services.workflow.pipecat_engine_variable_extractor import (
+        extraction_response_schema,
+    )
+
+    schema = extraction_response_schema(
+        [
+            ExtractionVariableDTO(name="name", type="string", prompt="Caller name"),
+            ExtractionVariableDTO(name="units", type="number"),
+            ExtractionVariableDTO(name="urgent", type="boolean"),
+        ]
+    )
+    assert schema == {
+        "type": "object",
+        "properties": {
+            "name": {
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "description": "Caller name",
+            },
+            "units": {
+                "anyOf": [{"type": "number"}, {"type": "null"}],
+                "description": "units",
+            },
+            "urgent": {
+                "anyOf": [{"type": "boolean"}, {"type": "null"}],
+                "description": "urgent",
+            },
+        },
+        "required": ["name", "units", "urgent"],
+        "additionalProperties": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_final_extraction_sends_the_schema_on_the_workflow_extraction_model(
+    worker,
+):
+    from api.services.workflow.pipecat_engine_variable_extractor import (
+        extraction_response_schema,
+    )
+
+    _, llm, saved = worker
+    service.db_client.get_workflow_definition.return_value = SimpleNamespace(
+        workflow_configurations={"extraction_model": "gpt-4.1-mini"}
+    )
+    await service.run_final_extraction(1, 7, "lease")
+    assert service.create_llm_service_with_model_override.call_args.args[1] == (
+        "gpt-4.1-mini"
+    )
+    assert llm.run_inference.call_args.kwargs[
+        "response_schema"
+    ] == extraction_response_schema(
+        [ExtractionVariableDTO(name="name", type="string", prompt="Name")]
+    )
+    assert saved.call_args.kwargs["variables"] == {"name": "Ada"}
+
+
+@pytest.mark.asyncio
+async def test_live_extraction_keeps_the_free_text_request(monkeypatch):
+    from api.services.workflow.pipecat_engine_variable_extractor import (
+        extract_variables,
+    )
+
+    llm = SimpleNamespace(run_inference=AsyncMock(return_value='{"name": "Ada"}'))
+    variables = [ExtractionVariableDTO(name="name", type="string")]
+    assert await extract_variables(llm, variables, "user: Ada") == {"name": "Ada"}
+    assert llm.run_inference.call_args.kwargs["response_schema"] is None

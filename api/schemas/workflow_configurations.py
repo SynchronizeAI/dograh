@@ -158,6 +158,10 @@ class WorkflowConfigurationDefaults(BaseModel):
         ),
     )
     dictionary: str = ""
+    extraction_model: str | None = Field(
+        default=None,
+        description="Model of the workflow's LLM provider for post-call extraction.",
+    )
     context_compaction_enabled: bool = DEFAULT_CONTEXT_COMPACTION_ENABLED
     tts_cache_enabled: bool = Field(
         default=False,

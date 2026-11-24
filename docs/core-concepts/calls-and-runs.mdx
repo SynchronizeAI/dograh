@@ -51,5 +51,5 @@ After a call completes, the run record includes:
 | `transcript_url` | Download URL for the conversation transcript |
 | `gathered_context` | Structured data extracted by the agent during the call |
 | `initial_context` | The data passed in when the call was triggered |
-| `usage_info` | Duration in seconds, token count |
+| `usage_info` | Call duration and usage by service; LLM token counts include post-call final extraction and QA when they run |
 | `cost_info` | Cost in USD |

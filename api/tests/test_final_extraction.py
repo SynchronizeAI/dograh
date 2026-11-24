@@ -252,10 +252,19 @@ def worker(monkeypatch):
     monkeypatch.setattr(
         service,
         "hydrate_model_configuration_snapshot",
-        AsyncMock(return_value=object()),
+        AsyncMock(
+            return_value=SimpleNamespace(llm=SimpleNamespace(provider="openai"))
+        ),
     )
     monkeypatch.setattr(
         service, "get_effective_ai_model_configuration_for_run", AsyncMock()
+    )
+    monkeypatch.setattr(
+        service,
+        "get_effective_ai_model_configuration_for_workflow",
+        AsyncMock(
+            return_value=SimpleNamespace(llm=SimpleNamespace(provider="openai"))
+        ),
     )
     llm = SimpleNamespace(
         run_inference=AsyncMock(return_value='{"name":"Ada"}'), cleanup=AsyncMock()
@@ -645,6 +654,24 @@ async def test_final_extraction_sends_the_schema_on_the_workflow_extraction_mode
         [ExtractionVariableDTO(name="name", type="string", prompt="Name")]
     )
     assert saved.call_args.kwargs["variables"] == {"name": "Ada"}
+
+
+@pytest.mark.asyncio
+async def test_provider_override_ignores_workflow_extraction_model(worker):
+    run, llm, saved = worker
+    definition = SimpleNamespace(
+        workflow_configurations={"extraction_model": "gpt-4.1-mini"}
+    )
+    service.db_client.get_workflow_definition.return_value = definition
+    service.hydrate_model_configuration_snapshot.return_value = SimpleNamespace(
+        llm=SimpleNamespace(provider="anthropic")
+    )
+
+    await service.run_final_extraction(1, 7, "lease")
+
+    assert service.create_llm_service_with_model_override.call_args.args[1] is None
+    llm.run_inference.assert_awaited_once()
+    assert saved.call_args.kwargs["status"] == "done"
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,9 @@ from api.errors.failure import (
     log_failure,
 )
 from api.schemas.workflow_configurations import CallDispositionOption
+from api.services.configuration.ai_model_configuration import (
+    get_effective_ai_model_configuration_for_workflow,
+)
 from api.services.configuration.model_connections import (
     hydrate_model_configuration_snapshot,
 )
@@ -157,10 +160,24 @@ async def run_final_extraction(run_id: int, organization_id: int, token: str) ->
             )
         else:
             raise ValueError("Transferred agent has no model snapshot")
+        extraction_model = (definition.workflow_configurations or {}).get(
+            "extraction_model"
+        ) or None
+        if extraction_model is not None:
+            workflow_config = await get_effective_ai_model_configuration_for_workflow(
+                organization_id=organization_id,
+                workflow_configurations=definition.workflow_configurations,
+            )
+            if (
+                config.llm is None
+                or workflow_config.llm is None
+                or config.llm.provider != workflow_config.llm.provider
+            ):
+                extraction_model = None
         llm = await _create_llm(
             config,
             (run.initial_context or {}).get(MPS_CORRELATION_ID_CONTEXT_KEY),
-            (definition.workflow_configurations or {}).get("extraction_model") or None,
+            extraction_model,
         )
         on_inference_usage(llm, record_usage)
         try:

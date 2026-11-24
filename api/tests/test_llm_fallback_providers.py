@@ -1,12 +1,15 @@
 """Real Pipecat services with deterministic streams; no provider network calls."""
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import anthropic
 import httpx
 import pytest
+from anthropic.types.beta import BetaRawMessageStreamEvent
 from loguru import logger
 from openai import AuthenticationError, RateLimitError
 from openai.types.chat import ChatCompletionChunk
@@ -18,6 +21,7 @@ from pipecat.processors.aggregators.llm_response_universal import LLMAssistantAg
 from pipecat.processors.frame_processor import FrameProcessorSetup
 from pipecat.services.settings import LLMSettings
 from pipecat.utils.asyncio.task_manager import TaskManager
+from pydantic import TypeAdapter
 
 from api.schemas.llm_fallback import ErrorCondition, NoOutputCondition
 from api.services.pipecat.fallback_llm import FallbackLLMProcessor, FallbackRoute
@@ -54,6 +58,7 @@ async def rig(
         "openai": "gpt-4.1",
         "google": "gemini-3.5-flash",
         "aws_bedrock": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+        "anthropic": "claude-haiku-5-5",
     }
     services = [
         create_llm_service_from_provider(
@@ -108,6 +113,12 @@ async def rig(
         elif providers[index] == "google":
             monkeypatch.setattr(
                 service, "_stream_content", AsyncMock(side_effect=lambda _: stream())
+            )
+        elif providers[index] == "anthropic":
+            monkeypatch.setattr(
+                service._client.beta.messages,
+                "create",
+                AsyncMock(side_effect=lambda **_: stream()),
             )
         else:
 
@@ -515,3 +526,152 @@ async def test_one_shot_cancellation_joins_all_requests(monkeypatch):
         with pytest.raises(asyncio.CancelledError):
             await task
         assert all(event.is_set() for event in closed)
+
+
+def anthropic_events(*blocks, input_tokens=12, cache_read=900, output_tokens=20):
+    """A Messages API stream: text blocks are strings, tool calls (name, args)."""
+    events = [
+        {
+            "type": "message_start",
+            "message": {
+                "id": "msg",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-haiku-5-5",
+                "content": [],
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": 1,
+                    "cache_read_input_tokens": cache_read,
+                    "cache_creation_input_tokens": 0,
+                },
+            },
+        }
+    ]
+    stop_reason = "end_turn"
+    for index, block in enumerate(blocks):
+        if isinstance(block, str):
+            start = {"type": "text", "text": ""}
+            delta = {"type": "text_delta", "text": block}
+        else:
+            stop_reason = "tool_use"
+            start = {"type": "tool_use", "id": f"tool-{index}", "name": block[0]}
+            start["input"] = {}
+            delta = {"type": "input_json_delta", "partial_json": json.dumps(block[1])}
+        events += [
+            {"type": "content_block_start", "index": index, "content_block": start},
+            {"type": "content_block_delta", "index": index, "delta": delta},
+            {"type": "content_block_stop", "index": index},
+        ]
+    events.append(
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+            "usage": {"output_tokens": output_tokens},
+        }
+    )
+    return [TypeAdapter(BetaRawMessageStreamEvent).validate_python(e) for e in events]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [429, 529, None])
+async def test_anthropic_primary_error_falls_back_to_openai(monkeypatch, error):
+    async with rig(
+        monkeypatch, providers=("anthropic", "openai"), triggers=(("error", 1),)
+    ) as h:
+        failure = anthropic.APIConnectionError(request=httpx.Request("POST", "x"))
+        if error:
+            response = httpx.Response(
+                error, request=httpx.Request("POST", "https://example.test")
+            )
+            cls = anthropic.RateLimitError if error == 429 else anthropic.APIStatusError
+            failure = cls("request failed", response=response, body={})
+        h.install(0, Stream(failure))
+        h.install(1, Stream(openai_chunk("recovered")))
+        assert await generate(h) == ["recovered"]
+        assert not any(isinstance(frame, ErrorFrame) for frame in h.upstream.frames)
+        assert h.llm.fallback_metrics == {"started": 1, "won": 1}
+
+
+@pytest.mark.asyncio
+async def test_slow_google_falls_back_to_anthropic_node_transition(monkeypatch):
+    from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
+    from pipecat.adapters.llm.schemas.tools_schema import ToolsSchema
+    from pipecat.processors.frame_processor import FrameProcessor
+
+    usage = []
+
+    async def record_usage(service, tokens):
+        usage.append((service, tokens))
+
+    monkeypatch.setattr(FrameProcessor, "start_llm_usage_metrics", record_usage)
+    async with rig(
+        monkeypatch, providers=("google", "anthropic"), triggers=(("no_output", 1),)
+    ) as h:
+        h.install(0, Stream(asyncio.Event()))
+        h.install(1, Stream(*anthropic_events(("book", {"day": "mon"}))))
+        context = LLMContext(
+            messages=[{"role": "user", "content": "book monday"}],
+            tools=ToolsSchema(
+                standard_tools=[
+                    FunctionSchema(
+                        name="book",
+                        description="Book",
+                        properties={"day": {"type": "string"}},
+                        required=["day"],
+                    )
+                ]
+            ),
+        )
+        await h.llm._update_settings(LLMSettings(system_instruction="Be brief."))
+        handler, prepared = AsyncMock(), AsyncMock()
+        h.llm.register_function("book", handler, is_node_transition=True)
+        h.llm.add_event_handler("on_function_calls_prepared", prepared)
+        assert await generate(h, context=context) == []
+        await asyncio.sleep(0)
+        prepared.assert_awaited_once()
+        handler.assert_awaited_once()
+        assert handler.await_args.args[0].arguments == {"day": "mon"}
+        assert h.llm.fallback_metrics == {"started": 1, "won": 1}
+
+        request = h.services[1]._client.beta.messages.create.await_args.kwargs
+        assert request["model"] == "claude-haiku-5-5"
+        assert request["thinking"] == {"type": "disabled"}
+        assert "temperature" not in request.get("extra_body", {})
+        assert request["system"] == [
+            {
+                "type": "text",
+                "text": "Be brief.",
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+        assert request["tools"] == [
+            {
+                "name": "book",
+                "description": "Book",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"day": {"type": "string"}},
+                    "required": ["day"],
+                },
+            }
+        ]
+        # Input is reported gross of the cache, like OpenAI and Gemini.
+        [tokens] = [tokens for service, tokens in usage if service is h.services[1]]
+        assert (tokens.prompt_tokens, tokens.completion_tokens) == (912, 20)
+        assert tokens.cache_read_input_tokens == 900
+        assert tokens.total_tokens == 932
+
+
+@pytest.mark.asyncio
+async def test_anthropic_primary_text_wins_over_no_output_target(monkeypatch):
+    async with rig(
+        monkeypatch, providers=("anthropic", "google"), triggers=(("no_output", 1),)
+    ) as h:
+        h.install(0, Stream(*anthropic_events("Hello there.")))
+        backup = Stream(chunk("unexpected"))
+        h.install(1, backup)
+        assert "".join(await generate(h)) == "Hello there."
+        assert h.llm.fallback_metrics == {"started": 0, "won": 0}

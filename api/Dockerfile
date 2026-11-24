@@ -34,7 +34,7 @@ RUN --mount=type=bind,source=api/requirements.txt,target=/tmp/req.txt \
 # runtime.
 RUN --mount=type=bind,source=pipecat,target=/tmp/pipecat,rw \
     --mount=type=cache,target=/root/.cache/uv \
-    uv pip install '/tmp/pipecat[cartesia,deepgram,openai,elevenlabs,groq,google,azure,sarvam,soundfile,silero,webrtc,speechmatics,openrouter,camb,mcp,inworld,smallest,aws-nova-sonic]' \
+    uv pip install '/tmp/pipecat[anthropic,cartesia,deepgram,openai,elevenlabs,groq,google,azure,sarvam,soundfile,silero,webrtc,speechmatics,openrouter,camb,mcp,inworld,smallest,aws-nova-sonic]' \
  && uv pip uninstall opencv-python \
  && uv pip install opencv-python-headless
 

@@ -1,5 +1,6 @@
 from typing import Optional, TypedDict
 
+import anthropic
 import httpx
 import openai
 from deepgram import DeepgramClient
@@ -51,6 +52,7 @@ class UserConfigurationValidator:
         self._dograh_service_key_validation_cache: dict[str, bool] = {}
         self._validator_map = {
             ServiceProviders.OPENAI.value: self._check_openai_api_key,
+            ServiceProviders.ANTHROPIC.value: self._check_anthropic_api_key,
             ServiceProviders.ATLASCLOUD.value: self._check_openai_api_key,
             ServiceProviders.HOPPER.value: self._check_openai_api_key,
             ServiceProviders.DEEPGRAM.value: self._check_deepgram_api_key,
@@ -378,6 +380,16 @@ class UserConfigurationValidator:
                 "Invalid Deepgram API key. The key was rejected by the Deepgram API. "
                 "Please check that your API key is correct and active. "
                 "You can verify your keys at https://console.deepgram.com/."
+            )
+
+    def _check_anthropic_api_key(self, model: str, api_key: str) -> bool:
+        try:
+            anthropic.Anthropic(api_key=api_key).models.list(limit=1)
+            return True
+        except anthropic.AuthenticationError:
+            raise ValueError(
+                "Invalid Anthropic API key. The key was rejected by the Anthropic "
+                "API. You can verify your keys at https://platform.claude.com."
             )
 
     def _check_groq_api_key(self, model: str, api_key: str) -> bool:

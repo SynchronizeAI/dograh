@@ -123,6 +123,11 @@ TEMPERATURE_POLICIES = {
     "dograh": {
         "description": TEMPERATURE_DESCRIPTION + " Limits depend on the hosted model.",
     },
+    "anthropic": {
+        "maximum": 1.0,
+        "docs_url": "https://platform.claude.com/docs/en/api/typescript/messages/create",
+        "model_constraints": CLAUDE_RULES,
+    },
     "aws_bedrock": {
         "maximum": 1.0,
         "docs_url": "https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_InferenceConfiguration.html",

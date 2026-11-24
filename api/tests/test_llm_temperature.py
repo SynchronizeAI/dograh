@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException
 from google.auth.credentials import AnonymousCredentials
 from openai import NotGiven as OpenAINotGiven
+from pipecat.services.anthropic.llm import _apply_sampling_settings
 from pydantic import ValidationError
 
 from api.schemas.ai_model_configuration import (
@@ -36,6 +37,8 @@ def _config(provider, **overrides):
             "endpoint": "https://test.openai.azure.com",
             "aws_access_key": "test-access-key",
             "aws_secret_key": "test-secret-key",
+            # Claude 5-family models take no temperature; Haiku 4.5 still does.
+            **({"model": "claude-haiku-4-5"} if provider == "anthropic" else {}),
             **overrides,
         }
     )
@@ -56,6 +59,10 @@ def _request_temperature(service):
         return None if isinstance(value, OpenAINotGiven) else value
     if hasattr(service, "_build_generation_params"):
         return service._build_generation_params().get("temperature")
+    if hasattr(service, "_get_llm_invocation_params"):
+        params = {}
+        _apply_sampling_settings(params, service._settings)
+        return params.get("extra_body", {}).get("temperature")
     return service._build_inference_config().get("temperature")
 
 
@@ -86,6 +93,7 @@ def test_omitted_temperature_preserves_existing_factory_defaults(provider):
         "dograh": None,
         "speaches": None,
         "aws_bedrock": None,
+        "anthropic": None,
         "minimax": 1.0,
         "sarvam": 0.5,
     }.get(provider, 0.1)
@@ -108,6 +116,7 @@ def test_invalid_temperature_is_rejected(provider, temperature):
         ("minimax", "MiniMax-M2.7", 2),
         ("minimax", "MiniMax-M3", 2),
         ("aws_bedrock", "us.amazon.nova-pro-v1:0", 1),
+        ("anthropic", "claude-haiku-4-5", 1),
         ("openrouter", "anthropic/claude-sonnet-4", 1),
         ("openrouter", "openai/gpt-4.1", 2),
     ],
@@ -170,6 +179,7 @@ def test_sparse_temperature_serialization_distinguishes_unset_from_explicit_null
         ("openrouter", "anthropic/claude-opus-4.7"),
         ("openrouter", "anthropic/claude-sonnet-5"),
         ("aws_bedrock", "us.anthropic.claude-opus-4-7-v1:0"),
+        ("anthropic", "claude-haiku-5-5"),
         ("google", "gemini-3.6-flash"),
         ("google_vertex", "gemini-3.8-flash"),
     ],

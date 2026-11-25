@@ -600,7 +600,10 @@ def _stt_configurable_settings(config, *, for_update: bool = False) -> dict[str,
         return {"return_timestamps": getattr(config, "return_timestamps", False)}
     if provider == ServiceProviders.ASSEMBLYAI:
         if is_u3_pro_model(config.model):
-            return {"language_codes": [Language(language)] if language else []}
+            settings = {"language_codes": [Language(language)] if language else []}
+            if getattr(config, "max_turn_silence", None) is not None:
+                settings["max_turn_silence"] = config.max_turn_silence
+            return settings
         return {}  # Other AssemblyAI models do not support language steering.
     if provider == ServiceProviders.GLADIA:
         from pipecat.services.gladia.config import LanguageConfig

@@ -7,6 +7,8 @@ Dograh platform supports OpenAI, Anthropic, Google AI Studio, Google Vertex AI, 
 
 <Warning>
 LLM providers receive the data needed to generate responses, such as prompts, conversation history, model settings, and any configured tool/function definitions or tool call context. Review the provider's data processing, retention, model training, and regional hosting policies before using sensitive data.
+
+For requests sent to the official OpenAI API endpoint, Dograh sets `store: false`. Custom OpenAI-compatible endpoints do not receive this field; their storage behavior follows the endpoint's policy.
 </Warning>
 
 For locally deployed or self-hosted LLMs, Dograh also supports OpenAI-compatible endpoints such as Ollama and vLLM.
@@ -22,6 +24,10 @@ If you don't find a model in the drop down, you can always add a model manually.
 On an OpenAI connection, including an OpenAI-compatible endpoint, set `reasoning_effort` in the LLM settings when the selected model supports it. Leave it blank to use the model's default, except GPT-5 models, for which Dograh sends `minimal` reasoning effort and `low` verbosity by default.
 
 A value you set overrides the GPT-5 reasoning effort while keeping low verbosity. Supported values depend on the selected model; check its API documentation before choosing one.
+
+## Gemini prompt prefix caching
+
+To opt in for a Gemini workflow, add exactly one standalone `<!-- cache-boundary -->` line to its composed system prompt. Dograh caches the non-empty, non-templated fixed text before the marker and the current tool schemas with Gemini for up to one hour. Keep caller-specific or changing instructions after the marker: Dograh removes the marker and sends the remaining prompt text as the first user message. Prompts with recording enabled bypass the cache. If the prefix is not eligible or cache creation or use fails, Dograh sends the request without a cache.
 
 ## OpenRouter provider routing
 

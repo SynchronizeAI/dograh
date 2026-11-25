@@ -35,6 +35,7 @@ from api.services.pipecat.fallback_llm import FallbackLLMProcessor, FallbackRout
 from api.services.pipecat.gemini_json_schema_adapter import (
     DograhGeminiJSONSchemaAdapter,
 )
+from api.services.pipecat.gemini_prefix_cache import GeminiPrefixCacheMixin
 from api.services.pipecat.gemini_spoken_tool_calls import GeminiSpokenToolCallMixin
 from api.services.pipecat.google_credentials import (
     get_google_credentials,
@@ -423,11 +424,15 @@ class SpeachesLLMService(OpenAISpokenToolCallMixin, BaseSpeachesLLMService):
     """Speaches streaming service with spoken-tool recovery."""
 
 
-class DograhGoogleLLMService(GeminiSpokenToolCallMixin, GoogleLLMService):
+class DograhGoogleLLMService(
+    GeminiPrefixCacheMixin, GeminiSpokenToolCallMixin, GoogleLLMService
+):
     adapter_class = DograhGeminiJSONSchemaAdapter
 
 
-class DograhGoogleVertexLLMService(GeminiSpokenToolCallMixin, GoogleVertexLLMService):
+class DograhGoogleVertexLLMService(
+    GeminiPrefixCacheMixin, GeminiSpokenToolCallMixin, GoogleVertexLLMService
+):
     """Vertex text service with Dograh schemas and nonblocking authentication."""
 
     adapter_class = DograhGeminiJSONSchemaAdapter
@@ -1650,6 +1655,15 @@ def create_llm_service_from_provider(
         if base_url:
             _validate_runtime_service_url(base_url, "base_url")
             kwargs["base_url"] = base_url
+        is_official_openai_endpoint = not base_url or (
+            urlparse(base_url.strip()).hostname == "api.openai.com"
+        )
+        store = (
+            {"store": False}
+            if provider == ServiceProviders.OPENAI.value
+            and is_official_openai_endpoint
+            else {}
+        )
         if "gpt-5" in model:
             return OpenAILLMService(
                 enable_direct_mode=enable_direct_mode,
@@ -1659,11 +1673,13 @@ def create_llm_service_from_provider(
                     extra={
                         "reasoning_effort": reasoning_effort or "minimal",
                         "verbosity": "low",
+                        **store,
                     },
                 ),
                 **kwargs,
             )
         extra = {"reasoning_effort": reasoning_effort} if reasoning_effort else {}
+        extra.update(store)
         return OpenAILLMService(
             enable_direct_mode=enable_direct_mode,
             api_key=api_key,

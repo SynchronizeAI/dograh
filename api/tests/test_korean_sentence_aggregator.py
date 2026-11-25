@@ -6,13 +6,49 @@ from api.services.pipecat.service_factory import _enable_korean_sentence_aggrega
 
 
 @pytest.mark.asyncio
-async def test_korean_terminal_punctuation_releases_sentence_without_lookahead():
+async def test_plain_korean_terminal_releases_immediately():
     aggregator = KoreanSentenceAggregator(language="ko")
 
-    assert [item.text async for item in aggregator.aggregate("예약이")] == []
-    released = [item.text async for item in aggregator.aggregate(" 가능합니다.")]
+    released = [item.text async for item in aggregator.aggregate("예약했어요.")]
 
-    assert released == ["예약이 가능합니다."]
+    assert released == ["예약했어요."]
+
+
+@pytest.mark.asyncio
+async def test_ellipsis_releases_as_a_single_sentence_boundary():
+    aggregator = KoreanSentenceAggregator(language="ko")
+
+    released = [item.text async for item in aggregator.aggregate("가능해요... 다음")]
+
+    assert released == ["가능해요..."]
+
+
+@pytest.mark.asyncio
+async def test_same_chunk_closing_quote_stays_with_sentence():
+    aggregator = KoreanSentenceAggregator(language="ko")
+
+    released = [item.text async for item in aggregator.aggregate('예약했어요." 네')]
+
+    assert released == ['예약했어요."']
+
+
+@pytest.mark.asyncio
+async def test_mixed_marks_and_closer_release_at_buffer_end():
+    aggregator = KoreanSentenceAggregator(language="ko")
+
+    released = [item.text async for item in aggregator.aggregate("예약했어요?!”")]
+
+    assert released == ["예약했어요?!”"]
+
+
+@pytest.mark.asyncio
+async def test_exactly_two_trailing_dots_wait_for_ellipsis_completion():
+    aggregator = KoreanSentenceAggregator(language="ko")
+
+    assert [item.text async for item in aggregator.aggregate("가능해요..")] == []
+    released = [item.text async for item in aggregator.aggregate(".")]
+
+    assert released == ["가능해요..."]
 
 
 @pytest.mark.asyncio

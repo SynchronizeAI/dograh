@@ -1655,6 +1655,8 @@ def create_llm_service_from_provider(
         if base_url:
             _validate_runtime_service_url(base_url, "base_url")
             kwargs["base_url"] = base_url
+        # OpenAI's docs disagree on the chat-completions default; never store calls.
+        store = {"store": False} if provider == ServiceProviders.OPENAI.value else {}
         if "gpt-5" in model:
             return OpenAILLMService(
                 enable_direct_mode=enable_direct_mode,
@@ -1664,11 +1666,13 @@ def create_llm_service_from_provider(
                     extra={
                         "reasoning_effort": reasoning_effort or "minimal",
                         "verbosity": "low",
+                        **store,
                     },
                 ),
                 **kwargs,
             )
         extra = {"reasoning_effort": reasoning_effort} if reasoning_effort else {}
+        extra.update(store)
         return OpenAILLMService(
             enable_direct_mode=enable_direct_mode,
             api_key=api_key,

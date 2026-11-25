@@ -360,6 +360,7 @@ async def test_hangup_waits_for_http_booking_before_final_extraction(
     tool = SimpleNamespace(
         name="Save booking",
         tool_uuid="booking-tool",
+        category="http_api",
         definition={
             "type": "http_api",
             "config": {"method": "POST", "url": "https://crm.example.com/bookings"},

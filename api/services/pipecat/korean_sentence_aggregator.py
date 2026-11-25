@@ -6,14 +6,47 @@ from pipecat.utils.text.simple_text_aggregator import SimpleTextAggregator
 _TERMINAL_PUNCTUATION = frozenset(".!?。？！")
 _CLUSTER_PUNCTUATION = frozenset(".,!?;:…。？！；：")
 _CLOSING_DELIMITERS = frozenset("\"'”’»›)]}）］｝」』》〉】〕〗〙〛")
+_CLUSTER_CONTINUATION = _CLUSTER_PUNCTUATION | _CLOSING_DELIMITERS
 
 
 class KoreanSentenceAggregator(SimpleTextAggregator):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._chunk_tail = ""
+
+    async def aggregate(self, text: str):
+        if self._aggregation_type == TextType.TOKEN:
+            async for aggregation in super().aggregate(text):
+                yield aggregation
+            return
+
+        try:
+            for index, char in enumerate(text):
+                self._text += char
+                self._chunk_tail = text[index + 1 :]
+                result = await self._check_sentence_with_lookahead(char)
+                if result:
+                    yield result
+        finally:
+            self._chunk_tail = ""
+
     async def _check_sentence_with_lookahead(
         self, char: str, *, protected_end: int = 0
     ):
-        if _pending_korean_boundary(self._text) is not None:
-            return None
+        boundary_start = _pending_korean_boundary(self._text)
+        if boundary_start is not None:
+            punctuation_count = sum(
+                character in _CLUSTER_PUNCTUATION
+                for character in self._text[boundary_start:]
+            )
+            if (
+                self._chunk_tail
+                and self._chunk_tail[0] in _CLUSTER_CONTINUATION
+            ) or (not self._chunk_tail and punctuation_count == 2):
+                return None
+            sentence = self._text.strip()
+            await self.reset()
+            return Aggregation(text=sentence, type=TextType.SENTENCE)
         if _pending_korean_boundary(self._text[:-1]) is not None:
             sentence = self._text[:-1].strip()
             remainder = self._text[-1:]

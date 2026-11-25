@@ -6,32 +6,26 @@ from api.services.pipecat.service_factory import _enable_korean_sentence_aggrega
 
 
 @pytest.mark.asyncio
-async def test_plain_korean_terminal_releases_before_following_word():
+async def test_plain_korean_terminal_releases_immediately():
     aggregator = KoreanSentenceAggregator(language="ko")
 
-    assert [item.text async for item in aggregator.aggregate("예약이")] == []
-    released = [
-        item.text async for item in aggregator.aggregate(" 가능합니다. 다음")
-    ]
+    released = [item.text async for item in aggregator.aggregate("예약했어요.")]
 
-    assert released == ["예약이 가능합니다."]
+    assert released == ["예약했어요."]
 
 
 @pytest.mark.parametrize(
-    "first_chunk, second_chunk, expected",
+    "chunk, expected",
     [
-        ("가능해요.", ".. 다음", "가능해요..."),
-        ("맞나요?", "! 네", "맞나요?!"),
+        ("가능해요... 다음", "가능해요..."),
+        ("맞나요?! 네", "맞나요?!"),
     ],
 )
 @pytest.mark.asyncio
-async def test_punctuation_clusters_stay_intact_across_text_chunks(
-    first_chunk, second_chunk, expected
-):
+async def test_punctuation_clusters_stay_intact_within_one_chunk(chunk, expected):
     aggregator = KoreanSentenceAggregator(language="ko")
 
-    assert [item.text async for item in aggregator.aggregate(first_chunk)] == []
-    released = [item.text async for item in aggregator.aggregate(second_chunk)]
+    released = [item.text async for item in aggregator.aggregate(chunk)]
 
     assert released == [expected]
 
@@ -41,12 +35,21 @@ async def test_punctuation_clusters_stay_intact_across_text_chunks(
 async def test_closing_delimiters_stay_with_sentence_until_cluster_ends(closing):
     aggregator = KoreanSentenceAggregator(language="ko")
 
-    assert [item.text async for item in aggregator.aggregate("예약했어요.")] == []
     released = [
-        item.text async for item in aggregator.aggregate(f"{closing} 네")
+        item.text async for item in aggregator.aggregate(f"예약했어요.{closing} 네")
     ]
 
     assert released == [f"예약했어요.{closing}"]
+
+
+@pytest.mark.asyncio
+async def test_incomplete_two_mark_suffix_waits_for_cluster_completion():
+    aggregator = KoreanSentenceAggregator(language="ko")
+
+    assert [item.text async for item in aggregator.aggregate("가능해요..")] == []
+    released = [item.text async for item in aggregator.aggregate(". 다음")]
+
+    assert released == ["가능해요..."]
 
 
 @pytest.mark.asyncio

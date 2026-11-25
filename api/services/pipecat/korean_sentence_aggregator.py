@@ -3,10 +3,9 @@
 from pipecat.utils.text.base_text_aggregator import Aggregation, TextType
 from pipecat.utils.text.simple_text_aggregator import SimpleTextAggregator
 
-_TERMINAL_PUNCTUATION = frozenset(".!?。？！")
-_CLUSTER_PUNCTUATION = frozenset(".,!?;:…。？！；：")
+_TERMINAL_PUNCTUATION = frozenset(".!?。？！…")
 _CLOSING_DELIMITERS = frozenset("\"'”’»›)]}）］｝」』》〉】〕〗〙〛")
-_CLUSTER_CONTINUATION = _CLUSTER_PUNCTUATION | _CLOSING_DELIMITERS
+_CLUSTER_CONTINUATION = _TERMINAL_PUNCTUATION | _CLOSING_DELIMITERS
 
 
 class KoreanSentenceAggregator(SimpleTextAggregator):
@@ -35,14 +34,12 @@ class KoreanSentenceAggregator(SimpleTextAggregator):
     ):
         boundary_start = _pending_korean_boundary(self._text)
         if boundary_start is not None:
-            punctuation_count = sum(
-                character in _CLUSTER_PUNCTUATION
-                for character in self._text[boundary_start:]
-            )
             if (
                 self._chunk_tail
                 and self._chunk_tail[0] in _CLUSTER_CONTINUATION
-            ) or (not self._chunk_tail and punctuation_count == 2):
+            ) or (
+                self._text.endswith("..") and not self._text.endswith("...")
+            ):
                 return None
             sentence = self._text.strip()
             await self.reset()
@@ -63,7 +60,7 @@ def _pending_korean_boundary(text: str) -> int | None:
     while end and text[end - 1] in _CLOSING_DELIMITERS:
         end -= 1
     punctuation_end = end
-    while end and text[end - 1] in _CLUSTER_PUNCTUATION:
+    while end and text[end - 1] in _TERMINAL_PUNCTUATION:
         end -= 1
     punctuation = text[end:punctuation_end]
     if (

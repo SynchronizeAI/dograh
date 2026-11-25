@@ -38,6 +38,11 @@ AssemblyAI Universal-3 Pro models, including `u3-rt-pro` and the 3.7 Realtime
 Agent. With another transcriber or an unsupported model, Dograh keeps the
 selected transcriber's existing turn handling.
 
+With AssemblyAI end of turn, you can set `max_turn_silence` (50 to 10000 ms) in
+your STT model settings. It is the longest pause AssemblyAI waits before ending
+a turn it is holding open, for example while a caller reads out a number.
+Unset keeps AssemblyAI's default.
+
 When a configured STT fallback takes over, turn handling changes for later
 turns; see [Speech recognition (STT) fallback](./stt-fallback).
 

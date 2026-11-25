@@ -23,9 +23,9 @@ from api.services.pipecat.service_factory import (
 AUDIO = SimpleNamespace(transport_in_sample_rate=16000)
 
 
-def _service(model, language="en", strategy="transcription"):
+def _service(model, language="en", strategy="transcription", **settings):
     config = AssemblyAISTTConfiguration(
-        api_key="test-key", model=model, language=language
+        api_key="test-key", model=model, language=language, **settings
     )
     return create_stt_service(
         SimpleNamespace(stt=config),
@@ -93,6 +93,16 @@ def test_opt_in_sends_37_agent_model_and_lets_assemblyai_end_the_turn():
     assert service._settings.language_codes == [Language.KO]
     assert "min_turn_silence" not in query
     assert "max_turn_silence" not in query
+
+
+def test_max_turn_silence_setting_reaches_assemblyai():
+    service = _service(
+        ASSEMBLYAI_REALTIME_AGENT_MODEL, "ko", "assemblyai", max_turn_silence=2000
+    )
+
+    assert _query(service)["max_turn_silence"] == ["2000"]
+    with pytest.raises(ValidationError):
+        AssemblyAISTTConfiguration(api_key="test-key", max_turn_silence=20000)
 
 
 def test_assemblyai_end_of_turn_builds_with_stt_fallback():

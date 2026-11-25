@@ -2538,6 +2538,16 @@ class AssemblyAISTTConfiguration(BaseSTTConfiguration):
             },
         },
     )
+    max_turn_silence: int | None = Field(
+        default=None,
+        ge=50,
+        le=10000,
+        description=(
+            "Longest silence (ms) before AssemblyAI ends a turn it is holding "
+            "open, e.g. mid-number. Unset keeps AssemblyAI's default. Used with "
+            "AssemblyAI end of turn on Universal-3 Pro models."
+        ),
+    )
 
 
 @register_stt(provider=GLADIA_PROVIDER)

@@ -40,6 +40,10 @@ from api.schemas.workflow_configurations import CallDispositionOption
 from api.services.pipecat.audio_playback import play_audio
 from api.services.pipecat.call_monitor_processor import CallMonitorProcessor
 from api.services.pipecat.call_opening import CallOpening
+from api.services.pipecat.gemini_prefix_cache import (
+    cacheable_prefix,
+    set_prompt_cache_prefix,
+)
 from api.services.pipecat.greeting import GreetingController
 from api.services.pipecat.speech_playback import (
     PlaybackOutcome,
@@ -1063,6 +1067,13 @@ class PipecatEngine:
                     agent.llm.unregister_function(function.name)
         agent.tools = ToolsSchema(standard_tools=functions)
         agent.system_prompt = prompt.text
+        raw_prompt = compose_system_prompt_for_node(
+            node=node,
+            workflow=agent.workflow,
+            format_prompt=lambda text: text,
+            has_recordings=self._has_recordings,
+        )
+        set_prompt_cache_prefix(agent.llm, cacheable_prefix(raw_prompt.text))
         if agent.recording_router is not None:
             agent.recording_router.set_enabled(prompt.recording_enabled)
         if apply_settings:

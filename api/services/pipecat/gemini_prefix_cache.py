@@ -1,16 +1,16 @@
 """Gemini explicit cache of a workflow's fixed prompt prefix and tools.
 
 Missing capability: the pinned Pipecat Google service never sends
-``cached_content``. Only the fixed text before a node prompt's first template
-variable is cached, together with the tool schemas. The per-call section is
-sent as the first conversation content. Any cache problem falls back to the
-unchanged uncached request.
+``cached_content``. When the raw prompt opts in with one plain
+``<!-- cache-boundary -->`` line, only the fixed system text before it is cached
+with the tool schemas. Text after that line is sent as the first conversation
+content. The marker is removed before the prompt reaches the model. Any cache
+problem falls back to the unchanged uncached request.
 """
 
 import asyncio
 import hashlib
 import json
-import re
 import time
 from contextlib import aclosing, suppress
 
@@ -22,73 +22,44 @@ from pipecat.utils.types import assert_given
 CACHE_TTL_SECONDS = 3600
 _REFRESH_MARGIN_SECONDS = 120
 _FAILURE_BACKOFF_SECONDS = 600
+_CACHE_BOUNDARY_MARKER = "<!-- cache-boundary -->"
 
 # key -> (cached content name or None after a failed create, monotonic expiry)
 _caches: dict[str, tuple[str | None, float]] = {}
 _creating: dict[str, asyncio.Task] = {}
-_TEMPLATE_VARIABLE = re.compile(r"\{\{[^{}\n]*\}\}")
-_MARKDOWN_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+\S.*$")
-_SHORT_LABEL = re.compile(r"[\w][\w ()/·_-]{0,29}:", re.UNICODE)
-_VALUE_PUNCTUATION = frozenset(" \t\"'“”‘’`.,!?;:()[]{}<>~…·-–—/\\|")
 
 
-def _is_data_line(line: str) -> bool:
-    variables = list(_TEMPLATE_VARIABLE.finditer(line))
-    if (
-        not variables
-        or line.count("{{") != len(variables)
-        or line.count("}}") != len(variables)
-    ):
-        return False
-
-    outside = [line[: variables[0].start()]]
-    outside.extend(
-        line[left.end() : right.start()]
-        for left, right in zip(variables, variables[1:])
-    )
-    outside.append(line[variables[-1].end() :])
-
-    label = outside[0].strip().strip("\"'“”‘’`*_•- \t")
-    if label and not _SHORT_LABEL.fullmatch(label):
-        return False
-    return all(
-        all(character in _VALUE_PUNCTUATION for character in part)
-        for part in outside[1:]
-    )
+def _cache_boundary_spans(prompt: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    offset = 0
+    for line in prompt.splitlines(keepends=True):
+        if line.rstrip("\r\n") == _CACHE_BOUNDARY_MARKER:
+            spans.append((offset, offset + len(line)))
+        offset += len(line)
+    return spans
 
 
-def _is_markdown_heading(line: str) -> bool:
-    if not _MARKDOWN_HEADING.fullmatch(line):
-        return False
-    heading = re.sub(r"^\s{0,3}#{1,6}\s+", "", line)
-    return "{{" not in heading or _is_data_line(heading)
-
-
-def _is_data_suffix(suffix: str) -> bool:
-    return all(
-        not line.strip()
-        or _is_markdown_heading(line)
-        or _is_data_line(line)
-        for line in suffix.splitlines()
-    )
+def strip_cache_boundary_marker(prompt: str) -> str:
+    spans = _cache_boundary_spans(prompt)
+    if not spans:
+        return prompt
+    pieces = []
+    start = 0
+    for marker_start, marker_end in spans:
+        pieces.append(prompt[start:marker_start])
+        start = marker_end
+    pieces.append(prompt[start:])
+    return "".join(pieces)
 
 
 def cacheable_prefix(raw_prompt: str) -> str:
-    """Return the fixed system prompt only when the variable suffix is data."""
-    first_variable = raw_prompt.find("{{")
-    if first_variable < 0:
-        return raw_prompt
-    variables = list(_TEMPLATE_VARIABLE.finditer(raw_prompt))
-    if (
-        not variables
-        or variables[0].start() != first_variable
-        or raw_prompt.count("{{") != len(variables)
-        or raw_prompt.count("}}") != len(variables)
-    ):
+    """Return the static prefix when one explicit boundary opts the prompt in."""
+    spans = _cache_boundary_spans(raw_prompt)
+    if len(spans) != 1:
         return ""
-    line_start = raw_prompt.rfind("\n", 0, first_variable) + 1
-    prefix = raw_prompt[:line_start]
-    return prefix if prefix and _is_data_suffix(raw_prompt[line_start:]) else ""
+    marker_start, _ = spans[0]
+    prefix = raw_prompt[:marker_start]
+    return prefix if prefix and "{{" not in prefix else ""
 
 
 def set_prompt_cache_prefix(llm, prefix: str) -> None:
@@ -198,7 +169,7 @@ class GeminiPrefixCacheMixin:
         config = self._build_generation_params()
         config["cached_content"] = name
         messages = list(params["messages"])
-        rest = instruction[len(prefix) :].strip()
+        rest = instruction[len(prefix) :]
         if rest:
             if messages and messages[0].role == "user":
                 first = messages.pop(0)

@@ -43,6 +43,7 @@ from api.services.pipecat.call_opening import CallOpening
 from api.services.pipecat.gemini_prefix_cache import (
     cacheable_prefix,
     set_prompt_cache_prefix,
+    strip_cache_boundary_marker,
     warm_prompt_cache,
 )
 from api.services.pipecat.greeting import GreetingController
@@ -1053,7 +1054,9 @@ class PipecatEngine:
         prompt = compose_system_prompt_for_node(
             node=node,
             workflow=agent.workflow,
-            format_prompt=self._format_prompt,
+            format_prompt=lambda text: self._format_prompt(
+                strip_cache_boundary_marker(text)
+            ),
             has_recordings=self._has_recordings,
         )
         functions = await compose_functions_for_node(
@@ -1074,12 +1077,17 @@ class PipecatEngine:
             format_prompt=lambda text: text,
             has_recordings=self._has_recordings,
         )
-        set_prompt_cache_prefix(agent.llm, cacheable_prefix(raw_prompt.text))
+        prefix = (
+            ""
+            if prompt.recording_enabled
+            else cacheable_prefix(raw_prompt.text)
+        )
+        set_prompt_cache_prefix(agent.llm, prefix)
         if agent.recording_router is not None:
             agent.recording_router.set_enabled(prompt.recording_enabled)
         if apply_settings:
             await agent.llm._update_settings(
-                LLMSettings(system_instruction=prompt.text)
+                LLMSettings(system_instruction=agent.system_prompt)
             )
 
     async def _setup_llm_context(self, node: Node) -> None:

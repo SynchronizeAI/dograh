@@ -273,7 +273,10 @@ async def test_engine_gives_gemini_the_fixed_prefix_of_the_rendered_node_prompt(
 
     llm._update_settings = AsyncMock(side_effect=update_settings)
     engine = PipecatEngine(
-        workflow=three_node_workflow, llm=llm, call_context_vars=CALL
+        workflow=three_node_workflow,
+        llm=llm,
+        context=LLMContext(),
+        call_context_vars=CALL,
     )
     node = three_node_workflow.nodes["agent"]
     node.prompt = RECEPTION
@@ -298,7 +301,10 @@ async def test_engine_keeps_generated_recording_instructions_at_system_priority(
 
     llm = make_service()
     engine = PipecatEngine(
-        workflow=three_node_workflow, llm=llm, call_context_vars=CALL
+        workflow=three_node_workflow,
+        llm=llm,
+        context=LLMContext(),
+        call_context_vars=CALL,
     )
     engine._has_recordings = True
     node = three_node_workflow.nodes["agent"]

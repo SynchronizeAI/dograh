@@ -1,6 +1,7 @@
 """Gemini explicit cache holds only a workflow's fixed prefix and tools."""
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -39,10 +40,13 @@ def clear_registry():
     gemini_prefix_cache._creating.clear()
 
 
-def test_prefix_stops_at_the_section_holding_the_first_variable():
+def test_prefix_keeps_intro_at_system_priority_and_starts_suffix_at_data():
     prefix = cacheable_prefix(RAW)
 
-    assert prefix == f"{PERSONA}\n\n# 목표\n예약을 받아요.\n\n"
+    assert prefix == (
+        f"{PERSONA}\n\n# 목표\n예약을 받아요.\n\n"
+        "# 회사 데이터\n아래는 이 통화의 정보예요.\n\n## 회사 이름\n"
+    )
     assert render_template(RAW, CALL).startswith(prefix)
     assert cacheable_prefix("# 고정\n변수 없음") == "# 고정\n변수 없음"
     assert cacheable_prefix("이름: {{caller_name}}") == ""
@@ -68,11 +72,12 @@ def chunk(text):
     )
 
 
-def make_service(create=None, streams=()):
+def make_service(create=None, streams=(), raw_prompt=RAW):
     service = DograhGoogleLLMService(
         api_key="test-key",
         settings=GoogleLLMSettings(
-            model="gemini-3.6-flash", system_instruction=render_template(RAW, CALL)
+            model="gemini-3.6-flash",
+            system_instruction=render_template(raw_prompt, CALL),
         ),
         tools=TOOLS,
     )
@@ -99,7 +104,7 @@ def make_service(create=None, streams=()):
             ),
         ),
     )
-    service.prompt_cache_prefix = cacheable_prefix(RAW)
+    service.prompt_cache_prefix = cacheable_prefix(raw_prompt)
     return service
 
 
@@ -130,9 +135,56 @@ async def test_cache_holds_only_fixed_text_and_tools_and_call_data_goes_in_conte
     assert not {"system_instruction", "tools", "tool_config"} & cached.keys()
     opening = second.kwargs["contents"][0]
     assert opening.role == "user"
-    assert opening.parts[0].text.startswith("# 회사 데이터")
+    assert opening.parts[0].text.startswith(
+        render_template(RAW, CALL)[len(cacheable_prefix(RAW)) :]
+    )
     assert "김민수" in opening.parts[0].text
     assert opening.parts[-1].text == "내일 예약돼요?"
+
+
+def _wire_request(kwargs):
+    config = kwargs["config"]
+    if hasattr(config, "model_dump"):
+        config = config.model_dump(mode="json", exclude_none=True)
+    contents = [
+        content.model_dump(mode="json", exclude_none=True)
+        for content in kwargs["contents"]
+    ]
+    return json.dumps(
+        {"model": kwargs["model"], "contents": contents, "config": config},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "\n회사가 전화한 분께 안내하라고 정해 둔 정보예요.",
+        "\n# 차례 끝내기\n예약을 확정하기 전에 손님에게 확인해요.",
+        "를 확인해요.\n",
+    ],
+    ids=["explanation", "trailing-rules", "text-after-value"],
+)
+@pytest.mark.asyncio
+async def test_instruction_suffix_is_sent_byte_for_byte_as_an_uncached_request(suffix):
+    raw_prompt = (
+        "# 안내\n예약을 도와요.\n\n# 회사 데이터\n이 통화의 정보예요.\n"
+        f"- 손님 이름: {{{{caller_name}}}}{suffix}"
+    )
+    service = make_service(streams=["uncached"], raw_prompt=raw_prompt)
+    uncached = make_service(streams=["uncached"], raw_prompt=raw_prompt)
+    uncached.prompt_cache_prefix = ""
+
+    assert cacheable_prefix(raw_prompt) == ""
+    assert await texts(service) == ["uncached"]
+    assert await texts(uncached) == ["uncached"]
+    assert service._client.aio.caches.create.await_count == 0
+    assert _wire_request(
+        service._client.aio.models.generate_content_stream.await_args.kwargs
+    ) == _wire_request(
+        uncached._client.aio.models.generate_content_stream.await_args.kwargs
+    )
 
 
 @pytest.mark.asyncio
@@ -178,16 +230,71 @@ async def test_engine_gives_gemini_the_fixed_prefix_of_the_rendered_node_prompt(
 ):
     from api.services.workflow.pipecat_engine import PipecatEngine
 
-    llm = make_service()
-    llm._update_settings = AsyncMock()
+    llm = make_service(streams=["cached"])
+
+    async def update_settings(settings):
+        llm._settings.system_instruction = settings.system_instruction
+
+    llm._update_settings = AsyncMock(side_effect=update_settings)
     engine = PipecatEngine(
         workflow=three_node_workflow, llm=llm, call_context_vars=CALL
     )
     node = three_node_workflow.nodes["agent"]
     node.prompt = RECEPTION
-    await engine._prepare_node(engine.active_agent, node)
+    await engine._setup_llm_context(node)
 
     assert llm.prompt_cache_prefix
     assert engine.active_agent.system_prompt.startswith(llm.prompt_cache_prefix)
     assert "김민수" in engine.active_agent.system_prompt
     assert "김민수" not in llm.prompt_cache_prefix
+    await asyncio.gather(*gemini_prefix_cache._creating.values())
+    assert llm._client.aio.caches.create.await_count == 1
+    assert llm._client.aio.models.generate_content_stream.await_count == 0
+    assert await texts(llm) == ["cached"]
+
+
+@pytest.mark.asyncio
+async def test_cached_request_failure_before_first_chunk_falls_back_uncached():
+    service = make_service(
+        streams=["warm", RuntimeError("temporary transport error"), "uncached"]
+    )
+    await texts(service)
+    await asyncio.gather(*gemini_prefix_cache._creating.values())
+
+    assert await texts(service) == ["uncached"]
+    assert service._client.aio.models.generate_content_stream.await_count == 3
+    assert gemini_prefix_cache._caches == {}
+
+
+@pytest.mark.asyncio
+async def test_cached_request_cancellation_propagates_without_uncached_retry():
+    service = make_service(streams=["warm", asyncio.CancelledError()])
+    await texts(service)
+    await asyncio.gather(*gemini_prefix_cache._creating.values())
+
+    with pytest.raises(asyncio.CancelledError):
+        await texts(service)
+
+    assert service._client.aio.models.generate_content_stream.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_cached_stream_failure_after_first_chunk_is_not_retried():
+    service = make_service(streams=["warm"])
+    await texts(service)
+    await asyncio.gather(*gemini_prefix_cache._creating.values())
+
+    async def fail_after_first_chunk(**kwargs):
+        async def stream():
+            yield chunk("first")
+            raise RuntimeError("stream interrupted")
+
+        return stream()
+
+    service._client.aio.models.generate_content_stream.side_effect = (
+        fail_after_first_chunk
+    )
+    with pytest.raises(RuntimeError, match="stream interrupted"):
+        await texts(service)
+
+    assert service._client.aio.models.generate_content_stream.await_count == 2

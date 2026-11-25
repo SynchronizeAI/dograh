@@ -19,6 +19,7 @@ from pipecat.frames.frames import (
 from api.schemas.tool import TransferGreetingMode
 from api.services.pipecat.agent_runtime_factory import AgentBuildError
 from api.services.pipecat.audio_playback import HoldAudio
+from api.services.pipecat.gemini_prefix_cache import warm_prompt_cache
 from api.services.pipecat.speech_playback import PlaybackOutcome
 from api.services.workflow.agent_handoff_context import build_handoff_snapshot
 from api.services.workflow.agent_runtime import new_visit_id
@@ -184,6 +185,7 @@ class AgentTransferCoordinator:
                     raise AgentBuildError("destination_unusable", destination.error)
                 engine.commit_agent(destination, snapshot)
                 committed = True
+            await warm_prompt_cache(destination.llm, engine.context)
             # Only committed visits change the shared transcriber. Hold audio
             # still covers the update and destination generation stays gated.
             # A provider failure must not strand an already committed handoff.

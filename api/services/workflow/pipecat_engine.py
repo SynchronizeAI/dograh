@@ -43,6 +43,7 @@ from api.services.pipecat.call_opening import CallOpening
 from api.services.pipecat.gemini_prefix_cache import (
     cacheable_prefix,
     set_prompt_cache_prefix,
+    warm_prompt_cache,
 )
 from api.services.pipecat.greeting import GreetingController
 from api.services.pipecat.speech_playback import (
@@ -1089,6 +1090,7 @@ class PipecatEngine:
             await self._update_llm_context(
                 agent.system_prompt, agent.tools.standard_tools
             )
+            await warm_prompt_cache(agent.llm, self.context)
 
     async def set_node(
         self,

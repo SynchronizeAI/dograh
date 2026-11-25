@@ -10,10 +10,10 @@ unchanged uncached request.
 import asyncio
 import hashlib
 import json
+import re
 import time
-from contextlib import aclosing
+from contextlib import aclosing, suppress
 
-from google.genai import errors
 from google.genai.types import Content, CreateCachedContentConfig, Part
 from loguru import logger
 
@@ -26,15 +26,69 @@ _FAILURE_BACKOFF_SECONDS = 600
 # key -> (cached content name or None after a failed create, monotonic expiry)
 _caches: dict[str, tuple[str | None, float]] = {}
 _creating: dict[str, asyncio.Task] = {}
+_TEMPLATE_VARIABLE = re.compile(r"\{\{[^{}\n]*\}\}")
+_MARKDOWN_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+\S.*$")
+_SHORT_LABEL = re.compile(r"[\w][\w ()/·_-]{0,29}:", re.UNICODE)
+_VALUE_PUNCTUATION = frozenset(" \t\"'“”‘’`.,!?;:()[]{}<>~…·-–—/\\|")
+
+
+def _is_data_line(line: str) -> bool:
+    variables = list(_TEMPLATE_VARIABLE.finditer(line))
+    if (
+        not variables
+        or line.count("{{") != len(variables)
+        or line.count("}}") != len(variables)
+    ):
+        return False
+
+    outside = [line[: variables[0].start()]]
+    outside.extend(
+        line[left.end() : right.start()]
+        for left, right in zip(variables, variables[1:])
+    )
+    outside.append(line[variables[-1].end() :])
+
+    label = outside[0].strip().strip("\"'“”‘’`*_•- \t")
+    if label and not _SHORT_LABEL.fullmatch(label):
+        return False
+    return all(
+        all(character in _VALUE_PUNCTUATION for character in part)
+        for part in outside[1:]
+    )
+
+
+def _is_markdown_heading(line: str) -> bool:
+    if not _MARKDOWN_HEADING.fullmatch(line):
+        return False
+    heading = re.sub(r"^\s{0,3}#{1,6}\s+", "", line)
+    return "{{" not in heading or _is_data_line(heading)
+
+
+def _is_data_suffix(suffix: str) -> bool:
+    return all(
+        not line.strip()
+        or _is_markdown_heading(line)
+        or _is_data_line(line)
+        for line in suffix.splitlines()
+    )
 
 
 def cacheable_prefix(raw_prompt: str) -> str:
-    """Fixed text up to the top-level heading that holds the first variable."""
+    """Return the fixed system prompt only when the variable suffix is data."""
     first_variable = raw_prompt.find("{{")
     if first_variable < 0:
         return raw_prompt
-    heading = raw_prompt.rfind("\n# ", 0, first_variable)
-    return raw_prompt[: heading + 1] if heading >= 0 else ""
+    variables = list(_TEMPLATE_VARIABLE.finditer(raw_prompt))
+    if (
+        not variables
+        or variables[0].start() != first_variable
+        or raw_prompt.count("{{") != len(variables)
+        or raw_prompt.count("}}") != len(variables)
+    ):
+        return ""
+    line_start = raw_prompt.rfind("\n", 0, first_variable) + 1
+    prefix = raw_prompt[:line_start]
+    return prefix if prefix and _is_data_suffix(raw_prompt[line_start:]) else ""
 
 
 def set_prompt_cache_prefix(llm, prefix: str) -> None:
@@ -42,6 +96,13 @@ def set_prompt_cache_prefix(llm, prefix: str) -> None:
     for service in services if isinstance(services, list) else [llm]:
         if isinstance(service, GeminiPrefixCacheMixin):
             service.prompt_cache_prefix = prefix
+
+
+async def warm_prompt_cache(llm, context) -> None:
+    services = getattr(llm, "_services", None)
+    for service in services if isinstance(services, list) else [llm]:
+        if isinstance(service, GeminiPrefixCacheMixin):
+            await service._warm_prompt_cache(context)
 
 
 class GeminiPrefixCacheMixin:
@@ -74,6 +135,41 @@ class GeminiPrefixCacheMixin:
         finally:
             _creating.pop(key, None)
 
+    async def _get_prefix_cache_request_params(self, context):
+        return await self.get_llm_adapter().get_llm_invocation_params(
+            context,
+            system_instruction=assert_given(self._settings.system_instruction),
+            ensure_last_message_is_user=self._should_inject_trailing_user_message(),
+        )
+
+    def _prefix_cache_request_details(self, params):
+        prefix = self.prompt_cache_prefix
+        instruction = params["system_instruction"] or ""
+        model = self._settings.model
+        tools = params["tools"] or self._tools or []
+        tool_config = self._tool_config or None
+        key = self._prefix_cache_key(model, prefix, tools, tool_config)
+        return prefix, instruction, model, tools, tool_config, key
+
+    async def _warm_prompt_cache(self, context) -> None:
+        if not self.prompt_cache_prefix:
+            return
+        try:
+            params = await self._get_prefix_cache_request_params(context)
+            prefix, instruction, model, tools, tool_config, key = (
+                self._prefix_cache_request_details(params)
+            )
+            if instruction.startswith(prefix):
+                self._ready_prefix_cache(
+                    key, model, prefix, tools, tool_config
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.warning(
+                f"Gemini prefix cache warmup unavailable: {type(error).__name__}"
+            )
+
     def _ready_prefix_cache(self, key, *create_args) -> str | None:
         name, expiry = _caches.get(key, (None, 0.0))
         if time.monotonic() < expiry:
@@ -89,18 +185,12 @@ class GeminiPrefixCacheMixin:
         prefix = self.prompt_cache_prefix
         if not prefix:
             return await super()._stream_content(context)
-        params = await self.get_llm_adapter().get_llm_invocation_params(
-            context,
-            system_instruction=assert_given(self._settings.system_instruction),
-            ensure_last_message_is_user=self._should_inject_trailing_user_message(),
+        params = await self._get_prefix_cache_request_params(context)
+        prefix, instruction, model, tools, tool_config, key = (
+            self._prefix_cache_request_details(params)
         )
-        instruction = params["system_instruction"] or ""
         if not instruction.startswith(prefix):
             return await super()._stream_content(context)
-        model = self._settings.model
-        tools = params["tools"] or self._tools or []
-        tool_config = self._tool_config or None
-        key = self._prefix_cache_key(model, prefix, tools, tool_config)
         name = self._ready_prefix_cache(key, model, prefix, tools, tool_config)
         if not name:
             return await super()._stream_content(context)
@@ -120,6 +210,7 @@ class GeminiPrefixCacheMixin:
         return self._stream_cached(context, model, messages, config, key)
 
     async def _stream_cached(self, context, model, messages, config, key):
+        stream = None
         try:
             stream = await self._client.aio.models.generate_content_stream(
                 model=model, contents=messages, config=config
@@ -127,13 +218,22 @@ class GeminiPrefixCacheMixin:
             first = await stream.__anext__()
         except StopAsyncIteration:
             return
-        except errors.ClientError as error:
-            logger.warning(f"Gemini prefix cache rejected ({error.code}); uncached")
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            if stream is not None:
+                with suppress(Exception):
+                    await stream.aclose()
+            logger.warning(
+                f"Gemini prefix cache request failed ({type(error).__name__}); uncached"
+            )
             _caches.pop(key, None)
             stream = await super()._stream_content(context)
-            first = None
+            async with aclosing(stream):
+                async for chunk in stream:
+                    yield chunk
+            return
         async with aclosing(stream):
-            if first is not None:
-                yield first
+            yield first
             async for chunk in stream:
                 yield chunk

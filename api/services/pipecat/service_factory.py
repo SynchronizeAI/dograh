@@ -1655,8 +1655,15 @@ def create_llm_service_from_provider(
         if base_url:
             _validate_runtime_service_url(base_url, "base_url")
             kwargs["base_url"] = base_url
-        # OpenAI's docs disagree on the chat-completions default; never store calls.
-        store = {"store": False} if provider == ServiceProviders.OPENAI.value else {}
+        is_official_openai_endpoint = not base_url or (
+            urlparse(base_url.strip()).hostname == "api.openai.com"
+        )
+        store = (
+            {"store": False}
+            if provider == ServiceProviders.OPENAI.value
+            and is_official_openai_endpoint
+            else {}
+        )
         if "gpt-5" in model:
             return OpenAILLMService(
                 enable_direct_mode=enable_direct_mode,

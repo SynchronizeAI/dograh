@@ -6,13 +6,47 @@ from api.services.pipecat.service_factory import _enable_korean_sentence_aggrega
 
 
 @pytest.mark.asyncio
-async def test_korean_terminal_punctuation_releases_sentence_without_lookahead():
+async def test_plain_korean_terminal_releases_before_following_word():
     aggregator = KoreanSentenceAggregator(language="ko")
 
     assert [item.text async for item in aggregator.aggregate("예약이")] == []
-    released = [item.text async for item in aggregator.aggregate(" 가능합니다.")]
+    released = [
+        item.text async for item in aggregator.aggregate(" 가능합니다. 다음")
+    ]
 
     assert released == ["예약이 가능합니다."]
+
+
+@pytest.mark.parametrize(
+    "first_chunk, second_chunk, expected",
+    [
+        ("가능해요.", ".. 다음", "가능해요..."),
+        ("맞나요?", "! 네", "맞나요?!"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_punctuation_clusters_stay_intact_across_text_chunks(
+    first_chunk, second_chunk, expected
+):
+    aggregator = KoreanSentenceAggregator(language="ko")
+
+    assert [item.text async for item in aggregator.aggregate(first_chunk)] == []
+    released = [item.text async for item in aggregator.aggregate(second_chunk)]
+
+    assert released == [expected]
+
+
+@pytest.mark.parametrize("closing", ['"', ")", "]"])
+@pytest.mark.asyncio
+async def test_closing_delimiters_stay_with_sentence_until_cluster_ends(closing):
+    aggregator = KoreanSentenceAggregator(language="ko")
+
+    assert [item.text async for item in aggregator.aggregate("예약했어요.")] == []
+    released = [
+        item.text async for item in aggregator.aggregate(f"{closing} 네")
+    ]
+
+    assert released == [f"예약했어요.{closing}"]
 
 
 @pytest.mark.asyncio

@@ -614,6 +614,10 @@ class TwilioProvider(TelephonyProvider):
     def generate_validation_error_response(error_type) -> tuple:
         """
         Generate Twilio-specific error response for validation failures with organizational debugging info.
+
+        Sync fork: answered 503, not 200, so Twilio requests the number's VoiceFallbackUrl (the
+        line's voicemail) instead of reading the refusal to the caller and hanging up. Twilio
+        plays its own error message when a number has no fallback.
         """
         from fastapi import Response
 
@@ -629,7 +633,9 @@ class TwilioProvider(TelephonyProvider):
     <Hangup/>
 </Response>"""
 
-        return Response(content=twiml_content, media_type="application/xml")
+        return Response(
+            content=twiml_content, media_type="application/xml", status_code=503
+        )
 
     # ======== CALL TRANSFER METHODS ========
 

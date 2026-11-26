@@ -464,9 +464,10 @@ class TwilioProvider(TelephonyProvider):
                 ),
             )
 
-        # Sync fork: a front door (falling back to this dispatcher) keeps VoiceUrl.
+        # Sync fork: a front door (falling back to this dispatcher) keeps VoiceUrl,
+        # on attach and detach alike: clearing it leaves the number answering nothing.
         door = os.environ.get("TWILIO_FRONT_DOOR_URL")
-        if webhook_url and door and number.get("voice_url") == door:
+        if door and number.get("voice_url") == door:
             return ProviderSyncResult(ok=True)
 
         endpoint = f"{self.base_url}/IncomingPhoneNumbers/{sid}.json"

@@ -11,7 +11,7 @@ DOOR = "https://app.example.com/api/voip/route"
 DOGRAH = "https://dograh.example.com/api/v1/telephony/inbound/run"
 
 
-async def _sync(voice_url: str) -> _StubSession:
+async def _sync(voice_url: str, webhook_url: str | None = DOGRAH) -> _StubSession:
     provider = TwilioProvider(
         {"account_sid": "AC1", "auth_token": "t", "from_numbers": []}
     )
@@ -26,14 +26,15 @@ async def _sync(voice_url: str) -> _StubSession:
         "api.services.telephony.providers.twilio.provider.aiohttp.ClientSession",
         return_value=session,
     ):
-        assert (await provider.configure_inbound("+15551230002", DOGRAH)).ok
+        assert (await provider.configure_inbound("+15551230002", webhook_url)).ok
     return session
 
 
 @pytest.mark.asyncio
-async def test_a_front_door_keeps_its_voice_url(monkeypatch):
+@pytest.mark.parametrize("webhook_url", [DOGRAH, None])
+async def test_a_front_door_keeps_its_voice_url(monkeypatch, webhook_url):
     monkeypatch.setenv("TWILIO_FRONT_DOOR_URL", DOOR)
-    assert len((await _sync(DOOR)).requests) == 1
+    assert len((await _sync(DOOR, webhook_url)).requests) == 1
 
 
 @pytest.mark.asyncio

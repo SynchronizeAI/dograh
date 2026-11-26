@@ -19,6 +19,7 @@ def _provider(**overrides) -> ExotelProvider:
         "api_token": "token456",
         "api_base_url": "https://api.in.exotel.com",
         "from_numbers": ["+9180XXXXXXX1"],
+        "default_from_number": "+9180XXXXXXX1",
     }
     config.update(overrides)
     return ExotelProvider(config)

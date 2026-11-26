@@ -1054,6 +1054,7 @@ async def test_outbound_calls_are_pinned_to_the_managed_trunk_name():
             "trunks": [{"id": 1, "enabled": True, "name": "  dograh-carrier  "}],
             "trunk_id_by_number": {"+15551230001": 1},
             "from_numbers": ["+15551230001"],
+            "default_from_number": "+15551230001",
         }
     )
     session = _TrunkSession(
@@ -1098,6 +1099,7 @@ async def test_transfer_calls_are_pinned_to_the_managed_trunk_name():
             "trunks": [{"id": 1, "enabled": True, "name": "dograh-carrier"}],
             "trunk_id_by_number": {"+15551230001": 1},
             "from_numbers": ["+15551230001"],
+            "default_from_number": "+15551230001",
         }
     )
     session = _TrunkSession(
@@ -1137,6 +1139,7 @@ async def test_disabled_outbound_trunk_is_not_sent_with_outbound_calls():
             "trunks": [{"id": 1, "enabled": False, "name": "dograh-carrier"}],
             "trunk_id_by_number": {"+15551230001": 1},
             "from_numbers": ["+15551230001"],
+            "default_from_number": "+15551230001",
         }
     )
     session = _TrunkSession(

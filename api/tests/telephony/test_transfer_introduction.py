@@ -78,6 +78,7 @@ async def transfer(monkeypatch):
             "account_sid": "AC-test",
             "auth_token": "test-secret",
             "from_numbers": ["+15555550111"],
+            "default_from_number": "+15555550111",
         }
     )
     provider.end_transfer_leg = AsyncMock()

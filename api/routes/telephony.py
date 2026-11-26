@@ -67,10 +67,10 @@ class InitiateCallRequest(BaseModel):
     workflow_run_id: int | None = None
     phone_number: str | None = None
     # Optional explicit telephony config to use for the test call. If omitted,
-    # the resolver prefers the org default and then another ready active config.
+    # the org's marked default is used; nothing else is tried.
     telephony_configuration_id: int | None = None
     # Optional caller-ID phone number to dial out from. Must belong to the
-    # resolved telephony configuration; otherwise the provider picks one.
+    # resolved telephony configuration; otherwise its default caller ID is used.
     from_phone_number_id: int | None = None
 
 
@@ -103,8 +103,8 @@ async def initiate_call(
         db=db_client,
     )
 
-    # Resolve and pre-flight the explicit config, or select the first active
-    # config that is ready for outbound. This happens before run creation so a
+    # Resolve and pre-flight the explicit config, or the org's marked default
+    # outbound config. This happens before run creation so a
     # setup problem does not land in run history as a failed call.
     try:
         telephony_configuration_id = await resolve_outbound_configuration_id(

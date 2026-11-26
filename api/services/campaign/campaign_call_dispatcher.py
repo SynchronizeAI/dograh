@@ -41,8 +41,8 @@ class CampaignCallDispatcher:
     async def get_provider_for_campaign(self, campaign) -> "TelephonyProvider":
         """Resolve and pre-flight the provider used by a campaign.
 
-        Legacy campaigns without a pinned configuration select the first active
-        outbound-ready config, preferring an explicit default. The resolved id
+        Legacy campaigns without a pinned configuration use the organization's
+        marked default outbound config. The resolved id
         is pinned on this detached campaign instance for the rest of the batch.
         """
         from api.services.telephony.factory import get_telephony_provider_by_id
@@ -59,7 +59,7 @@ class CampaignCallDispatcher:
         if requested_id is None:
             logger.warning(
                 f"Campaign {campaign.id} has no telephony_configuration_id; "
-                f"using ready config {resolved_id} for org "
+                f"using default config {resolved_id} for org "
                 f"{campaign.organization_id}"
             )
             campaign.telephony_configuration_id = resolved_id

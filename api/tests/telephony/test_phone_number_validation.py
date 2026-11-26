@@ -118,7 +118,7 @@ async def test_twilio_missing_number_is_an_idempotent_detach():
             "from_numbers": [],
         }
     )
-    provider._lookup_incoming_number_sid = AsyncMock(return_value=None)
+    provider._lookup_incoming_number = AsyncMock(return_value=None)
 
     result = await provider.configure_inbound("+15551230002", None)
 

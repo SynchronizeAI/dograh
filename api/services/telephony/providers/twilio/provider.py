@@ -4,6 +4,7 @@ Twilio implementation of the TelephonyProvider interface.
 
 import asyncio
 import json
+import os
 import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -441,7 +442,8 @@ class TwilioProvider(TelephonyProvider):
 
         e164 = normalized.canonical
         try:
-            sid = await self._lookup_incoming_number_sid(e164)
+            number = await self._lookup_incoming_number(e164) or {}
+            sid = number.get("sid")
         except Exception as e:
             logger.error(f"Failed to look up Twilio number {e164}: {e}")
             return ProviderSyncResult(ok=False, message=f"Twilio lookup failed: {e}")
@@ -461,6 +463,11 @@ class TwilioProvider(TelephonyProvider):
                     f"({self.account_sid}). Add it in the Twilio console first."
                 ),
             )
+
+        # Sync fork: a front door (falling back to this dispatcher) keeps VoiceUrl.
+        door = os.environ.get("TWILIO_FRONT_DOOR_URL")
+        if webhook_url and door and number.get("voice_url") == door:
+            return ProviderSyncResult(ok=True)
 
         endpoint = f"{self.base_url}/IncomingPhoneNumbers/{sid}.json"
         if webhook_url:
@@ -530,6 +537,9 @@ class TwilioProvider(TelephonyProvider):
 
     async def _lookup_incoming_number_sid(self, e164: str) -> Optional[str]:
         """Return the Twilio SID of the IncomingPhoneNumber matching ``e164``."""
+        return (await self._lookup_incoming_number(e164) or {}).get("sid")
+
+    async def _lookup_incoming_number(self, e164: str) -> Optional[Dict[str, Any]]:
         endpoint = f"{self.base_url}/IncomingPhoneNumbers.json"
         params = {"PhoneNumber": e164}
         async with aiohttp.ClientSession() as session:
@@ -545,7 +555,7 @@ class TwilioProvider(TelephonyProvider):
         numbers = data.get("incoming_phone_numbers") or []
         for number in numbers:
             if number.get("phone_number") == e164:
-                return number.get("sid")
+                return number
         return None
 
     async def start_inbound_stream(

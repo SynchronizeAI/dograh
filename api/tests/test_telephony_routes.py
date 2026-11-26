@@ -1,6 +1,7 @@
 import io
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, Mock, patch
+from urllib.parse import urlencode
 
 import pytest
 from fastapi import FastAPI
@@ -525,7 +526,9 @@ def test_initiate_call_rejects_when_concurrency_limit_reached():
 @pytest.mark.asyncio
 async def test_inbound_run_routes_exotel_without_account_id_by_called_number():
     """Exotel Voicebot webhooks omit AccountSid; route by called number."""
-    request = SimpleNamespace(headers={}, url="https://api.example.com/inbound/run")
+    request = SimpleNamespace(
+        headers={}, url="https://api.example.com/inbound/run", query_params={}
+    )
     provider_class = SimpleNamespace(
         PROVIDER_NAME="exotel",
         generate_validation_error_response=Mock(return_value="not-configured"),
@@ -620,7 +623,9 @@ def _setup_koreaaitel_webhook(
     import api.routes.telephony as routes
 
     request = SimpleNamespace(
-        headers={"x-signature": "signed"}, url="https://api.example.com/inbound/run"
+        headers={"x-signature": "signed"},
+        url="https://api.example.com/inbound/run",
+        query_params={},
     )
     provider_class = KoreaAITelProvider
     data = KoreaAITelProvider.parse_inbound_webhook(
@@ -695,6 +700,48 @@ async def test_koreaaitel_webhook_replay_and_call_id_isolation(monkeypatch, repl
 
 
 @pytest.mark.asyncio
+async def test_koreaaitel_follow_up_takes_missing_fields_from_the_signed_url(
+    monkeypatch,
+):
+    """A `<Dial action>` redirected here lacks AccountId, CallStatus and
+    ForwardedFrom; the redirecting server puts them in the URL the vendor signs.
+    Detection and routing see them; the signature covers that URL and the form."""
+    import api.routes.telephony as routes
+
+    request, _, provider, db = _setup_koreaaitel_webhook(monkeypatch, [None], [999])
+    query = {"AccountId": "AC1", "CallStatus": "ringing", "ForwardedFrom": "0212345678"}
+    form = {
+        "CallId": "CA1",
+        "From": "01012345678",
+        "To": "07012340001",
+        "Direction": "inbound",
+        "DialCallStatus": "no-answer",
+    }
+    request.url = "https://api.example.com/inbound/run?" + urlencode(query)
+    request.query_params = query
+    detect = AsyncMock(return_value=KoreaAITelProvider)
+    monkeypatch.setattr(
+        routes, "parse_webhook_request", AsyncMock(return_value=(form, "raw"))
+    )
+    monkeypatch.setattr(routes, "_detect_provider", detect)
+    monkeypatch.setattr(
+        routes,
+        "normalize_webhook_data",
+        lambda cls, data, headers: cls.parse_inbound_webhook(data),
+    )
+
+    assert await handle_inbound_run(request) == "stream"
+
+    assert detect.await_args.args[0] == {**query, **form}
+    assert KoreaAITelProvider.can_handle_webhook({**query, **form}, request.headers)
+    assert not KoreaAITelProvider.can_handle_webhook(form, request.headers)
+    assert db.find_inbound_route_by_account.await_args.kwargs["account_id"] == "AC1"
+    provider.verify_inbound_signature.assert_awaited_once_with(
+        request.url, form, request.headers, "raw"
+    )
+
+
+@pytest.mark.asyncio
 async def test_unsigned_koreaaitel_webhook_does_not_log_caller_number(monkeypatch):
 
     request, _, _, _ = _setup_koreaaitel_webhook(
@@ -759,7 +806,9 @@ async def test_koreaaitel_run_log_redacts_phone_fields_but_keeps_call_context(
 
 @pytest.mark.asyncio
 async def test_inbound_run_rejects_when_concurrency_limit_reached():
-    request = SimpleNamespace(headers={}, url="https://api.example.com/inbound/run")
+    request = SimpleNamespace(
+        headers={}, url="https://api.example.com/inbound/run", query_params={}
+    )
     provider_class = SimpleNamespace(
         PROVIDER_NAME="twilio",
         generate_validation_error_response=Mock(return_value="limit-response"),

@@ -828,7 +828,12 @@ async def handle_inbound_run(request: Request):
     logger.info("Inbound /run dispatch received")
 
     try:
-        webhook_data, raw_body = await parse_webhook_request(request)
+        signed_data, raw_body = await parse_webhook_request(request)
+        # 한국AI통신's follow-up requests (`<Dial action>`, `<Redirect>`) omit the
+        # first request's AccountId, CallStatus and ForwardedFrom, so the server that
+        # redirects a call carries them in this URL, which the signature covers. The
+        # form wins, and only the form is verified.
+        webhook_data = {**request.query_params, **signed_data}
         headers = dict(request.headers)
 
         provider_class = await _detect_provider(webhook_data, headers)
@@ -903,7 +908,7 @@ async def handle_inbound_run(request: Request):
             telephony_configuration_id, config.organization_id
         )
         signature_valid = await provider_instance.verify_inbound_signature(
-            str(request.url), webhook_data, headers, raw_body
+            str(request.url), signed_data, headers, raw_body
         )
         if not signature_valid:
             logger.warning(

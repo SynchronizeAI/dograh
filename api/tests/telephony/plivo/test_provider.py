@@ -41,6 +41,7 @@ async def test_transfer_call_dials_destination_with_answer_and_hangup_urls():
             "auth_id": "MA123",
             "auth_token": "secret",
             "from_numbers": ["+15551230001"],
+            "default_from_number": "+15551230001",
         }
     )
     session = _Session()

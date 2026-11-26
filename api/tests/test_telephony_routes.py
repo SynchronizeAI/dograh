@@ -39,21 +39,24 @@ def _workflow(*, workflow_id: int = 33, user_id: int = 99):
     )
 
 
-def _stub_outbound_setup_lookup(mock_db, *, provider: str = "twilio"):
+def _stub_outbound_setup_lookup(
+    mock_db, *, provider: str = "twilio", default_caller_id: bool = True
+):
     """Satisfy the pre-flight setup-checklist read on ``/initiate-call``.
 
-    A configuration with an active number passes the caller-ID requirement, so
-    the guard is a no-op — these tests are about everything downstream of it.
+    A configuration whose active number is its default caller ID passes the
+    guard, so it is a no-op — these tests are about everything downstream of it.
     """
     row = SimpleNamespace(id=55, name="Test config", provider=provider, credentials={})
     mock_db.get_telephony_configuration_for_org = AsyncMock(return_value=row)
-    mock_db.list_outbound_telephony_configuration_candidates = AsyncMock(
-        return_value=[row]
-    )
+    mock_db.get_default_telephony_configuration = AsyncMock(return_value=row)
     mock_db.list_phone_numbers_for_config = AsyncMock(
         return_value=[
             SimpleNamespace(
-                is_active=True, inbound_workflow_id=None, telephony_trunk_id=None
+                is_active=True,
+                is_default_caller_id=default_caller_id,
+                inbound_workflow_id=None,
+                telephony_trunk_id=None,
             )
         ]
     )
@@ -93,25 +96,12 @@ def test_initiate_call_rejects_incomplete_setup_before_run_creation():
         ),
     ):
         mock_db.get_default_telephony_configuration = AsyncMock(
-            return_value=SimpleNamespace(id=55)
-        )
-        mock_db.get_telephony_configuration_for_org = AsyncMock(
             return_value=SimpleNamespace(
                 id=55,
                 name="Twilio production",
                 provider="twilio",
                 credentials={},
             )
-        )
-        mock_db.list_outbound_telephony_configuration_candidates = AsyncMock(
-            return_value=[
-                SimpleNamespace(
-                    id=55,
-                    name="Twilio production",
-                    provider="twilio",
-                    credentials={},
-                )
-            ]
         )
         mock_db.list_phone_numbers_for_config = AsyncMock(return_value=[])
         mock_db.create_workflow_run = AsyncMock()
@@ -123,6 +113,82 @@ def test_initiate_call_rejects_incomplete_setup_before_run_creation():
 
     assert response.status_code == 400
     assert "Twilio production" in response.json()["detail"]
+    mock_db.create_workflow_run.assert_not_awaited()
+    provider.initiate_call.assert_not_awaited()
+
+
+@pytest.mark.parametrize("telephony_configuration_id", [None, 55])
+def test_initiate_call_refuses_a_configuration_without_default_caller_id(
+    telephony_configuration_id,
+):
+    """A test call never borrows another number when the caller ID is unset."""
+    app = _make_test_app()
+    client = TestClient(app)
+    provider = _provider()
+
+    with (
+        patch("api.routes.telephony.db_client") as mock_db,
+        patch(
+            "api.routes.telephony.get_telephony_provider_by_id",
+            new=AsyncMock(return_value=provider),
+        ),
+        patch(
+            "api.services.organization_preferences.get_organization_preferences",
+            new=AsyncMock(return_value=SimpleNamespace(test_phone_number=None)),
+        ),
+    ):
+        _stub_outbound_setup_lookup(mock_db, default_caller_id=False)
+        mock_db.list_outbound_telephony_configuration_candidates = AsyncMock()
+        mock_db.create_workflow_run = AsyncMock()
+
+        response = client.post(
+            "/telephony/initiate-call",
+            json={
+                "workflow_id": 33,
+                "phone_number": "+15555550150",
+                "telephony_configuration_id": telephony_configuration_id,
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "'Test config' is not ready for outbound calls. "
+        "It has no default caller ID; it receives calls only."
+    )
+    mock_db.list_outbound_telephony_configuration_candidates.assert_not_awaited()
+    mock_db.create_workflow_run.assert_not_awaited()
+    provider.initiate_call.assert_not_awaited()
+
+
+def test_initiate_call_without_a_marked_default_configuration_is_refused():
+    app = _make_test_app()
+    client = TestClient(app)
+    provider = _provider()
+
+    with (
+        patch("api.routes.telephony.db_client") as mock_db,
+        patch(
+            "api.routes.telephony.get_telephony_provider_by_id",
+            new=AsyncMock(return_value=provider),
+        ),
+        patch(
+            "api.services.organization_preferences.get_organization_preferences",
+            new=AsyncMock(return_value=SimpleNamespace(test_phone_number=None)),
+        ),
+    ):
+        _stub_outbound_setup_lookup(mock_db)
+        mock_db.get_default_telephony_configuration = AsyncMock(return_value=None)
+        mock_db.list_outbound_telephony_configuration_candidates = AsyncMock()
+        mock_db.create_workflow_run = AsyncMock()
+
+        response = client.post(
+            "/telephony/initiate-call",
+            json={"workflow_id": 33, "phone_number": "+15555550150"},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "telephony_not_configured"
+    mock_db.list_outbound_telephony_configuration_candidates.assert_not_awaited()
     mock_db.create_workflow_run.assert_not_awaited()
     provider.initiate_call.assert_not_awaited()
 
@@ -630,7 +696,6 @@ async def test_koreaaitel_webhook_replay_and_call_id_isolation(monkeypatch, repl
 
 @pytest.mark.asyncio
 async def test_unsigned_koreaaitel_webhook_does_not_log_caller_number(monkeypatch):
-    import api.routes.telephony as routes
 
     request, _, _, _ = _setup_koreaaitel_webhook(
         monkeypatch, [], [], signature_valid=False

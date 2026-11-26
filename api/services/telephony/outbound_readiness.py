@@ -68,6 +68,10 @@ async def _ensure_row_outbound_setup_ready(row: Any, *, db: Any) -> int:
             checklist.outbound_blocked_reason
             or "Complete the required telephony setup before placing a call.",
         )
+    if not any(number.is_default_caller_id for number in active_numbers):
+        raise OutboundSetupIncompleteError(
+            row.id, row.name, "It has no default caller ID; it receives calls only."
+        )
 
     return row.id
 
@@ -101,12 +105,7 @@ async def resolve_outbound_configuration_id(
     *,
     db: Any = default_db_client,
 ) -> int:
-    """Resolve an explicit selection or choose the first ready active config.
-
-    An explicit id is authoritative and never falls through to another config.
-    Without one, DB ordering considers the marked default first, followed by
-    the organization's remaining active configurations in creation order.
-    """
+    """Resolve an explicit selection, else the org's marked default; never another."""
     if telephony_configuration_id is not None:
         return await ensure_outbound_setup_ready(
             telephony_configuration_id,
@@ -116,28 +115,13 @@ async def resolve_outbound_configuration_id(
     if not organization_id:
         raise OutboundConfigurationNotFoundError("organization_id is required")
 
-    # TODO(multi-config): remove this compatibility fallback once all outbound
-    # API contracts require callers to pin a telephony configuration id.
-    candidates = await db.list_outbound_telephony_configuration_candidates(
-        organization_id
-    )
-    if not candidates:
+    row = await db.get_default_telephony_configuration(organization_id)
+    if row is None:
         raise OutboundConfigurationNotFoundError(
-            f"No active telephony configuration found for organization "
-            f"{organization_id}"
+            f"Organization {organization_id} has no default outbound telephony "
+            "configuration; pass telephony_configuration_id."
         )
-
-    first_blocked: OutboundSetupIncompleteError | None = None
-    for row in candidates:
-        try:
-            return await _ensure_row_outbound_setup_ready(row, db=db)
-        except OutboundSetupIncompleteError as exc:
-            if first_blocked is None:
-                first_blocked = exc
-
-    # ``candidates`` is non-empty, so every row produced a blocking reason.
-    assert first_blocked is not None
-    raise first_blocked
+    return await _ensure_row_outbound_setup_ready(row, db=db)
 
 
 async def requires_e164_destinations(

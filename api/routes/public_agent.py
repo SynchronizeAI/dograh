@@ -40,8 +40,7 @@ class TriggerCallRequest(BaseModel):
 
     phone_number: str
     initial_context: Optional[dict] = None
-    # Optional for backwards compatibility. The resolver prefers the marked
-    # default, then selects another ready active configuration when necessary.
+    # Optional for backwards compatibility; omitted means the org's marked default.
     telephony_configuration_id: int | None = None
     # Optional active caller ID in the resolved telephony configuration.
     from_phone_number_id: int | None = None
@@ -196,7 +195,7 @@ async def _execute_resolved_target(
     execution_user_id = _get_execution_user_id(target.workflow)
 
     # An explicit config remains authoritative. Legacy callers that omit it
-    # get the first active configuration that passes outbound pre-flight.
+    # get the org's marked default, which must pass outbound pre-flight.
     try:
         resolved_cfg_id = await resolve_outbound_configuration_id(
             request.telephony_configuration_id,

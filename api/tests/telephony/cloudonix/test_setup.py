@@ -14,7 +14,6 @@ from api.services.telephony.factory import get_setup_checklist
 from api.services.telephony.outbound_readiness import (
     OutboundSetupIncompleteError,
     ensure_outbound_setup_ready,
-    resolve_outbound_configuration_id,
 )
 from api.services.telephony.providers.cloudonix.config import MANAGED_BY
 from api.services.telephony.registry import ProviderSetupChecklist
@@ -154,7 +153,10 @@ async def test_outbound_guard_allows_a_ready_configuration():
         credentials=MANAGED_CREDENTIALS,
     )
     number = SimpleNamespace(
-        is_active=True, inbound_workflow_id=None, telephony_trunk_id=1
+        is_active=True,
+        is_default_caller_id=True,
+        inbound_workflow_id=None,
+        telephony_trunk_id=1,
     )
     trunk = SimpleNamespace(id=1, enabled=True)
     db_client = AsyncMock()
@@ -163,57 +165,3 @@ async def test_outbound_guard_allows_a_ready_configuration():
     db_client.list_trunks_for_config = AsyncMock(return_value=[trunk])
 
     assert await ensure_outbound_setup_ready(12, 7, db=db_client) == 12
-
-
-@pytest.mark.asyncio
-async def test_outbound_resolver_selects_a_ready_configuration_without_a_default():
-    row = SimpleNamespace(
-        id=12,
-        name="Dograh Cloudonix SIP",
-        provider="cloudonix",
-        credentials=MANAGED_CREDENTIALS,
-    )
-    number = SimpleNamespace(
-        is_active=True, inbound_workflow_id=None, telephony_trunk_id=1
-    )
-    trunk = SimpleNamespace(id=1, enabled=True)
-    db_client = AsyncMock()
-    db_client.list_outbound_telephony_configuration_candidates = AsyncMock(
-        return_value=[row]
-    )
-    db_client.list_phone_numbers_for_config = AsyncMock(return_value=[number])
-    db_client.list_trunks_for_config = AsyncMock(return_value=[trunk])
-
-    assert await resolve_outbound_configuration_id(None, 7, db=db_client) == 12
-    db_client.list_outbound_telephony_configuration_candidates.assert_awaited_once_with(
-        7
-    )
-
-
-@pytest.mark.asyncio
-async def test_outbound_resolver_skips_an_unready_candidate():
-    blocked = SimpleNamespace(
-        id=12,
-        name="Fresh managed SIP",
-        provider="cloudonix",
-        credentials=MANAGED_CREDENTIALS,
-    )
-    ready = SimpleNamespace(
-        id=13,
-        name="Customer Cloudonix",
-        provider="cloudonix",
-        credentials=SELF_SERVE_CREDENTIALS,
-    )
-    number = SimpleNamespace(
-        is_active=True, inbound_workflow_id=None, telephony_trunk_id=None
-    )
-    db_client = AsyncMock()
-    db_client.list_outbound_telephony_configuration_candidates = AsyncMock(
-        return_value=[blocked, ready]
-    )
-    db_client.list_phone_numbers_for_config = AsyncMock(
-        side_effect=lambda config_id: [] if config_id == blocked.id else [number]
-    )
-    db_client.list_trunks_for_config = AsyncMock(return_value=[])
-
-    assert await resolve_outbound_configuration_id(None, 7, db=db_client) == ready.id

@@ -104,6 +104,7 @@ def _dial_provider() -> TelnyxProvider:
             "connection_id": "connection-id",
             "webhook_public_key": "placeholder-public-key",
             "from_numbers": ["+15551230002"],
+            "default_from_number": "+15551230002",
         }
     )
 

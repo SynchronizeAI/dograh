@@ -246,6 +246,25 @@ class AgentRuntime:
 
     # -- execution -------------------------------------------------------
 
+    def fixed_line_tools(self) -> set[str]:
+        """Tools of the current node whose edge plays transition speech.
+
+        Empty while the recording router is routing: it parses the model's own
+        text frames, which holding the response would replace.
+        """
+        if self.recording_router is not None and self.recording_router.enabled:
+            return set()
+        edges = self.current_node.out_edges if self.current_node else ()
+        return {
+            e.get_function_name()
+            for e in edges
+            if e.transition_speech
+            or (
+                e.data.transition_speech_type == "audio"
+                and e.data.transition_speech_recording_id
+            )
+        }
+
     async def queue_frame(self, frame: Frame) -> None:
         """Queue a frame at the head of this agent's own pipeline."""
         if self.worker is None:

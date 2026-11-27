@@ -8,35 +8,64 @@ agent finishing its last generation cannot disturb the running one.
 
 from typing import Awaitable, Callable, Optional
 
+from loguru import logger
+
+from api.services.pipecat.korean_sentence_aggregator import KoreanSentenceAggregator
 from pipecat.frames.frames import (
+    AggregatedTextFrame,
     Frame,
+    FunctionCallsFromLLMInfoFrame,
+    FunctionCallsStartedFrame,
+    InterruptionFrame,
+    LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
     TTSSpeakFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.utils.text.base_text_aggregator import TextType
+
+
+def _is_question(sentence: str) -> bool:
+    return sentence.rstrip("\"'”’)」』 ").endswith(("?", "？"))
 
 
 class AgentGenerationProcessor(FrameProcessor):
-    """Tell the engine when this agent starts generating and what it says."""
+    """Tell the engine when this agent starts generating and what it says.
+
+    With ``fixed_line_tools`` it also keeps a response that picks an edge with
+    transition speech from asking a question of its own: the fixed line is the
+    turn's question. Question sentences wait for the end of the response, and
+    are dropped if the response chose such an edge. Everything after the first
+    held question waits with it, so the speech keeps the order it was written in.
+    Sentences go out as whole sentences: as text frames, English TTS would hold
+    each one until the next sentence began.
+    """
 
     def __init__(
         self,
         generation_started_callback: Optional[Callable[[], Awaitable[None]]] = None,
         llm_text_frame_callback: Optional[Callable[[str], Awaitable[None]]] = None,
+        fixed_line_tools: Optional[Callable[[], set[str]]] = None,
     ):
         super().__init__()
         self._generation_started_callback = generation_started_callback
         self._llm_text_frame_callback = llm_text_frame_callback
+        self._fixed_line_tools = fixed_line_tools
+        self._sentences = KoreanSentenceAggregator()
+        self._lines: set[str] = set()
+        self._picked = False
+        self._held: list[str] = []
+        self._sends_info = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
-        if (
-            isinstance(frame, LLMFullResponseStartFrame)
-            and self._generation_started_callback
-        ):
-            await self._generation_started_callback()
+        if isinstance(frame, LLMFullResponseStartFrame):
+            await self._reset()
+            self._snapshot()
+            if self._generation_started_callback:
+                await self._generation_started_callback()
         elif (
             isinstance(frame, (LLMTextFrame, TTSSpeakFrame))
             and self._llm_text_frame_callback
@@ -45,4 +74,68 @@ class AgentGenerationProcessor(FrameProcessor):
             # both carry reference text for correcting the aggregated transcript.
             await self._llm_text_frame_callback(frame.text)
 
+        if isinstance(frame, LLMTextFrame) and self._lines and not frame.skip_tts:
+            async for sentence in self._sentences.aggregate(frame.text):
+                await self._release(sentence.text)
+            return
+        if isinstance(frame, FunctionCallsFromLLMInfoFrame):
+            self._sends_info = True
+            self._note_picks(frame)
+        elif isinstance(frame, FunctionCallsStartedFrame) and not self._sends_info:
+            # Anthropic and Bedrock send only this one. Where the info frame
+            # exists it comes first, and the started frame can arrive after the
+            # response has ended (Google, OpenAI), too late to mean anything.
+            self._note_picks(frame)
+        elif isinstance(frame, LLMFullResponseEndFrame) and self._lines:
+            await self._finish()
+        elif isinstance(frame, InterruptionFrame):
+            await self._close()
+
         await self.push_frame(frame, direction)
+
+    def _snapshot(self) -> set[str]:
+        """The node's fixed-line tools, read once per response.
+
+        System frames overtake the response's own frames, so the call can be
+        seen before the response starts, and a tool that runs at once may have
+        left the node by the time the start is seen. Whichever comes first
+        reads the node.
+        """
+        if not self._lines and self._fixed_line_tools:
+            self._lines = self._fixed_line_tools()
+        return self._lines
+
+    def _note_picks(self, frame: FunctionCallsFromLLMInfoFrame):
+        lines = self._snapshot()
+        self._picked |= any(c.function_name in lines for c in frame.function_calls)
+
+    async def _reset(self):
+        await self._sentences.reset()
+        self._held.clear()
+
+    async def _close(self):
+        await self._reset()
+        self._lines = set()
+        self._picked = False
+
+    async def _release(self, sentence: str):
+        if self._held or _is_question(sentence):
+            self._held.append(sentence)
+        else:
+            await self._say(sentence)
+
+    async def _finish(self):
+        if tail := await self._sentences.flush():
+            await self._release(tail.text)
+        kept = [s for s in self._held if not (self._picked and _is_question(s))]
+        if len(kept) < len(self._held):
+            logger.info(
+                "Fixed line follows; dropped {} model question(s)",
+                len(self._held) - len(kept),
+            )
+        for sentence in kept:
+            await self._say(sentence)
+        await self._close()
+
+    async def _say(self, sentence: str):
+        await self.push_frame(AggregatedTextFrame(sentence, TextType.SENTENCE))

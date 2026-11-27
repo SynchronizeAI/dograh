@@ -1056,7 +1056,7 @@ def create_stt_service(
             turn_stop_strategy=backup_turns,
             register_campaign_errors=False,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - preserve primary when optional backup setup fails
         logger.warning(
             f"STT fallback backup could not be constructed ({type(exc).__name__}); "
             "continuing with primary only"
@@ -1600,7 +1600,7 @@ def create_tts_service(
             register_campaign_errors=False,
         )
         _enable_korean_sentence_aggregation(backup, speech_language)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - preserve primary when optional backup setup fails
         logger.warning(
             f"TTS fallback backup could not be constructed ({type(exc).__name__}); "
             "continuing with primary only"
@@ -1703,8 +1703,7 @@ def create_llm_service_from_provider(
         )
         store = (
             {"store": False}
-            if provider == ServiceProviders.OPENAI.value
-            and is_official_openai_endpoint
+            if provider == ServiceProviders.OPENAI.value and is_official_openai_endpoint
             else {}
         )
         if "gpt-5" in model:

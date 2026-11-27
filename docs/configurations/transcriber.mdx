@@ -7,8 +7,6 @@ Dograh platform supports Deepgram, OpenAI, Google, Azure Speech, AssemblyAI, Spe
 
 <Warning>
 Transcriber providers receive the data needed to transcribe speech, such as call audio, language settings, keyterms, and request metadata. Review the provider's data processing, retention, model training, and regional hosting policies before using sensitive data.
-
-For direct Deepgram STT connections, Dograh sets `mip_opt_out=true` on standard and Flux requests to opt out of Deepgram's Model Improvement Program.
 </Warning>
 
 For locally deployed or self-hosted STT models, Dograh also supports Speaches, an OpenAI API-compatible server for streaming transcription.
@@ -57,50 +55,3 @@ as the model for Korean.
 With an AssemblyAI Universal-3 Pro backup (see
 [Speech recognition (STT) fallback](./stt-fallback)), the backup ends turns
 itself when it takes over.
-
-## Flux eager end of turn
-
-For Deepgram `flux-general-en` and `flux-general-multi`, you can enable
-`enable_eager_end_of_turn` in your STT model settings. It is also available in
-Dograh mode when the selected language uses Flux. It defaults to `false`.
-
-When enabled, the LLM prepares a reply at Flux's predicted end of turn. The
-reply is held until Flux commits the turn. If the caller resumes or the final
-transcript does not match, the prepared reply is discarded. Speculative tool
-calls are cancelled and retried against the committed transcript; they do not
-execute before commit. A configured no-output LLM fallback timer starts at
-commit, so speculative waiting does not trigger an early hedge.
-
-`eager_eot_threshold` defaults to `0.5` and can be set from `0.3` to `0.7`.
-It must be lower than the committed-turn threshold, `eot_threshold`, which
-defaults to `0.7` and can be set from `0.5` to `0.9`. Lower eager thresholds
-predict sooner and can spend more LLM requests on withdrawn guesses. To opt
-into the more aggressive `0.4` setting for one workflow, use this fragment of
-its `workflow_configurations`:
-
-```json
-{
-  "model_configuration_override": {
-    "stt": {
-      "settings": {
-        "model": "flux-general-en",
-        "enable_eager_end_of_turn": true,
-        "eager_eot_threshold": 0.4
-      }
-    }
-  }
-}
-```
-
-This example inherits a Deepgram STT provider connection from your selected
-model configuration. To select a different connection, add
-`provider_connection_uuid` alongside `settings`. For Dograh's Flux proxy, keep
-the Dograh model and select `multi` or a Flux-supported language instead of
-setting `model` to `flux-general-en`.
-
-You can also save these fields under `configuration.stt.settings` in a named
-model configuration, or use the same `stt` override in an API trigger's
-`model_configuration_overrides`. The setting is fixed for the call; agent
-transfers do not change it. With eager end of turn disabled, Dograh keeps its
-existing turn strategy and sends the existing eager threshold of `0.5`, even
-if you saved a different threshold.

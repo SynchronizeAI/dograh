@@ -4,7 +4,6 @@ Twilio implementation of the TelephonyProvider interface.
 
 import asyncio
 import json
-import os
 import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -178,17 +177,12 @@ class TwilioProvider(TelephonyProvider):
             wss_backend_endpoint, workflow_id, organization_id, workflow_run_id
         )
 
-        # <Connect> hands the call to the media stream and blocks until it
-        # closes. Twilio then continues with the next verb, so the document must
-        # end in <Hangup/> - otherwise the caller stays on a silent open line
-        # after the agent ends the call. Transfers are unaffected: they replace
-        # this document via a REST TwiML redirect before the stream closes.
         twiml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect>
         <Stream url="{ws_url}"></Stream>
     </Connect>
-    <Hangup/>
+    <Pause length="40"/>
 </Response>"""
         # Redacted: the stream URL carries a bearer capability token, and this
         # log line is the one place it would otherwise reach a log sink.
@@ -442,8 +436,7 @@ class TwilioProvider(TelephonyProvider):
 
         e164 = normalized.canonical
         try:
-            number = await self._lookup_incoming_number(e164) or {}
-            sid = number.get("sid")
+            sid = await self._lookup_incoming_number_sid(e164)
         except Exception as e:
             logger.error(f"Failed to look up Twilio number {e164}: {e}")
             return ProviderSyncResult(ok=False, message=f"Twilio lookup failed: {e}")
@@ -463,12 +456,6 @@ class TwilioProvider(TelephonyProvider):
                     f"({self.account_sid}). Add it in the Twilio console first."
                 ),
             )
-
-        # Sync fork: a front door (falling back to this dispatcher) keeps VoiceUrl,
-        # on attach and detach alike: clearing it leaves the number answering nothing.
-        door = os.environ.get("TWILIO_FRONT_DOOR_URL")
-        if door and number.get("voice_url") == door:
-            return ProviderSyncResult(ok=True)
 
         endpoint = f"{self.base_url}/IncomingPhoneNumbers/{sid}.json"
         if webhook_url:
@@ -538,9 +525,6 @@ class TwilioProvider(TelephonyProvider):
 
     async def _lookup_incoming_number_sid(self, e164: str) -> Optional[str]:
         """Return the Twilio SID of the IncomingPhoneNumber matching ``e164``."""
-        return (await self._lookup_incoming_number(e164) or {}).get("sid")
-
-    async def _lookup_incoming_number(self, e164: str) -> Optional[Dict[str, Any]]:
         endpoint = f"{self.base_url}/IncomingPhoneNumbers.json"
         params = {"PhoneNumber": e164}
         async with aiohttp.ClientSession() as session:
@@ -556,7 +540,7 @@ class TwilioProvider(TelephonyProvider):
         numbers = data.get("incoming_phone_numbers") or []
         for number in numbers:
             if number.get("phone_number") == e164:
-                return number
+                return number.get("sid")
         return None
 
     async def start_inbound_stream(
@@ -580,17 +564,12 @@ class TwilioProvider(TelephonyProvider):
             status_callback_url = f"{backend_endpoint}/api/v1/telephony/twilio/status-callback/{workflow_run_id}"
             status_callback_attr = f' statusCallback="{status_callback_url}"'
 
-        # <Connect> hands the call to the media stream and blocks until it
-        # closes. Twilio then continues with the next verb, so the document must
-        # end in <Hangup/> - otherwise the caller stays on a silent open line
-        # after the agent ends the call. Transfers are unaffected: they replace
-        # this document via a REST TwiML redirect before the stream closes.
         twiml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect>
         <Stream url="{websocket_url}"{status_callback_attr}></Stream>
     </Connect>
-    <Hangup/>
+    <Pause length="40"/>
 </Response>"""
 
         return Response(content=twiml_content, media_type="application/xml")
@@ -614,10 +593,6 @@ class TwilioProvider(TelephonyProvider):
     def generate_validation_error_response(error_type) -> tuple:
         """
         Generate Twilio-specific error response for validation failures with organizational debugging info.
-
-        Sync fork: answered 503, not 200, so Twilio requests the number's VoiceFallbackUrl (the
-        line's voicemail) instead of reading the refusal to the caller and hanging up. Twilio
-        plays its own error message when a number has no fallback.
         """
         from fastapi import Response
 
@@ -633,9 +608,7 @@ class TwilioProvider(TelephonyProvider):
     <Hangup/>
 </Response>"""
 
-        return Response(
-            content=twiml_content, media_type="application/xml", status_code=503
-        )
+        return Response(content=twiml_content, media_type="application/xml")
 
     # ======== CALL TRANSFER METHODS ========
 

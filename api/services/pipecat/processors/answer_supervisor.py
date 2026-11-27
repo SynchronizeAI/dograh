@@ -15,17 +15,15 @@ from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
     LLMContextFrame,
-    LLMContextUserTurnFrame,
     ProposedUserStartedSpeakingFrame,
     ProposedUserStoppedSpeakingFrame,
     TranscriptionFrame,
     UserStartedSpeakingFrame,
-    UserTurnResponseCancelFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.aggregators.llm_context import LLMContext
-from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.processors.frame_processor import FrameProcessor
 
 from api.enums import AnswerAction
 from api.schemas.answer_supervisor import AnswerSupervisorConfig
@@ -47,54 +45,21 @@ class AnswerVerdict:
 
 
 class AnswerContextGate(FrameProcessor):
-    def __init__(
-        self,
-        context: LLMContext | None = None,
-        *,
-        track_eager_user_turns: bool = False,
-    ):
+    def __init__(self):
         # No queue between the aggregator commit and this drop acknowledgement.
         # Keep this processor free of waits, classification, and engine actions.
         super().__init__(enable_direct_mode=True)
         self.closed = True
-        self._context = context
-        self._track_eager_user_turns = track_eager_user_turns
         self.dropped_contexts = 0
         self.held_user_messages: dict[int, dict] = {}
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
-        if (
-            self._track_eager_user_turns
-            and self.closed
-            and self._context is not None
-            and isinstance(frame, LLMContextUserTurnFrame)
-            and not frame.speculation
-        ):
-            # Safety net for a withdrawal that loses the race against the
-            # commit: the turn then confirms the speculation, so it emits this
-            # user-turn message and no inference frame for the code below to
-            # track. Hold the canonical messages too, so a screening verdict
-            # can discard machine speech from the shared context.
-            for message in self._context.messages:
-                if isinstance(message, dict) and message.get("role") == "user":
-                    self.held_user_messages[id(message)] = message
         if isinstance(frame, LLMContextFrame) and self.closed:
             self.dropped_contexts += 1
             for message in frame.context.messages:
                 if isinstance(message, dict) and message.get("role") == "user":
                     self.held_user_messages[id(message)] = message
-            if self._track_eager_user_turns and frame.speculation:
-                # A dropped speculation must not stay with the turn controller:
-                # a turn that confirms it runs no inference of its own, so the
-                # caller would never be answered once the gate opens. Withdraw
-                # it as Pipecat's LLM service does for a speculative tool call;
-                # the turn's commit then takes the plain path, and its own
-                # inference is dropped or passed by this gate like any other.
-                # Upstream only: nothing downstream holds a response for it.
-                await self.push_frame(
-                    UserTurnResponseCancelFrame(), FrameDirection.UPSTREAM
-                )
             return
         await self.push_frame(frame, direction)
 
@@ -106,15 +71,12 @@ class AnswerSupervisor(FrameProcessor):
         *,
         context: LLMContext,
         classify: Callable[[str], Awaitable[MachineSubtype]] | None = None,
-        track_eager_user_turns: bool = False,
     ):
         super().__init__()
         self.config = config
         self._context = context
         self._classify = classify
-        self._gate = AnswerContextGate(
-            context, track_eager_user_turns=track_eager_user_turns
-        )
+        self._gate = AnswerContextGate()
         self._armed_at: float | None = None
         self.opening_deadline = OpeningDeadline()
         self._onset: float | None = None

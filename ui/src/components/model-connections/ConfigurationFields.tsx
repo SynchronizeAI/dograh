@@ -75,7 +75,7 @@ function ModeChoice({ value, onChange }: { value: ConfigurationEditorMode; onCha
  * `fields` (all of them when omitted), and no embeddings or fallback
  * actions. Both produce the same ConfigurationSpec.
  */
-export function ConfigurationFields({ configuration, catalog, connections, onChange, onConnectionAdded, llmActions, density = "full", fields }: {
+export function ConfigurationFields({ configuration, catalog, connections, onChange, onConnectionAdded, llmActions, sttActions, density = "full", fields }: {
     configuration: ConfigurationSpec;
     catalog: ModelConnectionCatalog;
     connections: ProviderConnection[];
@@ -83,6 +83,7 @@ export function ConfigurationFields({ configuration, catalog, connections, onCha
     /** Add a connection created from a provider list to `connections`. */
     onConnectionAdded?: (connection: ProviderConnection) => void;
     llmActions?: ReactNode;
+    sttActions?: ReactNode;
     density?: ConfigurationFieldsDensity;
     /** Setting names to show for each service; everything else stays as it is. */
     fields?: string[];
@@ -227,6 +228,7 @@ export function ConfigurationFields({ configuration, catalog, connections, onCha
             </div>}
             {isEmbedding && <p className="text-xs text-muted-foreground">Use the embedding model that indexed this workflow’s knowledge base. Changing it does not reindex documents.</p>}
             {role === "llm" && llmActions && connection?.provider !== "dograh" && <div className="flex justify-end border-t pt-4">{llmActions}</div>}
+            {role === "stt" && sttActions && connection?.provider !== "dograh" && <div className="flex justify-end border-t pt-4">{sttActions}</div>}
         </div>;
     };
 

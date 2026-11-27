@@ -27,11 +27,11 @@ export function ModelConfigurationPage({ configurationUuid, duplicateUuid }: { c
         </div> : sourceUuid && !saved ? <p role="alert">This model configuration is unavailable.</p>
             : catalog && <div className="rounded-lg border bg-card p-6">
                 <NamedConfigurationEditor key={`${sourceUuid || "new"}-${saved?.revision || 0}`} catalog={catalog} connections={connections} saved={saved} duplicate={Boolean(duplicateUuid)} onConnectionAdded={addConnection}
-                    onSaved={async (uuid, editFallbacks) => {
+                    onSaved={async (uuid, editFallback) => {
                         await reload();
                         await refreshConfig();
                         toast.success("Model configuration saved");
-                        if (editFallbacks) router.push(`/model-configurations/${uuid}/llm`);
+                        if (editFallback) router.push(`/model-configurations/${uuid}/${editFallback}`);
                         else if (!configurationUuid) router.replace(`/model-configurations/${uuid}`);
                     }} />
             </div>}

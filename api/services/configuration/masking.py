@@ -96,20 +96,6 @@ def mask_user_config(config: EffectiveAIModelConfiguration) -> Dict[str, Any]:
             if config.llm_fallback is not None
             else None
         ),
-        "tts_fallback": (
-            {
-                "version": config.tts_fallback.version,
-                "rules": [
-                    {
-                        "condition": rule.condition.model_dump(mode="json"),
-                        "target": _mask_service(rule.target),
-                    }
-                    for rule in config.tts_fallback.rules
-                ],
-            }
-            if config.tts_fallback is not None
-            else None
-        ),
         "stt_fallback": (
             {
                 "version": config.stt_fallback.version,

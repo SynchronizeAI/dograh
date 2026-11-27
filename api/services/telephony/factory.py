@@ -323,7 +323,6 @@ async def _normalize_with_phone_numbers(
     raw = dict(row.credentials or {})
     raw["provider"] = row.provider
     base = spec.config_loader(raw)
-    base["configuration_name"] = row.name
 
     addresses = await db_client.list_active_normalized_addresses_for_config(row.id)
     base["from_numbers"] = addresses
@@ -357,7 +356,6 @@ def _instantiate(config: Dict[str, Any]) -> TelephonyProvider:
     logger.info(f"Creating {spec.name} telephony provider")
     try:
         provider = spec.provider_cls(config)
-        provider.configuration_name = config.get("configuration_name")
     except Exception as exc:
         log_failure(
             classify_telephony_exception(exc, provider=spec.name),

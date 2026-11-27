@@ -37,7 +37,7 @@ from api.services.pipecat.service_factory import (
     create_tts_service,
     get_llm_runtime_configuration,
     get_stt_settings_update,
-    get_tts_runtime_configuration,
+    is_u3_pro_model,
 )
 from api.services.workflow.agent_runtime import AgentRuntime, new_visit_id
 from api.services.workflow.dto import ReactFlowDTO
@@ -89,8 +89,11 @@ class AgentRuntimeFactory:
         run_definition: Any = None,
         run_model_configuration: EffectiveAIModelConfiguration | None = None,
         stt: STTService | None = None,
+        retune_turn_strategies: Callable[[EffectiveAIModelConfiguration], Any]
+        | None = None,
     ):
         self._stt = stt
+        self._retune_turn_strategies = retune_turn_strategies
         self._on_agent_error = on_agent_error
         self._use_draft = use_draft
         self._organization_id = organization_id
@@ -108,6 +111,9 @@ class AgentRuntimeFactory:
         # Dograh service key.
         self._run_definition = run_definition
         self._run_model_configuration = run_model_configuration
+        self._stt_config = (
+            run_model_configuration.stt if run_model_configuration is not None else None
+        )
 
     @property
     def organization_id(self) -> int:
@@ -117,25 +123,57 @@ class AgentRuntimeFactory:
     async def retune_stt_for(self, runtime: AgentRuntime) -> bool:
         """Apply a committed destination's supported settings to the call STT."""
         stt = self._stt
-        if stt is None or self._run_model_configuration is None:
+        if stt is None or self._stt_config is None:
             return False
         if runtime.user_config is None or runtime.user_config.stt is None:
             return False
 
-        delta = get_stt_settings_update(
-            stt, self._run_model_configuration.stt, runtime.user_config.stt
-        )
-        if delta is None:
-            return False
-        # The service owns live configuration and any required stream restart.
-        # In particular, Flux language hints use Configure without reconnecting.
-        changed = await stt._update_settings(delta)
+        from api.services.pipecat.fallback_stt import FallbackSTTService
+
+        provider_stt = stt.primary if isinstance(stt, FallbackSTTService) else stt
+        call_config = self._stt_config
+        destination_config = runtime.user_config.stt
+        delta = get_stt_settings_update(provider_stt, call_config, destination_config)
+        changed = await provider_stt._update_settings(delta) if delta is not None else {}
+        if delta is not None:
+            self._stt_config = destination_config
+        endpointing_changed = False
+        if (
+            getattr(call_config, "provider", None) == "soniox"
+            and getattr(destination_config, "provider", None) == "soniox"
+        ):
+            use_external_turns = bool(
+                getattr(destination_config, "enable_endpoint_detection", False)
+            )
+            desired_vad_force_turn_endpoint = not use_external_turns
+            if getattr(provider_stt, "_vad_force_turn_endpoint", None) != (
+                desired_vad_force_turn_endpoint
+            ):
+                provider_stt._vad_force_turn_endpoint = (
+                    desired_vad_force_turn_endpoint
+                )
+                if isinstance(stt, FallbackSTTService):
+                    policy = getattr(self._run_model_configuration, "stt_fallback", None)
+                    backup_config = (
+                        policy.rules[0].target if policy and policy.rules else None
+                    )
+                    if (
+                        backup_config is not None
+                        and getattr(backup_config, "provider", None) == "assemblyai"
+                        and is_u3_pro_model(getattr(backup_config, "model", None))
+                    ):
+                        stt.backup._vad_force_turn_endpoint = (
+                            desired_vad_force_turn_endpoint
+                        )
+                endpointing_changed = True
+                if self._retune_turn_strategies is not None:
+                    await self._retune_turn_strategies(runtime.user_config)
         if changed:
             logger.info(
                 f"[transfer] STT settings updated for {runtime.visit_id}: "
                 f"{sorted(changed)}"
             )
-        return bool(changed)
+        return bool(changed) or endpointing_changed
 
     async def resolve_destination(self, workflow_id: int) -> tuple[Any, Any]:
         """Look up a destination workflow and pin the definition to run.
@@ -280,7 +318,8 @@ class AgentRuntimeFactory:
         runtime.runtime_configuration = {
             "stt_provider": call_config.stt.provider,
             "stt_model": call_config.stt.model,
-            **get_tts_runtime_configuration(user_config),
+            "tts_provider": user_config.tts.provider,
+            "tts_model": user_config.tts.model,
             **get_llm_runtime_configuration(user_config),
         }
 

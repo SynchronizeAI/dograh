@@ -359,8 +359,7 @@ async def _apply_model_patch(config, patch, get_connection):
     # tweak: services the mode does not use are dropped (they would otherwise
     # keep being validated), and the services it names with an account are
     # taken as given instead of merged into the base's settings. Services it
-    # omits, and the LLM fallback policy, are still inherited; the voice
-    # fallback policy is not (see below).
+    # omits and the LLM fallback policy are still inherited.
     describes_configuration = "mode" in patch
     if describes_configuration:
         config["mode"] = patch.pop("mode")
@@ -371,21 +370,10 @@ async def _apply_model_patch(config, patch, get_connection):
         # Policies replace atomically. An empty rules array disables them;
         # omitting the policy inherits it from the selected configuration.
         config["llm_fallback"] = patch.pop("llm_fallback")
-    if "tts_fallback" in patch:
-        config["tts_fallback"] = patch.pop("tts_fallback")
-    elif describes_configuration:
-        # A voice fallback belongs to the voice it was configured for. An
-        # override that describes a whole configuration starts without one
-        # unless it sets its own, so it never picks up a policy later added to
-        # the base (which could be rejected, for a Dograh voice, or target the
-        # account the override chose) and callers can leave the key out, as
-        # builds without the field require.
-        config.pop("tts_fallback", None)
     if "stt_fallback" in patch:
         config["stt_fallback"] = patch.pop("stt_fallback")
     elif describes_configuration:
-        # Same rule as the voice fallback: a whole-configuration override does
-        # not inherit a recognizer backup it did not name.
+        # A whole-configuration override does not inherit a backup it did not name.
         config.pop("stt_fallback", None)
     for role, selection in patch.items():
         if selection is None:  # Only embeddings accepts explicit null.
@@ -464,20 +452,6 @@ async def resolve_pre_call_model_configuration(
                 for index, rule in enumerate(snapshot["llm_fallback"]["rules"])
             ],
         }
-    if snapshot.get("tts_fallback") is not None:
-        config["tts_fallback"] = {
-            "version": 1,
-            "rules": [
-                {
-                    "condition": deepcopy(rule["condition"]),
-                    "target": selection(
-                        rule["target"],
-                        effective.tts_fallback.rules[index].target,
-                    ),
-                }
-                for index, rule in enumerate(snapshot["tts_fallback"]["rules"])
-            ],
-        }
     if snapshot.get("stt_fallback") is not None:
         config["stt_fallback"] = {
             "version": 1,
@@ -524,10 +498,6 @@ async def resolve_pre_call_model_configuration(
     )
     selections.extend(
         rule["target"]
-        for rule in (resolved.snapshot.get("tts_fallback") or {}).get("rules", [])
-    )
-    selections.extend(
-        rule["target"]
         for rule in (resolved.snapshot.get("stt_fallback") or {}).get("rules", [])
     )
     for saved in selections:
@@ -561,11 +531,6 @@ async def _resolve_spec(
             (f"fallback_{index}", "llm", rule.target)
             for index, rule in enumerate(spec.llm_fallback.rules)
         )
-    if spec.tts_fallback is not None and "tts" in active:
-        selections.extend(
-            (f"tts_fallback_{index}", "tts", rule.target)
-            for index, rule in enumerate(spec.tts_fallback.rules)
-        )
     if spec.stt_fallback is not None and "stt" in active:
         selections.extend(
             (f"stt_fallback_{index}", "stt", rule.target)
@@ -586,14 +551,6 @@ async def _resolve_spec(
         ):
             raise _invalid("LLM fallbacks are unavailable in Dograh mode")
         if (
-            key == "tts"
-            and "tts" in active
-            and spec.tts_fallback
-            and spec.tts_fallback.rules
-            and row.provider == "dograh"
-        ):
-            raise _invalid("TTS fallbacks are unavailable in Dograh mode")
-        if (
             key == "stt"
             and "stt" in active
             and spec.stt_fallback
@@ -601,11 +558,7 @@ async def _resolve_spec(
             and row.provider == "dograh"
         ):
             raise _invalid("STT fallbacks are unavailable in Dograh mode")
-        if (
-            key.startswith("fallback_")
-            or key.startswith("tts_fallback_")
-            or key.startswith("stt_fallback_")
-        ) and row.provider == "dograh":
+        if (key.startswith("fallback_") or key.startswith("stt_fallback_")) and row.provider == "dograh":
             raise _invalid(
                 "Dograh manages its own fallbacks and cannot be a fallback target"
             )
@@ -633,9 +586,6 @@ async def _resolve_spec(
         if key.startswith("fallback_"):
             primary_row, primary = services["llm"]
             message = "Fallback target must differ from the primary LLM"
-        elif key.startswith("tts_fallback_"):
-            primary_row, primary = services["tts"]
-            message = "Fallback target must differ from the primary TTS"
         elif key.startswith("stt_fallback_"):
             primary_row, primary = services["stt"]
             if connection_provider(row.provider) == connection_provider(
@@ -710,20 +660,6 @@ async def _resolve_spec(
             snapshot_llm_fallback["rules"].append(
                 {"condition": condition, "target": snapshot_services.pop(key)}
             )
-    effective_tts_fallback = None
-    snapshot_tts_fallback = None
-    if spec.tts_fallback is not None and "tts" in active:
-        effective_tts_fallback = {"version": 1, "rules": []}
-        snapshot_tts_fallback = {"version": 1, "rules": []}
-        for index, rule in enumerate(spec.tts_fallback.rules):
-            key = f"tts_fallback_{index}"
-            condition = rule.condition.model_dump(mode="json")
-            effective_tts_fallback["rules"].append(
-                {"condition": condition, "target": effective_services.pop(key)}
-            )
-            snapshot_tts_fallback["rules"].append(
-                {"condition": condition, "target": snapshot_services.pop(key)}
-            )
     effective_stt_fallback = None
     snapshot_stt_fallback = None
     if spec.stt_fallback is not None and "stt" in active:
@@ -741,7 +677,6 @@ async def _resolve_spec(
     effective = EffectiveAIModelConfiguration(
         **effective_services,
         llm_fallback=effective_llm_fallback,
-        tts_fallback=effective_tts_fallback,
         stt_fallback=effective_stt_fallback,
         is_realtime=spec.mode == "realtime",
         managed_service_version=2 if dograh_keys else None,
@@ -751,7 +686,6 @@ async def _resolve_spec(
         "mode": spec.mode,
         "services": snapshot_services,
         "llm_fallback": snapshot_llm_fallback,
-        "tts_fallback": snapshot_tts_fallback,
         "stt_fallback": snapshot_stt_fallback,
         "provenance": provenance,
         "managed_service_version": effective.managed_service_version,
@@ -833,18 +767,6 @@ async def hydrate_model_configuration_snapshot(organization_id, snapshot):
                 for rule in llm_fallback["rules"]
             ],
         }
-    tts_fallback = snapshot.get("tts_fallback")
-    if tts_fallback is not None:
-        tts_fallback = {
-            "version": tts_fallback["version"],
-            "rules": [
-                {
-                    "condition": rule["condition"],
-                    "target": await hydrate_selection("tts", rule["target"]),
-                }
-                for rule in tts_fallback["rules"]
-            ],
-        }
     stt_fallback = snapshot.get("stt_fallback")
     if stt_fallback is not None:
         stt_fallback = {
@@ -860,7 +782,6 @@ async def hydrate_model_configuration_snapshot(organization_id, snapshot):
     return EffectiveAIModelConfiguration(
         **services,
         llm_fallback=llm_fallback,
-        tts_fallback=tts_fallback,
         stt_fallback=stt_fallback,
         is_realtime=snapshot["mode"] == "realtime",
         managed_service_version=snapshot.get("managed_service_version"),
@@ -873,8 +794,6 @@ def public_snapshot(snapshot):
     for service in result.get("services", {}).values():
         service.pop("api_key_index", None)
     for rule in (result.get("llm_fallback") or {}).get("rules", []):
-        rule["target"].pop("api_key_index", None)
-    for rule in (result.get("tts_fallback") or {}).get("rules", []):
         rule["target"].pop("api_key_index", None)
     for rule in (result.get("stt_fallback") or {}).get("rules", []):
         rule["target"].pop("api_key_index", None)

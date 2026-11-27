@@ -10,7 +10,6 @@ from api.services.telephony.providers import (  # noqa: F401  -- import for side
     ari,
     cloudonix,
     exotel,
-    koreaaitel,
     plivo,
     telnyx,
     twilio,

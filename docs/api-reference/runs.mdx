@@ -8,7 +8,6 @@ description: "Create and inspect agent runs via the API"
 | `POST` | `/public/agent/{uuid}` | [Trigger an outbound agent run by API Trigger node](/api-reference/runs/trigger) |
 | `POST` | `/public/agent/workflow/{workflow_uuid}` | [Trigger an outbound agent run by Agent UUID](/api-reference/runs/trigger-workflow) |
 | `GET` | `/workflow/{workflow_id}/runs/{run_id}` | [Retrieve agent run details](/api-reference/runs/get-run) |
-| `DELETE` | `/workflow/{workflow_id}/runs/{run_id}` | [Delete a finished telephony run](#delete-a-finished-telephony-run) |
 | `GET` | `/public/download/workflow/{token}/{artifact_type}` | [Download recordings and transcripts](/api-reference/runs/download) |
 | `POST` | `/telephony/inbound/{workflow_id}` | [Inbound run webhook](/api-reference/runs/inbound) |
 
@@ -60,7 +59,3 @@ Your agent prompt can then reference `{{customer_name}}` and `{{appointment_date
 | `in_progress` | Run is live |
 | `completed` | Run ended normally |
 | `failed` | Run failed before or during execution |
-
-## Delete a finished telephony run
-
-`DELETE /workflow/{workflow_id}/runs/{run_id}` removes a finished telephony run and its stored audio and transcript artifacts, including Noveum audio recorded for the run. The completion job must have finished before deletion; active or otherwise unfinished runs return `409 Conflict`, so retry after completion. Text-chat runs are unsupported and also return `409 Conflict`. A missing run or a run outside your organization returns `404 Not Found`. If artifact cleanup fails, the endpoint returns `500 Internal Server Error` before removing the run record. Successful deletion returns `204 No Content`.

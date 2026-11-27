@@ -112,21 +112,36 @@ class GreetingController:
         one. A greeting that saved the Flux strategies restores this set
         instead, so the call does not go back to waiting on Flux.
         """
-        if self._normal_strategies is not None:
-            self._normal_strategies = strategies
+        await self.update_turn_strategies(strategies)
+
+    async def update_turn_strategies(self, strategies: UserTurnStrategies) -> None:
+        """Replace the call's normal strategies while preserving active overlays."""
         user = self._user
         if user is None:
+            self._normal_strategies = strategies
             return
         controller = user.user_turn_controller
         current = controller.user_turn_strategies
-        if (
-            self._greeting_strategy is not None
-            and current.start
-            and current.start[0] is self._greeting_strategy
-        ):
-            await controller.update_strategies(
-                UserTurnStrategies(start=list(current.start), stop=strategies.stop)
+        overlay_active = (
+            self._normal_strategies is not None
+            and (
+                self._greeting_strategy is not None
+                and current.start
+                and current.start[0] is self._greeting_strategy
+                or self._min_words is not None
             )
+        )
+        if overlay_active:
+            self._normal_strategies = strategies
+            await controller.update_strategies(
+                UserTurnStrategies(
+                    start=list(current.start), stop=list(strategies.stop)
+                )
+            )
+            return
+        self._normal_strategies = None
+        self._min_words = None
+        await controller.update_strategies(strategies)
             return
         await controller.update_strategies(strategies)
 

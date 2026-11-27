@@ -1,6 +1,5 @@
 import asyncio
 import os
-import shutil
 from datetime import datetime
 from typing import Optional
 
@@ -57,37 +56,6 @@ class LocalFileSystem(BaseFileSystem):
                 await dst.write(await src.read())
             return True
         except Exception:
-            return False
-
-    async def adelete_file(self, file_path: str) -> bool:
-        try:
-            os.remove(self._get_full_path(file_path))
-            return True
-        except FileNotFoundError:
-            return True
-        except OSError:
-            return False
-
-    async def adelete_prefix(self, prefix: str) -> bool:
-        if not prefix:
-            return False
-        base_path = os.path.abspath(self.base_path)
-        full_path = os.path.abspath(self._get_full_path(prefix))
-        try:
-            if (
-                full_path == base_path
-                or os.path.commonpath((base_path, full_path)) != base_path
-            ):
-                return False
-        except ValueError:
-            return False
-
-        try:
-            await asyncio.to_thread(shutil.rmtree, full_path)
-            return True
-        except FileNotFoundError:
-            return True
-        except OSError:
             return False
 
     async def aget_signed_url(

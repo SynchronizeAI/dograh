@@ -37,15 +37,6 @@ pids=()
 
 shutdown() {
   echo "Received shutdown signal, stopping services..."
-  # A host with no preStop hook (Railway sends SIGTERM, then SIGKILL after its
-  # draining time) opts in to hold uvicorn's SIGTERM, which cuts live call
-  # WebSockets, until each worker's calls end: scripts/drain_web.sh, the
-  # Kubernetes preStop drain, keeping DRAIN_MAX_WAIT below that draining time.
-  if [[ "${DRAIN_ON_TERM:-false}" == "true" ]]; then
-    for ((i=0; i<FASTAPI_WORKERS; i++)); do
-      WEB_PORT=$((UVICORN_BASE_PORT + i)) "$BASE_DIR/scripts/drain_web.sh" || true
-    done
-  fi
   for pid in "${pids[@]}"; do
     kill -TERM "$pid" 2>/dev/null || true
   done

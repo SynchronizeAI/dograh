@@ -31,13 +31,8 @@ from pipecat.frames.frames import (
     LLMTextFrame,
     MetricsFrame,
     StartFrame,
-    UserTurnResponseCancelFrame,
 )
-from pipecat.metrics.metrics import (
-    LLMUsageMetricsData,
-    TTFATMetricsData,
-    TTFBMetricsData,
-)
+from pipecat.metrics.metrics import LLMUsageMetricsData, TTFBMetricsData
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import (
@@ -50,7 +45,6 @@ from pipecat.services.settings import LLMSettings
 from pipecat.utils.asyncio.task_manager import TaskManager
 
 from api.schemas.llm_fallback import ErrorCondition, NoOutputCondition
-from api.services.pipecat import fallback_llm
 from api.services.pipecat.fallback_llm import FallbackLLMProcessor, FallbackRoute
 
 PRIMARY = "gemini-3.5-flash"
@@ -791,196 +785,11 @@ async def test_new_context_retires_backup_deferred_transition(harness, monkeypat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("first_output", "first_byte", "reported_ttfb", "ttfb", "thinking_time"),
-    [
-        # Speculation starts at 100.0 and is committed at 100.5, so the TTFAT
-        # frame at 101.0 measures 0.5 s from the commit. first_output is
-        # relative to the speculation start.
-        pytest.param(0.6, None, 10.0, 0.1, 0.4, id="output-after-commit"),
-        pytest.param(0.2, None, 10.0, 0.0, 0.5, id="output-before-commit"),
-        pytest.param(None, 100.7, 10.0, 0.2, 0.3, id="first-byte-only"),
-        # No output or first byte: the reported ttfb is the service's own,
-        # measured from the speculation start, so it is rebased to the commit
-        # (reported - 0.5 s) and kept within [0, ttfat].
-        pytest.param(None, None, 10.0, 0.5, 0.0, id="no-output-capped-at-ttfat"),
-        pytest.param(None, None, 0.8, 0.3, 0.2, id="no-output-after-commit"),
-        pytest.param(None, None, 0.3, 0.0, 0.5, id="no-output-before-commit"),
-    ],
-)
-async def test_committed_ttfat_measures_ttfb_from_the_commit(
-    harness, monkeypatch, first_output, first_byte, reported_ttfb, ttfb, thinking_time
-):
-    race = fallback_llm._Race(started=100.0, hedge_started=100.5)
-    attempt = fallback_llm._Attempt(
-        index=0, race=race, first_output=first_output, first_byte=first_byte
-    )
-    race.winner = attempt
-    race.attempts = [attempt]
-    token = fallback_llm._attempt.set(attempt)
-    monkeypatch.setattr(
-        fallback_llm,
-        "time",
-        SimpleNamespace(monotonic=lambda: 101.0),
-    )
-    try:
-        ttfat = TTFATMetricsData(
-            processor="test",
-            model="gemini",
-            ttfb=reported_ttfb,
-            ttfat=0.0,
-            thinking_time=0.0,
-        )
-        frame = MetricsFrame(data=[ttfat])
-        await harness.llm._receive(0, frame, FrameDirection.DOWNSTREAM)
-        assert ttfat.ttfat == pytest.approx(0.5)
-        assert ttfat.ttfb == pytest.approx(ttfb)
-        assert ttfat.thinking_time == pytest.approx(thinking_time)
-        assert 0 <= ttfat.ttfb <= ttfat.ttfat
-        assert ttfat.thinking_time >= 0
-        assert not any(isinstance(data, TTFBMetricsData) for data in frame.data)
-    finally:
-        fallback_llm._attempt.reset(token)
-
-
-@pytest.mark.asyncio
-async def test_buffered_speculative_metrics_rebase_when_turn_commits(
-    harness, monkeypatch
-):
-    from pipecat.frames.frames import UserStoppedSpeakingFrame
-
-    now = [100.25]
-    monkeypatch.setattr(
-        fallback_llm, "time", SimpleNamespace(monotonic=lambda: now[0])
-    )
-    race = fallback_llm._Race(started=100.0)
-    attempts = [fallback_llm._Attempt(index=i, race=race) for i in range(2)]
-    race.attempts.extend(attempts)
-    harness.llm._active_race = race
-    harness.llm._latest[:] = attempts
-    harness.llm._speculation_gate.begin_speculation(True)
-
-    token = fallback_llm._attempt.set(attempts[0])
-    try:
-        ttfb = TTFBMetricsData(processor="test", model="gemini", value=0.0)
-        await harness.llm._receive(
-            0, MetricsFrame(data=[ttfb]), FrameDirection.DOWNSTREAM
-        )
-    finally:
-        fallback_llm._attempt.reset(token)
-
-    now[0] = 100.3
-    token = fallback_llm._attempt.set(attempts[1])
-    try:
-        ttfb = TTFBMetricsData(processor="test", model="gemini", value=0.0)
-        await harness.llm._receive(
-            1, MetricsFrame(data=[ttfb]), FrameDirection.DOWNSTREAM
-        )
-        now[0] = 100.4
-        ttfat = TTFATMetricsData(
-            processor="test",
-            model="gemini",
-            ttfb=0.0,
-            ttfat=0.0,
-            thinking_time=0.0,
-        )
-        await harness.llm._receive(
-            1, MetricsFrame(data=[ttfat]), FrameDirection.DOWNSTREAM
-        )
-    finally:
-        fallback_llm._attempt.reset(token)
-
-    now[0] = 100.5
-    await control(harness, UserStoppedSpeakingFrame())
-
-    assert race.hedge_started == pytest.approx(100.5)
-    assert attempts[0].buffered[0][0].data[0].value == pytest.approx(0)
-    assert attempts[1].buffered[0][0].data[0].value == pytest.approx(0)
-    ttfat = attempts[1].buffered[1][0].data[0]
-    assert ttfat.ttfat == pytest.approx(0)
-    assert ttfat.ttfb == pytest.approx(0)
-    assert ttfat.thinking_time == pytest.approx(0)
-
-
-@pytest.mark.asyncio
-async def test_winner_metrics_rebase_after_generation_finishes_before_commit(
-    harness, monkeypatch
-):
-    from pipecat.frames.frames import UserStoppedSpeakingFrame
-
-    install_streams(
-        harness, monkeypatch, Stream(chunk("answer")), Stream(chunk("backup"))
-    )
-    assert await generate(harness, speculation=True) == []
-    assert harness.llm._active_race is None
-    assert harness.llm._pending_speculative_race is not None
-
-    await control(harness, UserStoppedSpeakingFrame())
-
-    metrics = [
-        data
-        for frame in harness.downstream.frames
-        if isinstance(frame, MetricsFrame)
-        for data in frame.data
-        if isinstance(data, (TTFBMetricsData, TTFATMetricsData))
-    ]
-    assert len(metrics) == 2
-    ttfb = next(data for data in metrics if isinstance(data, TTFBMetricsData))
-    ttfat = next(data for data in metrics if isinstance(data, TTFATMetricsData))
-    assert ttfb.value == pytest.approx(0)
-    assert ttfat.ttfat == pytest.approx(0)
-    assert ttfat.ttfb == pytest.approx(0)
-    assert ttfat.thinking_time == pytest.approx(0)
-    assert [
-        frame.text
-        for frame in harness.downstream.frames
-        if isinstance(frame, LLMTextFrame)
-    ] == ["answer"]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("use_backup", [False, True], ids=["primary", "backup"])
-async def test_speculative_tools_cancel_both_directions_without_execution(
-    harness, monkeypatch, use_backup
-):
-    tools = Stream(
-        chunk(
-            parts=[Part(function_call=FunctionCall(name="book", args={}, id="booking"))]
-        )
-    )
-    primary = Stream(ConnectionError("primary")) if use_backup else tools
-    backup = tools if use_backup else Stream(chunk("unused"))
-    install_streams(harness, monkeypatch, primary, backup)
-    handler = AsyncMock()
-    harness.llm.register_function("book", handler)
-
-    assert await generate(harness, speculation=True) == []
-
-    handler.assert_not_awaited()
-    assert tools.closed.is_set()
-    assert not harness.llm._speculation_gate.is_speculating
-    for capture in (harness.upstream, harness.downstream):
-        cancellations = [
-            frame
-            for frame in capture.frames
-            if isinstance(frame, UserTurnResponseCancelFrame)
-        ]
-        assert len(cancellations) == 1
-        assert type(cancellations[0]) is UserTurnResponseCancelFrame
-        assert not any(
-            isinstance(frame, FunctionCallsFromLLMInfoFrame) for frame in capture.frames
-        )
-
-
-@pytest.mark.asyncio
 async def test_speculative_winner_releases_once_on_confirmed_turn(harness, monkeypatch):
     from pipecat.frames.frames import UserStoppedSpeakingFrame
 
     install_streams(
-        harness,
-        monkeypatch,
-        Stream(ConnectionError("primary")),
-        Stream(chunk("backup")),
+        harness, monkeypatch, Stream(asyncio.Event()), Stream(chunk("backup"))
     )
     assert await generate(harness, speculation=True) == []
     await control(harness, UserStoppedSpeakingFrame())
@@ -1003,7 +812,7 @@ async def test_superseded_speculative_backup_cannot_release_old_text(
 ):
     from pipecat.frames.frames import UserStoppedSpeakingFrame
 
-    primary = Stream(ConnectionError("primary"))
+    primary = Stream(asyncio.Event())
     install_streams(harness, monkeypatch, primary, Stream(chunk("old")))
     assert await generate(harness, speculation=True) == []
     primary.steps = (chunk("new"),)
@@ -1012,124 +821,6 @@ async def test_superseded_speculative_backup_cannot_release_old_text(
     assert [
         f.text for f in harness.downstream.frames if isinstance(f, LLMTextFrame)
     ] == ["new"]
-
-
-@pytest.mark.asyncio
-async def test_speculative_no_output_hedge_gets_full_1200ms_after_commit(
-    harness, monkeypatch
-):
-    from pipecat.frames.frames import UserStoppedSpeakingFrame
-
-    harness.llm._fallback_after_secs = 1.2
-    harness.llm._first_output_timeout_secs = 5
-    harness.llm.primary._stream_idle_timeout_secs = 5
-    primary, backup = Stream(asyncio.Event()), Stream(chunk("backup"))
-    install_streams(harness, monkeypatch, primary, backup)
-    await harness.llm.queue_frame(LLMContextFrame(LLMContext(), speculation=True))
-    await asyncio.wait_for(primary.started.wait(), 1)
-    # More than a hedge interval spent guessing must not launch a backup.
-    await asyncio.sleep(1.25)
-    assert not backup.started.is_set()
-    committed = asyncio.get_running_loop().time()
-    await control(harness, UserStoppedSpeakingFrame())
-    await asyncio.wait_for(backup.started.wait(), 2)
-    assert asyncio.get_running_loop().time() - committed >= 1.2
-    async with asyncio.timeout(1):
-        while not any(isinstance(f, LLMTextFrame) for f in harness.downstream.frames):
-            await asyncio.sleep(0.001)
-    assert [
-        f.text for f in harness.downstream.frames if isinstance(f, LLMTextFrame)
-    ] == ["backup"]
-    # Loser cleanup runs beside the winner's output so it never delays the
-    # reply; the first text can therefore arrive before the primary closes.
-    await asyncio.wait_for(primary.closed.wait(), 1)
-    timings = [
-        data
-        for f in harness.downstream.frames
-        if isinstance(f, MetricsFrame)
-        for data in f.data
-        if isinstance(data, (TTFBMetricsData, TTFATMetricsData))
-    ]
-    assert len(timings) == 2
-    for data in timings:
-        # The 1.25 seconds spent speculating are excluded from public latency.
-        elapsed = data.value if isinstance(data, TTFBMetricsData) else data.ttfat
-        assert 1.2 <= elapsed < 2
-    ttfb = next(data for data in timings if isinstance(data, TTFBMetricsData))
-    ttfat = next(data for data in timings if isinstance(data, TTFATMetricsData))
-    assert ttfat.ttfb == pytest.approx(ttfb.value, abs=0.02)
-    assert ttfat.thinking_time == pytest.approx(ttfat.ttfat - ttfat.ttfb)
-
-
-@pytest.mark.asyncio
-async def test_speculation_started_during_commit_flush_keeps_hedge(
-    harness, monkeypatch
-):
-    from pipecat.frames.frames import UserStoppedSpeakingFrame
-
-    harness.llm._first_output_timeout_secs = 5
-    harness.llm.primary._stream_idle_timeout_secs = 5
-    primary, backup = Stream(asyncio.Event()), Stream(chunk("backup"))
-    install_streams(harness, monkeypatch, primary, backup)
-    entered, release = asyncio.Event(), asyncio.Event()
-    original_flush = harness.llm._flush_output
-
-    async def flush():
-        if asyncio.current_task() is committing:
-            entered.set()
-            await release.wait()
-        await original_flush()
-
-    monkeypatch.setattr(harness.llm, "_flush_output", flush)
-    committing = asyncio.create_task(
-        harness.llm.process_frame(UserStoppedSpeakingFrame(), DOWN)
-    )
-    generating = None
-    try:
-        await asyncio.wait_for(entered.wait(), 1)
-        generating = asyncio.create_task(
-            harness.llm._generate(LLMContextFrame(LLMContext(), speculation=True))
-        )
-        await asyncio.wait_for(primary.started.wait(), 1)
-        assert harness.llm._speculation_gate.is_speculating
-        release.set()
-        await asyncio.wait_for(committing, 1)
-        await asyncio.wait_for(backup.started.wait(), 1)
-        await asyncio.wait_for(generating, 1)
-        assert [
-            f.text for f in harness.downstream.frames if isinstance(f, LLMTextFrame)
-        ] == ["backup"]
-        assert primary.closed.is_set()
-    finally:
-        release.set()
-        tasks = [committing, *([generating] if generating else [])]
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-
-@pytest.mark.asyncio
-async def test_withdrawn_speculation_retires_request_and_hedge(harness, monkeypatch):
-    from pipecat.frames.frames import (
-        UserStoppedSpeakingFrame,
-        UserTurnResponseCancelFrame,
-    )
-
-    harness.llm._first_output_timeout_secs = 5
-    primary, backup = Stream(asyncio.Event()), Stream(chunk("backup"))
-    install_streams(harness, monkeypatch, primary, backup)
-    await harness.llm.queue_frame(LLMContextFrame(LLMContext(), speculation=True))
-    await asyncio.wait_for(primary.started.wait(), 1)
-    await control(harness, UserTurnResponseCancelFrame())
-    assert primary.closed.is_set()
-    await asyncio.sleep(0.04)
-    assert not backup.started.is_set()
-    # The final turn has its own full hedge budget.
-    await control(harness, UserStoppedSpeakingFrame())
-    primary.steps = (chunk("committed answer"),)
-    assert await generate(harness) == ["committed answer"]
-    assert not backup.started.is_set()
 
 
 @pytest.mark.asyncio

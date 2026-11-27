@@ -7,7 +7,6 @@ from sqlalchemy import or_, select, text
 from api.db.base_client import BaseDBClient
 from api.db.models import WorkflowModel, WorkflowRunModel
 from api.db.workflow_run_client import append_unique_tags
-from api.services.pipecat.usage_metrics import merge_llm_usage
 
 
 class WorkflowCompletionClient(BaseDBClient):
@@ -92,7 +91,6 @@ class WorkflowCompletionClient(BaseDBClient):
         mapped_disposition: str | None,
         status: str,
         error_class: str | None,
-        usage_info: dict | None = None,
     ) -> bool:
         """Commit only extraction-owned fields while holding the completion lease."""
         async with self.async_session() as session:
@@ -141,12 +139,6 @@ class WorkflowCompletionClient(BaseDBClient):
                 },
             }
             run.gathered_context = context
-            if usage_info:
-                existing = dict(run.usage_info or {})
-                run.usage_info = {
-                    **existing,
-                    "llm": merge_llm_usage(existing.get("llm"), usage_info["llm"]),
-                }
             await session.commit()
             return True
 

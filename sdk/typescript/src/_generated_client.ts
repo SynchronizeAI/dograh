@@ -38,11 +38,6 @@ export abstract class _GeneratedClient {
         return this.request<WorkflowResponse>("POST", "/workflow/create/definition", { json: opts.body });
     }
 
-    /** Delete a completed telephony workflow run and its stored artifacts. */
-    async deleteWorkflowRun(workflowId: number, runId: number): Promise<unknown> {
-        return this.request("DELETE", `/workflow/${workflowId}/runs/${runId}`);
-    }
-
     /** Fetch a single node spec by name. */
     async getNodeType(name: string): Promise<NodeSpec> {
         return this.request<NodeSpec>("GET", `/node-types/${name}`);

@@ -141,7 +141,6 @@ export interface paths {
          *
          *     Text-chat sessions are synthetic and cannot be deleted through this route.
          */
-        delete: operations["delete_workflow_run_api_v1_workflow__workflow_id__runs__run_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -925,7 +924,6 @@ export interface components {
             stt?: components["schemas"]["ServiceOverride"] | null;
             stt_fallback?: components["schemas"]["STTFallbackPolicy_ServiceSelection_"] | null;
             tts?: components["schemas"]["ServiceOverride"] | null;
-            tts_fallback?: components["schemas"]["TTSFallbackPolicy_ServiceSelection_"] | null;
             realtime?: components["schemas"]["ServiceOverride"] | null;
             embeddings?: components["schemas"]["ServiceOverride"] | null;
         };
@@ -1231,22 +1229,6 @@ export interface components {
              * Format: uuid
              */
             provider_connection_uuid: string;
-        };
-        /** TTSFallbackPolicy[ServiceSelection] */
-        TTSFallbackPolicy_ServiceSelection_: {
-            /**
-             * Version
-             * @default 1
-             * @constant
-             */
-            version: 1;
-            /** Rules */
-            rules?: components["schemas"]["TTSFallbackRule_ServiceSelection_"][];
-        };
-        /** TTSFallbackRule[ServiceSelection] */
-        TTSFallbackRule_ServiceSelection_: {
-            condition: components["schemas"]["ErrorCondition"];
-            target: components["schemas"]["ServiceSelection"];
         };
         /** ToolDelayedAudioMessage */
         ToolDelayedAudioMessage: {
@@ -1720,8 +1702,6 @@ export type SttFallbackPolicyServiceSelection = components['schemas']['STTFallba
 export type SttFallbackRuleServiceSelection = components['schemas']['STTFallbackRule_ServiceSelection_'];
 export type ServiceOverride = components['schemas']['ServiceOverride'];
 export type ServiceSelection = components['schemas']['ServiceSelection'];
-export type TtsFallbackPolicyServiceSelection = components['schemas']['TTSFallbackPolicy_ServiceSelection_'];
-export type TtsFallbackRuleServiceSelection = components['schemas']['TTSFallbackRule_ServiceSelection_'];
 export type ToolDelayedAudioMessage = components['schemas']['ToolDelayedAudioMessage'];
 export type ToolDelayedTextMessage = components['schemas']['ToolDelayedTextMessage'];
 export type ToolParameter = components['schemas']['ToolParameter'];
@@ -1933,276 +1913,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkflowResponse"];
-                };
-            };
-            /** @description Not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    delete_workflow_run_api_v1_workflow__workflow_id__runs__run_id__delete: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-                "X-API-Key"?: string | null;
-            };
-            path: {
-                workflow_id: number;
-                run_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Workflow run not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Run mode is unsupported or completion has not finished */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-            /** @description Failed to delete workflow run artifacts */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    list_credentials_api_v1_credentials__get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-                "X-API-Key"?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CredentialResponse"][];
-                };
-            };
-            /** @description Not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_tools_api_v1_tools__get: {
-        parameters: {
-            query?: {
-                status?: string | null;
-                category?: string | null;
-            };
-            header?: {
-                authorization?: string | null;
-                "X-API-Key"?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ToolResponse"][];
-                };
-            };
-            /** @description Not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_tool_api_v1_tools__post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-                "X-API-Key"?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateToolRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ToolResponse"];
-                };
-            };
-            /** @description Not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_documents_api_v1_knowledge_base_documents_get: {
-        parameters: {
-            query?: {
-                /** @description Filter by processing status */
-                status?: string | null;
-                limit?: number;
-                offset?: number;
-            };
-            header?: {
-                authorization?: string | null;
-                "X-API-Key"?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DocumentListResponseSchema"];
-                };
-            };
-            /** @description Not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_recordings_api_v1_workflow_recordings__get: {
-        parameters: {
-            query?: {
-                /** @description Filter by workflow ID */
-                workflow_id?: number | null;
-                /** @description Filter by TTS provider */
-                tts_provider?: string | null;
-                /** @description Filter by TTS model */
-                tts_model?: string | null;
-                /** @description Filter by TTS voice ID */
-                tts_voice_id?: string | null;
-            };
-            header?: {
-                authorization?: string | null;
-                "X-API-Key"?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RecordingListResponseSchema"];
                 };
             };
             /** @description Not found */

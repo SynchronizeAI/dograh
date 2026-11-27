@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from httpx import HTTPStatusError, RequestError
 from loguru import logger
@@ -19,8 +19,6 @@ from api.enums import (
     CallType,
     PostHogEvent,
     StorageBackend,
-    WORKFLOW_RUN_MODES_BY_CHANNEL,
-    WorkflowRunChannel,
     WorkflowRunMode,
     WorkflowStatus,
 )
@@ -39,7 +37,7 @@ from api.services.configuration.masking import (
 from api.services.mps_service_key_client import mps_service_key_client
 from api.services.posthog_tenant import capture_tenant_event
 from api.services.reports import generate_workflow_report_csv
-from api.services.storage import get_storage_for_backend, storage_fs
+from api.services.storage import storage_fs
 from api.services.workflow.configuration_policy import (
     ExternalPBXConfigurationDisabledError,
     WorkflowConfigurationNotFoundError,
@@ -1504,124 +1502,6 @@ async def get_workflow_run(
         "logs": run.logs,
         "annotations": run.annotations,
     }
-
-
-def _workflow_run_artifact_keys(run) -> set[tuple[str, str]]:
-    artifacts = {
-        (run.storage_backend, key)
-        for key in (run.recording_url, run.transcript_url)
-        if key
-    }
-    artifacts.update(
-        {
-            (run.storage_backend, f"recordings/{run.id}.wav"),
-            (run.storage_backend, f"transcripts/{run.id}.txt"),
-        }
-    )
-
-    def collect(value):
-        if isinstance(value, dict):
-            key = value.get("storage_key")
-            backend = value.get("storage_backend") or run.storage_backend
-            if isinstance(key, str):
-                artifacts.add((backend, key))
-            for child in value.values():
-                collect(child)
-        elif isinstance(value, list):
-            for child in value:
-                collect(child)
-
-    collect(run.extra)
-
-    noveum_payload = (run.logs or {}).get("noveum_payload")
-    audio_manifest = (
-        noveum_payload.get("audio_manifest") or []
-        if isinstance(noveum_payload, dict)
-        else []
-    )
-    if isinstance(audio_manifest, list):
-        for item in audio_manifest:
-            if not isinstance(item, dict):
-                continue
-            key = item.get("storage_key")
-            backend = item.get("storage_backend") or run.storage_backend
-            if isinstance(key, str):
-                artifacts.add((backend, key))
-    return artifacts
-
-
-@router.delete(
-    "/{workflow_id}/runs/{run_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    responses={
-        status.HTTP_404_NOT_FOUND: {"description": "Workflow run not found"},
-        status.HTTP_409_CONFLICT: {
-            "description": "Run mode is unsupported or completion has not finished"
-        },
-        status.HTTP_500_INTERNAL_SERVER_ERROR: {
-            "description": "Failed to delete workflow run artifacts"
-        },
-    },
-    **sdk_expose(
-        method="delete_workflow_run",
-        description="Delete a completed telephony workflow run and its stored artifacts.",
-    ),
-)
-async def delete_workflow_run(
-    workflow_id: int, run_id: int, user: UserModel = Depends(get_user)
-) -> Response:
-    """Delete finished telephony runs and artifacts; other modes are unsupported.
-
-    Text-chat sessions are synthetic and cannot be deleted through this route.
-    """
-    if user.selected_organization_id is None:
-        raise HTTPException(status_code=404, detail="Workflow run not found")
-
-    run = await db_client.get_workflow_run(
-        run_id,
-        organization_id=user.selected_organization_id,
-        workflow_id=workflow_id,
-    )
-    if not run:
-        raise HTTPException(status_code=404, detail="Workflow run not found")
-
-    telephony_modes = WORKFLOW_RUN_MODES_BY_CHANNEL[
-        WorkflowRunChannel.TELEPHONY.value
-    ]
-    if run.mode not in telephony_modes:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Only telephony workflow runs can be deleted",
-        )
-
-    completion = (run.extra or {}).get("workflow_completion") or {}
-    if completion.get("status") != "done":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Workflow run completion has not finished",
-        )
-
-    recording_prefix = f"recordings/{run.id}/"
-    storage = get_storage_for_backend(run.storage_backend)
-    if not await storage.adelete_prefix(recording_prefix):
-        raise HTTPException(
-            status_code=500, detail="Failed to delete workflow run artifacts"
-        )
-
-    for backend, key in _workflow_run_artifact_keys(run):
-        if backend == run.storage_backend and key.startswith(recording_prefix):
-            continue
-        if not await get_storage_for_backend(backend).adelete_file(key):
-            raise HTTPException(
-                status_code=500, detail="Failed to delete workflow run artifacts"
-            )
-
-    deleted = await db_client.delete_workflow_run(
-        run_id, workflow_id, user.selected_organization_id
-    )
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Workflow run not found")
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 class WorkflowRunsResponse(BaseModel):

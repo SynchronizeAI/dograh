@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from api.services.telephony.factory import (
-    _instantiate,
     _normalize_with_phone_numbers,
     find_telephony_config_for_inbound,
     get_telephony_provider_for_run,
@@ -177,12 +176,7 @@ async def test_find_telephony_config_for_inbound_excludes_inactive_ari_row():
 
 
 def _config_row() -> SimpleNamespace:
-    return SimpleNamespace(
-        id=14,
-        name="Internal test lines",
-        provider="twilio",
-        credentials={"account_sid": "AC1"},
-    )
+    return SimpleNamespace(id=14, provider="twilio", credentials={"account_sid": "AC1"})
 
 
 def _normalize_patches(addresses, default_row):
@@ -218,9 +212,6 @@ async def test_normalize_attaches_default_from_number_when_flagged_and_active():
 
     assert config["from_numbers"] == addresses
     assert config["default_from_number"] == "+18158552169"
-    # Named so a refused caller ID says which configuration refused it.
-    assert config["configuration_name"] == "Internal test lines"
-    assert _instantiate(config).configuration_name == "Internal test lines"
 
 
 @pytest.mark.asyncio

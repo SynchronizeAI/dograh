@@ -87,14 +87,12 @@ def test_nova_receives_configured_endpoint():
     # DeepgramSTTService takes the host and derives wss:// and https:// itself.
     kwargs = _build_stt(_stt_config("nova-3-general", EU), "DeepgramSTTService")
     assert kwargs["base_url"] == EU
-    assert kwargs["mip_opt_out"] is True
 
 
 def test_flux_receives_configured_endpoint_as_a_socket_url():
     # Flux wants the fully-qualified socket URL including the v2 listen path.
     kwargs = _build_stt(_stt_config("flux-general-multi", EU), "DeepgramFluxSTTService")
     assert kwargs["url"] == "wss://api.eu.deepgram.com/v2/listen"
-    assert kwargs["mip_opt_out"] is True
 
 
 def test_tts_receives_configured_endpoint_without_a_path():

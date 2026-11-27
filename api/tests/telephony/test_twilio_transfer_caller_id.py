@@ -36,7 +36,6 @@ def transfer(monkeypatch):
             "account_sid": "AC-run-account",
             "auth_token": "run-account-secret",
             "from_numbers": [ACCOUNT_NUMBER],
-            "default_from_number": ACCOUNT_NUMBER,
         }
     )
     manager = SimpleNamespace(
@@ -419,14 +418,3 @@ async def test_account_number_is_not_retried_if_it_was_already_used(transfer):
     with pytest.raises(RuntimeError, match="status 400: code=21210"):
         await dial(transfer)
     assert len(transfer.requests) == 1
-
-
-@pytest.mark.parametrize("destination", [DESTINATION, "+15555550133"])
-async def test_inbound_only_configuration_refuses_transfers(transfer, destination):
-    """No default caller ID means no outbound leg, not a number from the pool."""
-    transfer.provider.default_from_number = None
-
-    with pytest.raises(ValueError, match="has no default caller ID"):
-        await dial(transfer, destination=destination)
-
-    assert transfer.requests == []

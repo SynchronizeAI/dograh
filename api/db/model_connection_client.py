@@ -186,10 +186,6 @@ class ModelConnectionClient(BaseDBClient):
         )
         selections.extend(
             rule["target"]
-            for rule in (configuration.get("tts_fallback") or {}).get("rules", [])
-        )
-        selections.extend(
-            rule["target"]
             for rule in (configuration.get("stt_fallback") or {}).get("rules", [])
         )
         for selection in selections:

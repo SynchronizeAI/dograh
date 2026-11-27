@@ -1,4 +1,4 @@
-import type { ConfigurationEditorMode, ConfigurationSpec, FallbackPolicy, FieldSchema, ModelConnectionCatalog, ProviderCatalogEntry, ProviderConnection, ServiceRole, ServiceSelection, SttFallbackPolicy, TtsFallbackPolicy } from "./types";
+import type { ConfigurationEditorMode, ConfigurationSpec, FallbackPolicy, FieldSchema, ModelConnectionCatalog, ProviderCatalogEntry, ProviderConnection, ServiceRole, ServiceSelection, SttFallbackPolicy } from "./types";
 import { ROLES } from "./types";
 
 const modelPatterns = new Map<string, RegExp | null>();
@@ -125,13 +125,11 @@ export function configurationForMode(mode: ConfigurationEditorMode, configuratio
             || connections.find(connection => connection.is_active && connection.provider === "dograh");
         const result = dograhConfiguration(catalog, dograh, configuration, connections);
         delete result.llm_fallback;
-        delete result.tts_fallback;
         delete result.stt_fallback;
         return result;
     }
     const result = emptyConfiguration(catalog, connections, mode);
     result.llm_fallback = configuration.llm_fallback;
-    result.tts_fallback = configuration.tts_fallback;
     result.stt_fallback = configuration.stt_fallback;
     for (const role of mode === "realtime" ? ["llm", "realtime", "embeddings"] as const : ["llm", "stt", "tts", "embeddings"] as const) {
         const previous = configuration[role];
@@ -165,7 +163,7 @@ export function resetDependentFields(settings: Record<string, unknown>, schema: 
     return { ...settings, ...Object.fromEntries(dependents) };
 }
 
-export function cleanFallbackPolicy<Policy extends FallbackPolicy | TtsFallbackPolicy | SttFallbackPolicy>(policy: Policy, catalog: ModelConnectionCatalog, connections: ProviderConnection[], role: "llm" | "tts" | "stt" = "llm"): Policy {
+export function cleanFallbackPolicy<Policy extends FallbackPolicy | SttFallbackPolicy>(policy: Policy, catalog: ModelConnectionCatalog, connections: ProviderConnection[], role: "llm" | "stt" = "llm"): Policy {
     return { ...policy, rules: policy.rules.map(rule => {
         const connection = connections.find(item => item.uuid === rule.target.provider_connection_uuid);
         return { ...rule, target: { ...rule.target, settings: cleanSettings(rule.target.settings, connection ? catalog.services[role]?.[connection.provider]?.settings_schema : undefined, connection?.connection_settings) } };
@@ -177,11 +175,9 @@ export function cleanConfiguration(configuration: ConfigurationSpec, catalog: Mo
     const result = { ...configuration };
     if (mode === "dograh") {
         delete result.llm_fallback;
-        delete result.tts_fallback;
         delete result.stt_fallback;
     } else {
         if (result.llm_fallback) result.llm_fallback = cleanFallbackPolicy(result.llm_fallback, catalog, connections);
-        if (result.tts_fallback) result.tts_fallback = cleanFallbackPolicy(result.tts_fallback, catalog, connections, "tts");
         if (result.stt_fallback) result.stt_fallback = cleanFallbackPolicy(result.stt_fallback, catalog, connections, "stt");
     }
     // Do not send inactive mode roles; stale settings must never authorize or execute.

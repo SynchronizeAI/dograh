@@ -80,17 +80,23 @@ async def create_qa_llm_service(
     return llm, model
 
 
-def accumulate_token_usage(total: dict, usage) -> None:
-    """Add an LLM reply's token counts to the running total dict."""
-    total["prompt_tokens"] = total.get("prompt_tokens", 0) + (usage.prompt_tokens or 0)
+def accumulate_token_usage(total: dict, response) -> None:
+    """Add token counts from an LLM response to the running total dict."""
+    if not response.usage:
+        return
+    total["prompt_tokens"] = total.get("prompt_tokens", 0) + (
+        response.usage.prompt_tokens or 0
+    )
     total["completion_tokens"] = total.get("completion_tokens", 0) + (
-        usage.completion_tokens or 0
+        response.usage.completion_tokens or 0
     )
-    total["total_tokens"] = total.get("total_tokens", 0) + (usage.total_tokens or 0)
+    total["total_tokens"] = total.get("total_tokens", 0) + (
+        response.usage.total_tokens or 0
+    )
     total["cache_read_input_tokens"] = total.get("cache_read_input_tokens", 0) + (
-        getattr(usage, "cache_read_input_tokens", 0) or 0
+        getattr(response.usage, "cache_read_input_tokens", 0) or 0
     )
-    cache_creation = getattr(usage, "cache_creation_input_tokens", None)
+    cache_creation = getattr(response.usage, "cache_creation_input_tokens", None)
     if cache_creation is not None:
         total["cache_creation_input_tokens"] = (
             total.get("cache_creation_input_tokens") or 0

@@ -30,7 +30,6 @@ from api.services.configuration.options import (
     CARTESIA_STT_MODELS,
     DEEPGRAM_BASE_URLS,
     DEEPGRAM_DEFAULT_BASE_URL,
-    DEEPGRAM_FLUX_MODELS,
     DEEPGRAM_FLUX_MULTILINGUAL_LANGUAGE_OPTIONS,
     DEEPGRAM_FLUX_MULTILINGUAL_LANGUAGES,
     DEEPGRAM_LANGUAGES,
@@ -90,7 +89,6 @@ class ServiceType(Enum):
 
 class ServiceProviders(str, Enum):
     OPENAI = "openai"
-    ANTHROPIC = "anthropic"
     ATLASCLOUD = "atlascloud"
     HOPPER = "hopper"
     DEEPGRAM = "deepgram"
@@ -157,7 +155,6 @@ class BaseServiceConfiguration(BaseModel):
     provider_definition: ClassVar[Provider]
     provider: Literal[
         ServiceProviders.OPENAI,
-        ServiceProviders.ANTHROPIC,
         ServiceProviders.ATLASCLOUD,
         ServiceProviders.HOPPER,
         ServiceProviders.DEEPGRAM,
@@ -425,7 +422,6 @@ HOPPER_PROVIDER = Provider(
     provider_docs_url="https://docs.withhopper.com",
 )
 GOOGLE_PROVIDER = Provider("google", "Google")
-ANTHROPIC_PROVIDER = Provider("anthropic", "Anthropic")
 GROQ_PROVIDER = Provider("groq", "Groq")
 OPENROUTER_PROVIDER = Provider("openrouter", "Open Router")
 AZURE_OPENAI_PROVIDER = Provider("azure", "Azure OpenAI")
@@ -557,13 +553,6 @@ class OpenAILLMService(BaseChatLLMConfiguration):
         default="https://api.openai.com/v1",
         description="Override only if using an OpenAI-compatible API (e.g. local LLM, proxy).",
     )
-    # Pipecat's Chat Completions settings have no reasoning field; sent via extra.
-    reasoning_effort: str | None = Field(
-        default=None,
-        description="Reasoning effort for reasoning models (e.g. none, minimal, low). "
-        "Leave blank for the default.",
-        json_schema_extra={"examples": ["none", "minimal", "low", "medium", "high"]},
-    )
 
 
 @register_llm(provider=ATLASCLOUD_PROVIDER)
@@ -607,21 +596,6 @@ class GoogleLLMService(BaseChatLLMConfiguration):
         default="gemini-3.5-flash",
         description="Gemini model on Google AI Studio (not Vertex).",
         json_schema_extra={"examples": GOOGLE_MODELS, "allow_custom_input": True},
-    )
-
-
-# Dograh 1.51 has no Anthropic LLM provider; this wires Pipecat's own service.
-@register_llm(provider=ANTHROPIC_PROVIDER)
-class AnthropicLLMConfiguration(BaseChatLLMConfiguration):
-    temperature: float | None = temperature_field("anthropic", None)
-    provider: Literal[ServiceProviders.ANTHROPIC] = ServiceProviders.ANTHROPIC
-    model: str = Field(
-        default="claude-haiku-5-5",
-        description="Claude model on the Anthropic API.",
-        json_schema_extra={
-            "examples": ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"],
-            "allow_custom_input": True,
-        },
     )
 
 
@@ -1259,7 +1233,6 @@ REALTIME_PROVIDERS = {
 LLMConfig = Annotated[
     Union[
         OpenAILLMService,
-        AnthropicLLMConfiguration,
         AtlasCloudLLMService,
         HopperLLMConfiguration,
         GoogleVertexLLMConfiguration,
@@ -2114,48 +2087,6 @@ def _validate_flux_language_hints(hints: list[str]) -> list[str]:
     return hints
 
 
-def _omit_opt_in_default(schema: dict) -> None:
-    """Keep runtime defaults on the model but off the published settings schema."""
-    schema.pop("default", None)
-
-
-def _deepgram_eager_field_schema(schema: dict) -> None:
-    _omit_opt_in_default(schema)
-    schema["visible_for_models"] = list(DEEPGRAM_FLUX_MODELS)
-
-
-def _dograh_eager_field_schema(schema: dict) -> None:
-    _omit_opt_in_default(schema)
-    schema["visible_for_languages"] = DEEPGRAM_FLUX_MULTILINGUAL_LANGUAGE_OPTIONS
-
-
-def _flux_eot_threshold_field(schema):
-    return Field(
-        default=0.7,
-        ge=0.5,
-        le=0.9,
-        description="Flux end-of-turn confidence threshold.",
-        json_schema_extra=schema,
-    )
-
-
-def _validate_flux_eager_thresholds(
-    enabled: bool, eager_threshold: float, eot_threshold: float
-):
-    if enabled and eager_threshold >= eot_threshold:
-        raise ValueError("eager_eot_threshold must be lower than eot_threshold")
-
-
-def _flux_eot_timeout_field(schema):
-    return Field(
-        default=3000,
-        ge=500,
-        le=10000,
-        description="Flux end-of-turn silence timeout in milliseconds.",
-        json_schema_extra=schema,
-    )
-
-
 @register_stt(provider=DEEPGRAM_PROVIDER)
 class DeepgramSTTConfiguration(BaseSTTConfiguration):
     provider: Literal[ServiceProviders.DEEPGRAM] = ServiceProviders.DEEPGRAM
@@ -2193,28 +2124,6 @@ class DeepgramSTTConfiguration(BaseSTTConfiguration):
             "visible_for_models": ["flux-general-multi"],
         },
     )
-    enable_eager_end_of_turn: bool = Field(
-        default=False,
-        description=(
-            "Generate speculative replies to Flux's predicted end of turn. "
-            "Replies are held until commit and discarded if the caller resumes. "
-            "Reduces latency at the cost of extra LLM requests."
-        ),
-        json_schema_extra=_deepgram_eager_field_schema,
-    )
-    eager_eot_threshold: float = Field(
-        default=0.5,
-        ge=0.3,
-        le=0.7,
-        description=(
-            "Flux eager confidence threshold, used only when eager end of turn "
-            "is enabled. Lower values predict sooner; must be below the "
-            "configured committed end-of-turn threshold."
-        ),
-        json_schema_extra=_deepgram_eager_field_schema,
-    )
-    eot_threshold: float = _flux_eot_threshold_field(_deepgram_eager_field_schema)
-    eot_timeout_ms: int = _flux_eot_timeout_field(_deepgram_eager_field_schema)
 
     base_url: str = Field(
         default=DEEPGRAM_DEFAULT_BASE_URL,
@@ -2234,16 +2143,6 @@ class DeepgramSTTConfiguration(BaseSTTConfiguration):
     @classmethod
     def validate_language_hints(cls, hints: list[str]) -> list[str]:
         return _validate_flux_language_hints(hints)
-
-    @model_validator(mode="after")
-    def validate_eager_threshold(self):
-        _validate_flux_eager_thresholds(
-            self.enable_eager_end_of_turn,
-            self.eager_eot_threshold,
-            self.eot_threshold,
-        )
-        return self
-
 
 @register_stt(provider=CARTESIA_PROVIDER)
 class CartesiaSTTConfiguration(BaseSTTConfiguration):
@@ -2356,43 +2255,11 @@ class DograhSTTService(BaseSTTConfiguration):
             "visible_for_languages": DEEPGRAM_FLUX_MULTILINGUAL_LANGUAGE_OPTIONS,
         },
     )
-    enable_eager_end_of_turn: bool = Field(
-        default=False,
-        description=(
-            "Generate speculative replies with Dograh's Flux transcriber. "
-            "Replies are held until commit and discarded if the caller resumes. "
-            "Reduces latency at the cost of extra LLM requests."
-        ),
-        json_schema_extra=_dograh_eager_field_schema,
-    )
-    eager_eot_threshold: float = Field(
-        default=0.5,
-        ge=0.3,
-        le=0.7,
-        description=(
-            "Flux eager confidence threshold, used only when eager end of turn "
-            "is enabled. Lower values predict sooner; must be below the "
-            "configured committed end-of-turn threshold."
-        ),
-        json_schema_extra=_dograh_eager_field_schema,
-    )
-    eot_threshold: float = _flux_eot_threshold_field(_dograh_eager_field_schema)
-    eot_timeout_ms: int = _flux_eot_timeout_field(_dograh_eager_field_schema)
 
     @field_validator("language_hints")
     @classmethod
     def validate_language_hints(cls, hints: list[str]) -> list[str]:
         return _validate_flux_language_hints(hints)
-
-    @model_validator(mode="after")
-    def validate_eager_threshold(self):
-        _validate_flux_eager_thresholds(
-            self.enable_eager_end_of_turn,
-            self.eager_eot_threshold,
-            self.eot_threshold,
-        )
-        return self
-
 
 @register_stt(provider=SARVAM_PROVIDER)
 class SarvamSTTConfiguration(BaseSTTConfiguration):

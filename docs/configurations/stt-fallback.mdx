@@ -31,8 +31,11 @@ The backup must be a different provider than the primary, so a Deepgram outage d
       {
         "condition": { "type": "error" },
         "target": {
-          "provider_connection_uuid": "<soniox-connection-uuid>",
-          "settings": { "model": "stt-rt-v6", "language": "ko" }
+          "provider_connection_uuid": "<assemblyai-connection-uuid>",
+          "settings": {
+            "model": "assemblyai-stt-3-7-realtime-agent",
+            "language": "ko"
+          }
         }
       }
     ]
@@ -42,7 +45,9 @@ The backup must be a different provider than the primary, so a Deepgram outage d
 
 Set it on named model configurations, workflow overrides, and API-trigger overrides, next to `stt`.
 
-Set the backup language to `en` or `ko` to match the call. If your workflows serve both languages, configure the matching backup language for each workflow. This example uses Soniox `stt-rt-v6` on a Soniox connection.
+The OSS Models editor offers an **STT fallback** action from a named model configuration. Enable the AssemblyAI 3.7 backup and choose an AssemblyAI provider connection; the editor sets the Universal-3.7 Realtime Agent model and Korean language. Set **Enable endpoint detection** and, if needed, **Maximum endpoint delay** on the Soniox primary's STT settings before saving the configuration.
+
+The API accepts other STT fallback providers and settings. For a Korean backup, use AssemblyAI `assemblyai-stt-3-7-realtime-agent` with `language: ko`; AssemblyAI `u3-rt-pro` does not support Korean.
 
 Resolved runs store the policy without credentials in the workflow snapshot.
 
@@ -65,7 +70,3 @@ An empty `rules` array disables an inherited policy.
 An override that sets `mode` describes a whole configuration and does not inherit one.
 
 See [Pre-Call Data Fetch](../voice-agent/pre-call-data-fetch) for which settings that hook can override.
-
-Configure through the API today.
-
-The Models UI editor does not yet offer this field.

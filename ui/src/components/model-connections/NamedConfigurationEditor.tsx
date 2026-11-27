@@ -17,14 +17,14 @@ export function NamedConfigurationEditor({ catalog, connections, saved, duplicat
     connections: ProviderConnection[];
     saved?: NamedModelConfiguration;
     duplicate?: boolean;
-    onSaved: (uuid: string, editFallbacks?: boolean) => Promise<void>;
+    onSaved: (uuid: string, editFallback?: "llm" | "stt") => Promise<void>;
     onConnectionAdded?: (connection: ProviderConnection) => void;
 }) {
     const [name, setName] = useState(saved ? `${saved.name}${duplicate ? " (copy)" : ""}` : "");
     const [configuration, setConfiguration] = useState(saved?.configuration || emptyConfiguration(catalog, connections));
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const save = async (editFallbacks = false) => {
+    const save = async (editFallback?: "llm" | "stt") => {
         setSaving(true);
         setError(null);
         try {
@@ -34,7 +34,7 @@ export function NamedConfigurationEditor({ catalog, connections, saved, duplicat
                 : await createNamedModelConfiguration({ body });
             if (result.error) throw new Error(detailFromError(result.error, "Failed to save model configuration"));
             if (!result.data) throw new Error("Failed to save model configuration");
-            await onSaved(result.data.uuid, editFallbacks);
+            await onSaved(result.data.uuid, editFallback);
         } catch (cause) { setError(cause instanceof Error ? cause.message : "Failed to save model configuration"); }
         finally { setSaving(false); }
     };
@@ -53,8 +53,11 @@ export function NamedConfigurationEditor({ catalog, connections, saved, duplicat
             <Input id="configuration-name" required maxLength={128} placeholder="Sales assistant" value={name} onChange={event => setName(event.target.value)} /></div>
         <ConfigurationFields catalog={catalog} connections={connections} configuration={configuration} onChange={setConfiguration} onConnectionAdded={onConnectionAdded}
             llmActions={<Button type="button" name="intent" value="fallbacks" variant="outline" size="sm" disabled={saving || !name.trim()} onClick={event => {
-                if (event.currentTarget.form?.reportValidity()) void save(true);
-            }}>Configure fallbacks</Button>} />
+                if (event.currentTarget.form?.reportValidity()) void save("llm");
+            }}>Configure LLM fallbacks</Button>}
+            sttActions={<Button type="button" name="intent" value="stt-fallback" variant="outline" size="sm" disabled={saving || !name.trim()} onClick={event => {
+                if (event.currentTarget.form?.reportValidity()) void save("stt");
+            }}>Configure STT fallback</Button>} />
         <div className="flex justify-end"><Button type="submit" disabled={saving || !name.trim()}>{saving ? "Saving…" : "Save Configuration"}</Button></div>
     </form>;
 }

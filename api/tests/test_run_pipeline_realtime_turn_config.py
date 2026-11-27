@@ -31,15 +31,11 @@ from pipecat.turns.user_start.vad_user_turn_start_strategy import (
     VADUserTurnStartStrategy,
 )
 from pipecat.turns.user_stop import (
-    EagerUserTurnStopStrategy,
     ExternalUserTurnStopStrategy,
     SpeechTimeoutUserTurnStopStrategy,
     TurnAnalyzerUserTurnStopStrategy,
 )
-from pipecat.turns.user_turn_strategies import (
-    EagerUserTurnStrategies,
-    UserTurnStrategies,
-)
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 import api.services.pipecat.run_pipeline as run_pipeline_module
 from api.services.configuration.registry import ServiceProviders
@@ -54,60 +50,6 @@ from api.services.pipecat.run_pipeline import (
     _create_realtime_user_turn_config,
     _resolve_user_turn_stop_timeout,
 )
-
-
-@pytest.mark.parametrize(
-    ("provider", "model", "language", "flux"),
-    [
-        ("deepgram", "flux-general-en", "en", True),
-        ("deepgram", "flux-general-multi", "multi", True),
-        ("dograh", "default", "multi", True),
-        ("dograh", "default", "en", True),
-        ("dograh", "default", "ta", False),
-        ("deepgram", "nova-3-general", "multi", False),
-        ("cartesia", "ink-2", "en", False),
-    ],
-)
-@pytest.mark.parametrize("enabled", [False, True])
-@pytest.mark.parametrize("start", ["default", "min_words"])
-def test_non_realtime_eager_strategies_only_for_enabled_flux(
-    provider, model, language, flux, enabled, start
-):
-    from api.services.pipecat.service_factory import (
-        stt_uses_eager_end_of_turn,
-        stt_uses_external_turns,
-    )
-
-    config = SimpleNamespace(
-        stt=SimpleNamespace(
-            provider=provider,
-            model=model,
-            language=language,
-            enable_eager_end_of_turn=enabled,
-        )
-    )
-    external = stt_uses_external_turns(config)
-    strategies = _create_non_realtime_user_turn_strategies(
-        {"turn_start_strategy": start, "turn_start_min_words": 3},
-        uses_external_turns=external,
-        track_eager_user_turns=stt_uses_eager_end_of_turn(config),
-    )
-    assert isinstance(strategies, EagerUserTurnStrategies) is (flux and enabled)
-    expected_stop = (
-        EagerUserTurnStopStrategy
-        if flux and enabled
-        else ExternalUserTurnStopStrategy
-        if external
-        else SpeechTimeoutUserTurnStopStrategy
-    )
-    assert len(strategies.stop) == 1
-    assert isinstance(strategies.stop[0], expected_stop)
-    if start == "min_words":
-        assert isinstance(strategies.start[0], MinWordsUserTurnStartStrategy)
-        assert strategies.start[0]._min_words == 3
-    elif external:
-        assert isinstance(strategies.start[0], ExternalUserTurnStartStrategy)
-        assert strategies.start[0]._enable_interruptions is True
 
 
 def test_gemini_realtime_uses_local_vad_without_local_interruptions():

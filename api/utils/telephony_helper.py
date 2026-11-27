@@ -128,13 +128,10 @@ def normalize_webhook_data(provider_class, webhook_data, headers=None):
     return parse_method(webhook_data)
 
 
-def generic_hangup_response(status_code: int = 200):
-    """Return a generic hangup response for unknown/error cases. Sync fork: 503
-    makes the provider request the number's fallback URL instead of hanging up."""
+def generic_hangup_response():
+    """Return a generic hangup response for unknown/error cases"""
     return HTMLResponse(
-        content="<Response><Hangup/></Response>",
-        media_type="application/xml",
-        status_code=status_code,
+        content="<Response><Hangup/></Response>", media_type="application/xml"
     )
 
 

@@ -1,19 +1,15 @@
-import io
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, Mock, patch
-from urllib.parse import urlencode
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from loguru import logger
 
 from api.enums import WorkflowRunMode, WorkflowRunState
 from api.errors.telephony_errors import TelephonyError
 from api.routes.telephony import _handle_telephony_websocket, handle_inbound_run, router
 from api.services.auth.depends import get_user
 from api.services.call_concurrency import CallConcurrencyLimitError
-from api.services.telephony.providers.koreaaitel.provider import KoreaAITelProvider
 
 
 def _make_test_app() -> FastAPI:
@@ -40,24 +36,21 @@ def _workflow(*, workflow_id: int = 33, user_id: int = 99):
     )
 
 
-def _stub_outbound_setup_lookup(
-    mock_db, *, provider: str = "twilio", default_caller_id: bool = True
-):
+def _stub_outbound_setup_lookup(mock_db, *, provider: str = "twilio"):
     """Satisfy the pre-flight setup-checklist read on ``/initiate-call``.
 
-    A configuration whose active number is its default caller ID passes the
-    guard, so it is a no-op — these tests are about everything downstream of it.
+    A configuration with an active number passes the caller-ID requirement, so
+    the guard is a no-op — these tests are about everything downstream of it.
     """
     row = SimpleNamespace(id=55, name="Test config", provider=provider, credentials={})
     mock_db.get_telephony_configuration_for_org = AsyncMock(return_value=row)
-    mock_db.get_default_telephony_configuration = AsyncMock(return_value=row)
+    mock_db.list_outbound_telephony_configuration_candidates = AsyncMock(
+        return_value=[row]
+    )
     mock_db.list_phone_numbers_for_config = AsyncMock(
         return_value=[
             SimpleNamespace(
-                is_active=True,
-                is_default_caller_id=default_caller_id,
-                inbound_workflow_id=None,
-                telephony_trunk_id=None,
+                is_active=True, inbound_workflow_id=None, telephony_trunk_id=None
             )
         ]
     )
@@ -97,12 +90,25 @@ def test_initiate_call_rejects_incomplete_setup_before_run_creation():
         ),
     ):
         mock_db.get_default_telephony_configuration = AsyncMock(
+            return_value=SimpleNamespace(id=55)
+        )
+        mock_db.get_telephony_configuration_for_org = AsyncMock(
             return_value=SimpleNamespace(
                 id=55,
                 name="Twilio production",
                 provider="twilio",
                 credentials={},
             )
+        )
+        mock_db.list_outbound_telephony_configuration_candidates = AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    id=55,
+                    name="Twilio production",
+                    provider="twilio",
+                    credentials={},
+                )
+            ]
         )
         mock_db.list_phone_numbers_for_config = AsyncMock(return_value=[])
         mock_db.create_workflow_run = AsyncMock()
@@ -114,82 +120,6 @@ def test_initiate_call_rejects_incomplete_setup_before_run_creation():
 
     assert response.status_code == 400
     assert "Twilio production" in response.json()["detail"]
-    mock_db.create_workflow_run.assert_not_awaited()
-    provider.initiate_call.assert_not_awaited()
-
-
-@pytest.mark.parametrize("telephony_configuration_id", [None, 55])
-def test_initiate_call_refuses_a_configuration_without_default_caller_id(
-    telephony_configuration_id,
-):
-    """A test call never borrows another number when the caller ID is unset."""
-    app = _make_test_app()
-    client = TestClient(app)
-    provider = _provider()
-
-    with (
-        patch("api.routes.telephony.db_client") as mock_db,
-        patch(
-            "api.routes.telephony.get_telephony_provider_by_id",
-            new=AsyncMock(return_value=provider),
-        ),
-        patch(
-            "api.services.organization_preferences.get_organization_preferences",
-            new=AsyncMock(return_value=SimpleNamespace(test_phone_number=None)),
-        ),
-    ):
-        _stub_outbound_setup_lookup(mock_db, default_caller_id=False)
-        mock_db.list_outbound_telephony_configuration_candidates = AsyncMock()
-        mock_db.create_workflow_run = AsyncMock()
-
-        response = client.post(
-            "/telephony/initiate-call",
-            json={
-                "workflow_id": 33,
-                "phone_number": "+15555550150",
-                "telephony_configuration_id": telephony_configuration_id,
-            },
-        )
-
-    assert response.status_code == 400
-    assert response.json()["detail"] == (
-        "'Test config' is not ready for outbound calls. "
-        "It has no default caller ID; it receives calls only."
-    )
-    mock_db.list_outbound_telephony_configuration_candidates.assert_not_awaited()
-    mock_db.create_workflow_run.assert_not_awaited()
-    provider.initiate_call.assert_not_awaited()
-
-
-def test_initiate_call_without_a_marked_default_configuration_is_refused():
-    app = _make_test_app()
-    client = TestClient(app)
-    provider = _provider()
-
-    with (
-        patch("api.routes.telephony.db_client") as mock_db,
-        patch(
-            "api.routes.telephony.get_telephony_provider_by_id",
-            new=AsyncMock(return_value=provider),
-        ),
-        patch(
-            "api.services.organization_preferences.get_organization_preferences",
-            new=AsyncMock(return_value=SimpleNamespace(test_phone_number=None)),
-        ),
-    ):
-        _stub_outbound_setup_lookup(mock_db)
-        mock_db.get_default_telephony_configuration = AsyncMock(return_value=None)
-        mock_db.list_outbound_telephony_configuration_candidates = AsyncMock()
-        mock_db.create_workflow_run = AsyncMock()
-
-        response = client.post(
-            "/telephony/initiate-call",
-            json={"workflow_id": 33, "phone_number": "+15555550150"},
-        )
-
-    assert response.status_code == 400
-    assert response.json()["detail"] == "telephony_not_configured"
-    mock_db.list_outbound_telephony_configuration_candidates.assert_not_awaited()
     mock_db.create_workflow_run.assert_not_awaited()
     provider.initiate_call.assert_not_awaited()
 
@@ -526,9 +456,7 @@ def test_initiate_call_rejects_when_concurrency_limit_reached():
 @pytest.mark.asyncio
 async def test_inbound_run_routes_exotel_without_account_id_by_called_number():
     """Exotel Voicebot webhooks omit AccountSid; route by called number."""
-    request = SimpleNamespace(
-        headers={}, url="https://api.example.com/inbound/run", query_params={}
-    )
+    request = SimpleNamespace(headers={}, url="https://api.example.com/inbound/run")
     provider_class = SimpleNamespace(
         PROVIDER_NAME="exotel",
         generate_validation_error_response=Mock(return_value="not-configured"),
@@ -617,199 +545,9 @@ async def test_inbound_run_routes_exotel_without_account_id_by_called_number():
     assert response == '{"url":"wss://x"}'
 
 
-def _setup_koreaaitel_webhook(
-    monkeypatch, existing_runs, new_run_ids, *, signature_valid=True
-):
-    import api.routes.telephony as routes
-
-    request = SimpleNamespace(
-        headers={"x-signature": "signed"},
-        url="https://api.example.com/inbound/run",
-        query_params={},
-    )
-    provider_class = KoreaAITelProvider
-    data = KoreaAITelProvider.parse_inbound_webhook(
-        {
-            "CallId": "CA1",
-            "AccountId": "AC1",
-            "From": "01012345678",
-            "ForwardedFrom": "0212345678",
-            "To": "07012340001",
-            "Direction": "inbound",
-        }
-    )
-    config = SimpleNamespace(
-        id=55, organization_id=11, name="KoreaAITel", credentials={"account_id": "AC1"}
-    )
-    phone = SimpleNamespace(id=77, inbound_workflow_id=33, address="07012340001")
-    provider = SimpleNamespace(
-        verify_inbound_signature=AsyncMock(return_value=signature_valid),
-        start_inbound_stream=AsyncMock(return_value="stream"),
-        generate_validation_error_response=Mock(return_value="invalid-signature"),
-    )
-    db = Mock(
-        find_inbound_route_by_account=AsyncMock(return_value=(config, phone)),
-        get_workflow=AsyncMock(return_value=SimpleNamespace(id=33, user_id=99)),
-        get_workflow_run_by_call_id=AsyncMock(side_effect=existing_runs),
-    )
-    concurrency = SimpleNamespace(
-        acquire_org_slot=AsyncMock(return_value=object()), bind_workflow_run=AsyncMock()
-    )
-    for name, value in {
-        "parse_webhook_request": AsyncMock(return_value=({}, "raw")),
-        "_detect_provider": AsyncMock(return_value=provider_class),
-        "normalize_webhook_data": Mock(return_value=data),
-        "db_client": db,
-        "get_telephony_provider_by_id": AsyncMock(return_value=provider),
-        "get_backend_endpoints": AsyncMock(return_value=("https://api", "wss://api")),
-        "call_concurrency": concurrency,
-        "authorize_workflow_run_start": AsyncMock(),
-        "_create_inbound_workflow_run": AsyncMock(
-            side_effect=[(run_id, None) for run_id in new_run_ids]
-        ),
-    }.items():
-        monkeypatch.setattr(routes, name, value)
-    return request, data, provider, db
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("replay", [True, False])
-async def test_koreaaitel_webhook_replay_and_call_id_isolation(monkeypatch, replay):
-    run = SimpleNamespace(id=999, workflow_id=33)
-    found, new_ids = ([None, run], [999]) if replay else ([None, None], [999, 1000])
-    request, data, provider, db = _setup_koreaaitel_webhook(monkeypatch, found, new_ids)
-    data.call_id = "CA1"
-    assert await handle_inbound_run(request) == "stream"
-    data.call_id = "CA1" if replay else "CA2"
-    assert await handle_inbound_run(request) == "stream"
-    assert [
-        call.args[0] for call in db.get_workflow_run_by_call_id.await_args_list
-    ] == ["CA1", data.call_id]
-    assert [
-        call.kwargs["organization_id"]
-        for call in db.get_workflow_run_by_call_id.await_args_list
-    ] == [11, 11]
-    assert [
-        call.kwargs["telephony_configuration_id"]
-        for call in db.get_workflow_run_by_call_id.await_args_list
-    ] == [55, 55]
-    assert [
-        call.kwargs["workflow_run_id"]
-        for call in provider.start_inbound_stream.await_args_list
-    ] == ([999, 999] if replay else [999, 1000])
-
-
-@pytest.mark.asyncio
-async def test_koreaaitel_follow_up_takes_missing_fields_from_the_signed_url(
-    monkeypatch,
-):
-    """A `<Dial action>` redirected here lacks AccountId, CallStatus and
-    ForwardedFrom; the redirecting server puts them in the URL the vendor signs.
-    Detection and routing see them; the signature covers that URL and the form."""
-    import api.routes.telephony as routes
-
-    request, _, provider, db = _setup_koreaaitel_webhook(monkeypatch, [None], [999])
-    query = {"AccountId": "AC1", "CallStatus": "ringing", "ForwardedFrom": "0212345678"}
-    form = {
-        "CallId": "CA1",
-        "From": "01012345678",
-        "To": "07012340001",
-        "Direction": "inbound",
-        "DialCallStatus": "no-answer",
-    }
-    request.url = "https://api.example.com/inbound/run?" + urlencode(query)
-    request.query_params = query
-    detect = AsyncMock(return_value=KoreaAITelProvider)
-    monkeypatch.setattr(
-        routes, "parse_webhook_request", AsyncMock(return_value=(form, "raw"))
-    )
-    monkeypatch.setattr(routes, "_detect_provider", detect)
-    monkeypatch.setattr(
-        routes,
-        "normalize_webhook_data",
-        lambda cls, data, headers: cls.parse_inbound_webhook(data),
-    )
-
-    assert await handle_inbound_run(request) == "stream"
-
-    assert detect.await_args.args[0] == {**query, **form}
-    assert KoreaAITelProvider.can_handle_webhook({**query, **form}, request.headers)
-    assert not KoreaAITelProvider.can_handle_webhook(form, request.headers)
-    assert db.find_inbound_route_by_account.await_args.kwargs["account_id"] == "AC1"
-    provider.verify_inbound_signature.assert_awaited_once_with(
-        request.url, form, request.headers, "raw"
-    )
-
-
-@pytest.mark.asyncio
-async def test_unsigned_koreaaitel_webhook_does_not_log_caller_number(monkeypatch):
-
-    request, _, _, _ = _setup_koreaaitel_webhook(
-        monkeypatch, [], [], signature_valid=False
-    )
-    log_capture = io.StringIO()
-    sink_id = logger.add(log_capture, format="{message}", level="INFO")
-    try:
-        response = await handle_inbound_run(request)
-    finally:
-        logger.remove(sink_id)
-
-    # Sync fork: a refusal answers 503 so the vendor takes the number's voiceFallbackUrl.
-    assert response.status_code == 503
-    assert "<Reject" in response.body.decode()
-    captured_logs = log_capture.getvalue()
-    assert "01012345678" not in captured_logs
-    assert "0212345678" not in captured_logs
-    assert "07012340001" not in captured_logs
-
-
-@pytest.mark.asyncio
-async def test_koreaaitel_run_log_redacts_phone_fields_but_keeps_call_context(
-    monkeypatch,
-):
-    import api.routes.telephony as routes
-
-    workflow = SimpleNamespace(id=33)
-    run_inputs = SimpleNamespace(definition_id=77, definition=None, use_draft=False)
-    create_run = AsyncMock(return_value=SimpleNamespace(id=42))
-    monkeypatch.setattr(
-        routes.db_client, "get_workflow", AsyncMock(return_value=workflow)
-    )
-    monkeypatch.setattr(
-        routes, "prepare_workflow_run_inputs", AsyncMock(return_value=run_inputs)
-    )
-    monkeypatch.setattr(routes.db_client, "create_workflow_run", create_run)
-    normalized = KoreaAITelProvider.parse_inbound_webhook(
-        {
-            "CallId": "CA1",
-            "From": "01012345678",
-            "ForwardedFrom": "0212345678",
-            "To": "07012340001",
-            "Direction": "inbound",
-        }
-    )
-
-    await routes._create_inbound_workflow_run(
-        workflow_id=33,
-        user_id=99,
-        organization_id=11,
-        provider="koreaaitel",
-        normalized_data=normalized,
-        telephony_configuration_id=55,
-    )
-
-    stored = create_run.await_args.kwargs
-    assert stored["initial_context"]["caller_number"] == normalized.from_number
-    raw_webhook_data = stored["logs"]["inbound_webhook"]["raw_webhook_data"]
-    assert not {"From", "ForwardedFrom", "To"} & raw_webhook_data.keys()
-    assert raw_webhook_data["CallId"] == "CA1"
-
-
 @pytest.mark.asyncio
 async def test_inbound_run_rejects_when_concurrency_limit_reached():
-    request = SimpleNamespace(
-        headers={}, url="https://api.example.com/inbound/run", query_params={}
-    )
+    request = SimpleNamespace(headers={}, url="https://api.example.com/inbound/run")
     provider_class = SimpleNamespace(
         PROVIDER_NAME="twilio",
         generate_validation_error_response=Mock(return_value="limit-response"),
@@ -956,32 +694,3 @@ async def test_telephony_websocket_leaves_run_initialized_until_stream_starts():
 
     provider.handle_websocket.assert_awaited_once_with(websocket, 33, 11, 502)
     mock_db.update_workflow_run.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["parse", "run"])
-async def test_an_inbound_error_answers_503_so_the_number_falls_back(
-    monkeypatch, failure
-):
-    """Sync fork: an unparsable request or a run that fails to start (a database
-    error) answers 503, as a refusal does, so the provider requests the number's
-    fallback (the line's voicemail) instead of running a 200 <Hangup/>."""
-    import api.routes.telephony as routes
-
-    request, _, _, _ = _setup_koreaaitel_webhook(monkeypatch, [None], [])
-    routes.call_concurrency.release_slot = AsyncMock()
-    if failure == "parse":
-        monkeypatch.setattr(
-            routes, "parse_webhook_request", AsyncMock(side_effect=ValueError("body"))
-        )
-    else:
-        monkeypatch.setattr(
-            routes,
-            "_create_inbound_workflow_run",
-            AsyncMock(side_effect=RuntimeError("database unavailable")),
-        )
-
-    response = await handle_inbound_run(request)
-
-    assert response.status_code == 503
-    assert response.body == b"<Response><Hangup/></Response>"

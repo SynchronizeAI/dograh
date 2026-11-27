@@ -8,6 +8,7 @@ import pytest
 from pipecat.services.google.stt import GoogleSTTService, GoogleSTTSettings
 from pipecat.transcriptions.language import Language
 
+from api.services.pipecat.fallback_stt import FallbackSTTService
 from api.services.configuration import registry
 from api.services.pipecat import service_factory
 from api.services.pipecat.agent_runtime_factory import AgentRuntimeFactory
@@ -132,7 +133,7 @@ def test_startup_and_transfer_translate_settings_consistently(
             assert getattr(initial_settings, key) == value
 
 
-def factory_for(stt, config):
+def factory_for(stt, config, *, run_model_configuration=None, retune_turn_strategies=None):
     return AgentRuntimeFactory(
         organization_id=1,
         workflow_run_id=1,
@@ -140,7 +141,8 @@ def factory_for(stt, config):
         audio_config=None,
         callbacks_factory=lambda visit: None,
         stt=stt,
-        run_model_configuration=SimpleNamespace(stt=config),
+        run_model_configuration=run_model_configuration or SimpleNamespace(stt=config),
+        retune_turn_strategies=retune_turn_strategies,
     )
 
 
@@ -309,3 +311,69 @@ async def test_soniox_auto_detect_clears_previous_language_hints():
     )
     assert stt._settings.language_hints == []
     stt._request_reconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_transfer_retunes_primary_through_stt_fallback_wrapper():
+    config = registry.SonioxSTTConfiguration(api_key="test-key", language="en")
+    primary = create_stt(config)
+    update = AsyncMock(return_value={"language_hints"})
+    primary._update_settings = update
+    backup = service_factory.AssemblyAISTTService(
+        api_key="backup-key",
+        settings=service_factory.AssemblyAISTTSettings(
+            model=registry.ASSEMBLYAI_REALTIME_AGENT_MODEL,
+            language_codes=[Language.KO],
+        ),
+    )
+    stt = FallbackSTTService(primary, backup)
+    factory = factory_for(stt, config)
+
+    assert await retune(factory, config.model_copy(update={"language": "pt"}))
+
+    update.assert_awaited_once()
+    assert update.call_args.args[0].language_hints == [Language.PT]
+
+
+@pytest.mark.asyncio
+async def test_soniox_endpoint_mode_transfer_updates_primary_backup_and_turns():
+    source = registry.SonioxSTTConfiguration(
+        api_key="test-key", model="stt-rt-v6", language="ko"
+    )
+    backup_config = registry.AssemblyAISTTConfiguration(
+        api_key="backup-key",
+        model=registry.ASSEMBLYAI_REALTIME_AGENT_MODEL,
+        language="ko",
+    )
+    policy = SimpleNamespace(rules=[SimpleNamespace(target=backup_config)])
+    run_configuration = SimpleNamespace(stt=source, stt_fallback=policy)
+    primary = create_stt(source)
+    primary._update_settings = AsyncMock(return_value={})
+    backup = service_factory.AssemblyAISTTService(
+        api_key="backup-key",
+        settings=service_factory.AssemblyAISTTSettings(
+            model=registry.ASSEMBLYAI_REALTIME_AGENT_MODEL,
+            language_codes=[Language.KO],
+        ),
+    )
+    stt = FallbackSTTService(primary, backup)
+    update_turns = AsyncMock()
+    factory = factory_for(
+        stt,
+        source,
+        run_model_configuration=run_configuration,
+        retune_turn_strategies=update_turns,
+    )
+    to_external = source.model_copy(update={"enable_endpoint_detection": True})
+
+    assert await retune(factory, to_external)
+    assert primary._vad_force_turn_endpoint is False
+    assert backup._vad_force_turn_endpoint is False
+    update_turns.assert_awaited_once_with(SimpleNamespace(stt=to_external))
+
+    to_local = source.model_copy(update={"max_endpoint_delay_ms": 1000})
+    assert await retune(factory, to_local)
+    assert primary._vad_force_turn_endpoint is True
+    assert backup._vad_force_turn_endpoint is True
+    assert update_turns.await_count == 2
+    assert update_turns.await_args.args[0].stt is to_local

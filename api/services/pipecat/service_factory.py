@@ -35,22 +35,18 @@ from api.services.pipecat.fallback_llm import FallbackLLMProcessor, FallbackRout
 from api.services.pipecat.gemini_json_schema_adapter import (
     DograhGeminiJSONSchemaAdapter,
 )
-from api.services.pipecat.gemini_prefix_cache import GeminiPrefixCacheMixin
 from api.services.pipecat.gemini_spoken_tool_calls import GeminiSpokenToolCallMixin
 from api.services.pipecat.google_credentials import (
     get_google_credentials,
     prepare_google_credentials,
 )
-from api.services.pipecat.korean_sentence_aggregator import KoreanSentenceAggregator
 from api.services.pipecat.murf_tts import MurfTTSService
 from api.services.pipecat.openai_spoken_tool_calls import OpenAISpokenToolCallMixin
 from api.services.pipecat.spoken_tool_calls import SpokenToolCallMixin
 from api.utils.url_security import validate_user_configured_service_url
 from pipecat.frames.frames import STTUpdateSettingsFrame
-from pipecat.metrics.metrics import LLMTokenUsage
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameProcessorSetup
-from pipecat.services.anthropic.llm import AnthropicLLMService, AnthropicLLMSettings
 from pipecat.services.assemblyai.stt import (
     AssemblyAISTTService,
     AssemblyAISTTSettings,
@@ -372,29 +368,6 @@ def cascade_uses_external_turns(user_config, turn_stop_strategy=None) -> bool:
     )
 
 
-def stt_uses_eager_end_of_turn(user_config) -> bool:
-    """Only Flux (direct or Dograh-managed) can speculate on its turn ends."""
-    if user_config is None or getattr(user_config, "stt", None) is None:
-        return False
-    return _stt_uses_flux(user_config) and getattr(
-        user_config.stt, "enable_eager_end_of_turn", False
-    )
-
-
-class DograhAnthropicLLMService(AnthropicLLMService):
-    """Anthropic reports input tokens net of the prompt cache. Dograh's usage
-    consumers read cached tokens as part of prompt_tokens, as OpenAI and Gemini
-    report them, so the cached tokens are added back."""
-
-    async def start_llm_usage_metrics(self, tokens: LLMTokenUsage):
-        tokens.prompt_tokens = tokens.total_tokens - tokens.completion_tokens
-        await super().start_llm_usage_metrics(tokens)
-
-    async def _report_inference_usage(self, usage: LLMTokenUsage):
-        usage.prompt_tokens = usage.total_tokens - usage.completion_tokens
-        await super()._report_inference_usage(usage)
-
-
 class AzureLLMService(OpenAISpokenToolCallMixin, BaseAzureLLMService):
     """Azure streaming service with spoken-tool recovery."""
 
@@ -431,15 +404,11 @@ class SpeachesLLMService(OpenAISpokenToolCallMixin, BaseSpeachesLLMService):
     """Speaches streaming service with spoken-tool recovery."""
 
 
-class DograhGoogleLLMService(
-    GeminiPrefixCacheMixin, GeminiSpokenToolCallMixin, GoogleLLMService
-):
+class DograhGoogleLLMService(GeminiSpokenToolCallMixin, GoogleLLMService):
     adapter_class = DograhGeminiJSONSchemaAdapter
 
 
-class DograhGoogleVertexLLMService(
-    GeminiPrefixCacheMixin, GeminiSpokenToolCallMixin, GoogleVertexLLMService
-):
+class DograhGoogleVertexLLMService(GeminiSpokenToolCallMixin, GoogleVertexLLMService):
     """Vertex text service with Dograh schemas and nonblocking authentication."""
 
     adapter_class = DograhGeminiJSONSchemaAdapter
@@ -562,22 +531,15 @@ def _stt_configurable_settings(config, *, for_update: bool = False) -> dict[str,
             else dograh_stt_uses_flux_language(language)
         )
         if is_flux:
-            settings = {
-                "eot_threshold": getattr(config, "eot_threshold", 0.7),
-                "eot_timeout_ms": getattr(config, "eot_timeout_ms", 3000),
-            }
             if (
                 provider == ServiceProviders.DEEPGRAM
                 and config.model == "flux-general-en"
             ):
-                return settings
+                return {}
             hints = _resolve_deepgram_flux_language_hints(
                 language, getattr(config, "language_hints", None)
             )
-            return {
-                **settings,
-                **({"language_hints": hints} if hints or for_update else {}),
-            }
+            return {"language_hints": hints} if hints or for_update else {}
         return {"language": language or "multi"}
     if provider == ServiceProviders.GOOGLE:
         try:
@@ -626,6 +588,8 @@ def _stt_configurable_settings(config, *, for_update: bool = False) -> dict[str,
         delay = getattr(config, "max_endpoint_delay_ms", None)
         if _soniox_endpointing(config) and delay is not None:
             settings["max_endpoint_delay_ms"] = delay
+        elif for_update:
+            settings["max_endpoint_delay_ms"] = None
         return settings
     if provider == ServiceProviders.SPEECHMATICS:
         return {"language": language or "en"}
@@ -697,13 +661,6 @@ def get_stt_settings_update(
         logger.info("[transfer] Gladia does not apply settings to an active session")
         return None
     settings = _stt_configurable_settings(destination_config, for_update=True)
-    if (
-        provider == ServiceProviders.DEEPGRAM
-        and call_config.model == "flux-general-en"
-        and call_config.eot_threshold == destination_config.eot_threshold
-        and call_config.eot_timeout_ms == destination_config.eot_timeout_ms
-    ):
-        return None
     return type(stt._settings)(**settings) if settings else None
 
 
@@ -752,13 +709,6 @@ def create_single_stt_service(
     is_deepgram = user_config.stt.provider == ServiceProviders.DEEPGRAM.value
     deepgram_base_url = _deepgram_base_url(user_config.stt) if is_deepgram else None
     configurable_settings = _stt_configurable_settings(user_config.stt)
-    eager_enabled = stt_uses_eager_end_of_turn(user_config)
-    # Keep the disabled constructor and wire parameters exactly as before,
-    # even if a saved configuration retains a custom eager threshold.
-    eager_kwargs = {"enable_eager_end_of_turn": True} if eager_enabled else {}
-    eager_threshold = (
-        getattr(user_config.stt, "eager_eot_threshold", 0.5) if eager_enabled else 0.5
-    )
 
     logger.info(
         f"Creating STT service: provider={user_config.stt.provider}, "
@@ -772,7 +722,7 @@ def create_single_stt_service(
                 "model": user_config.stt.model,
                 "eot_timeout_ms": 3000,
                 "eot_threshold": 0.7,
-                "eager_eot_threshold": eager_threshold,
+                "eager_eot_threshold": 0.5,
                 "keyterm": keyterms or [],
                 **configurable_settings,
             }
@@ -784,8 +734,6 @@ def create_single_stt_service(
                 settings=DeepgramFluxSTTSettings(**settings_kwargs),
                 should_interrupt=False,  # Let UserAggregator take care of sending InterruptionFrame
                 sample_rate=audio_config.transport_in_sample_rate,
-                mip_opt_out=True,  # Keep caller audio out of Deepgram model training.
-                **eager_kwargs,
             )
 
         # Other models than flux
@@ -803,7 +751,6 @@ def create_single_stt_service(
             ),
             should_interrupt=False,  # Let UserAggregator take care of sending InterruptionFrame
             sample_rate=audio_config.transport_in_sample_rate,
-            mip_opt_out=True,
         )
     elif user_config.stt.provider == ServiceProviders.OPENAI.value:
         kwargs = {}
@@ -856,7 +803,7 @@ def create_single_stt_service(
                 "model": "flux-general-multi",
                 "eot_timeout_ms": 3000,
                 "eot_threshold": 0.7,
-                "eager_eot_threshold": eager_threshold,
+                "eager_eot_threshold": 0.5,
                 "keyterm": keyterms or [],
                 **configurable_settings,
             }
@@ -867,7 +814,6 @@ def create_single_stt_service(
                 settings=DeepgramFluxSTTSettings(**settings_kwargs),
                 should_interrupt=False,  # external turn strategies own interruption
                 sample_rate=audio_config.transport_in_sample_rate,
-                **eager_kwargs,
             )
 
         return DograhSTTService(
@@ -1066,7 +1012,7 @@ def create_stt_service(
 
 
 @_report_service_factory_failures(ErrorSource.TTS, config_section="tts")
-def create_single_tts_service(
+def create_tts_service(
     user_config,
     audio_config: "AudioConfig",
     correlation_id: str | None = None,
@@ -1075,10 +1021,6 @@ def create_single_tts_service(
     tts_cache_enabled: bool = False,
 ):
     """Create and return appropriate TTS service based on user configuration
-
-    Never wraps the service in a fallback switcher; see ``create_tts_service``.
-    The failure-reporting decorator also accepts ``register_campaign_errors=False``
-    to skip the campaign provider-error handler (used for an inactive backup).
 
     Args:
         user_config: User configuration containing TTS settings
@@ -1535,85 +1477,6 @@ def create_single_tts_service(
         )
 
 
-def get_tts_runtime_configuration(user_config) -> dict:
-    """Describe the resolved voice-fallback policy without credentials."""
-    tts = user_config.tts
-    configuration: dict[str, Any] = {
-        "tts_provider": tts.provider,
-        "tts_model": tts.model,
-    }
-    policy = getattr(user_config, "tts_fallback", None)
-    configuration["tts_fallback"] = {
-        "version": 1,
-        "rules": (
-            [
-                {
-                    "condition": rule.condition.model_dump(mode="json"),
-                    "target": {
-                        "provider": rule.target.provider,
-                        "model": rule.target.model,
-                        "voice": getattr(rule.target, "voice", None),
-                    },
-                }
-                for rule in policy.rules
-            ]
-            if policy
-            else []
-        ),
-    }
-    return configuration
-
-
-def create_tts_service(
-    user_config,
-    audio_config: "AudioConfig",
-    correlation_id: str | None = None,
-    *,
-    organization_id: int | None = None,
-    tts_cache_enabled: bool = False,
-):
-    """Create a TTS service, wrapping in a fallback switcher when configured."""
-    from api.services.pipecat.fallback_tts import FallbackTTSService
-
-    primary = create_single_tts_service(
-        user_config,
-        audio_config,
-        correlation_id,
-        organization_id=organization_id,
-        tts_cache_enabled=tts_cache_enabled,
-    )
-    speech_language = getattr(user_config.tts, "language", None) or getattr(
-        getattr(user_config, "stt", None), "language", None
-    )
-    _enable_korean_sentence_aggregation(primary, speech_language)
-    policy = getattr(user_config, "tts_fallback", None)
-    if policy is None or not policy.rules:
-        return primary
-    target_config = user_config.model_copy(update={"tts": policy.rules[0].target})
-    try:
-        backup = create_single_tts_service(
-            target_config,
-            audio_config,
-            correlation_id,
-            organization_id=organization_id,
-            tts_cache_enabled=tts_cache_enabled,
-            register_campaign_errors=False,
-        )
-        _enable_korean_sentence_aggregation(backup, speech_language)
-    except Exception as exc:
-        logger.warning(
-            f"TTS fallback backup could not be constructed ({type(exc).__name__}); "
-            "continuing with primary only"
-        )
-        return primary
-    return FallbackTTSService(primary, backup)
-
-
-def _enable_korean_sentence_aggregation(service, language: str | None) -> None:
-    if language and language.lower().startswith("ko"):
-        service._text_aggregator = KoreanSentenceAggregator(language=language)
-
-
 def _migrate_deprecated_google_model(model: str) -> str:
     """Google removed the ``gemini-2.0-flash*`` models. Transparently upgrade
     any stored config that still references them to the 2.5 equivalent so old
@@ -1646,7 +1509,6 @@ def create_llm_service_from_provider(
     temperature: float | None | NotGiven = NOT_GIVEN,
     bill_to: str | None = None,
     provider_order: list[str] | None = None,
-    reasoning_effort: str | None = None,
     usage_context: str | None = None,
 ):
     """Create an LLM service from explicit provider/model/api_key.
@@ -1698,15 +1560,6 @@ def create_llm_service_from_provider(
         if base_url:
             _validate_runtime_service_url(base_url, "base_url")
             kwargs["base_url"] = base_url
-        is_official_openai_endpoint = not base_url or (
-            urlparse(base_url.strip()).hostname == "api.openai.com"
-        )
-        store = (
-            {"store": False}
-            if provider == ServiceProviders.OPENAI.value
-            and is_official_openai_endpoint
-            else {}
-        )
         if "gpt-5" in model:
             return OpenAILLMService(
                 enable_direct_mode=enable_direct_mode,
@@ -1714,19 +1567,16 @@ def create_llm_service_from_provider(
                 settings=OpenAILLMSettings(
                     model=model,
                     extra={
-                        "reasoning_effort": reasoning_effort or "minimal",
+                        "reasoning_effort": "minimal",
                         "verbosity": "low",
-                        **store,
                     },
                 ),
                 **kwargs,
             )
-        extra = {"reasoning_effort": reasoning_effort} if reasoning_effort else {}
-        extra.update(store)
         return OpenAILLMService(
             enable_direct_mode=enable_direct_mode,
             api_key=api_key,
-            settings=OpenAILLMSettings(model=model, extra=extra, **sampling_settings),
+            settings=OpenAILLMSettings(model=model, **sampling_settings),
             **kwargs,
         )
     elif provider == ServiceProviders.GROQ.value:
@@ -1819,16 +1669,6 @@ def create_llm_service_from_provider(
             correlation_id=correlation_id,
             usage_context=usage_context,
             settings=OpenAILLMSettings(model=model, **sampling_settings),
-        )
-    elif provider == ServiceProviders.ANTHROPIC.value:
-        # Pipecat sends each Claude model's lowest thinking setting when none is
-        # configured (disabled on Haiku 5.5); caching marks the system prompt.
-        return DograhAnthropicLLMService(
-            enable_direct_mode=enable_direct_mode,
-            api_key=api_key,
-            settings=AnthropicLLMSettings(
-                model=model, enable_prompt_caching=True, **sampling_settings
-            ),
         )
     elif provider == ServiceProviders.AWS_BEDROCK.value:
         return AWSBedrockLLMService(
@@ -2230,7 +2070,6 @@ def _create_single_llm_service(
         ServiceProviders.ATLASCLOUD.value,
     ):
         kwargs["base_url"] = user_config.llm.base_url
-        kwargs["reasoning_effort"] = getattr(user_config.llm, "reasoning_effort", None)
     elif provider == ServiceProviders.OPENROUTER.value:
         kwargs["base_url"] = user_config.llm.base_url
         kwargs["provider_order"] = getattr(user_config.llm, "provider_order", None)

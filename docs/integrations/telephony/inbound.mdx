@@ -1,6 +1,6 @@
 ---
 title: "Inbound Calling"
-description: "Configure inbound calling for Twilio, Vonage, Plivo, Telnyx, Cloudonix, Exotel, Vobiz, KoreaAITel, WhatsApp, and Asterisk ARI providers in Dograh AI"
+description: "Configure inbound calling for Twilio, Vonage, Plivo, Telnyx, Cloudonix, Exotel, Vobiz, WhatsApp, and Asterisk ARI providers in Dograh AI"
 ---
 
 ## Overview
@@ -33,9 +33,6 @@ outbound calls use the same telephony configuration for both directions.
   </Card>
   <Card title="Vobiz" href="/integrations/telephony/vobiz">
     Cloud-based telephony with global reach and competitive pricing
-  </Card>
-  <Card title="한국AI통신" href="#koreaaitel">
-    VoiceML setup details
   </Card>
   <Card title="WhatsApp" href="/integrations/telephony/whatsapp">
     Answer WhatsApp voice calls to your business number via the Business Calling API
@@ -80,7 +77,6 @@ the provider; follow its inbound setup instructions:
 - [Cloudonix Configuration](/integrations/telephony/cloudonix#configuration)
 - [Exotel Configuration](/integrations/telephony/exotel#configuration)
 - [Vobiz Configuration](/integrations/telephony/vobiz#configuration)
-- [KoreaAITel Configuration](#koreaaitel)
 - [WhatsApp Configuration](/integrations/telephony/whatsapp#step-3-configure-in-dograh-ai)
 - [Asterisk ARI Configuration](/integrations/telephony/asterisk-ari#part-2-create-the-configuration-in-dograh)
 
@@ -114,7 +110,6 @@ The exact place to set this varies by provider — follow the provider-specific 
 - [Cloudonix Inbound Setup](/integrations/telephony/cloudonix#inbound-calling-setup)
 - [Exotel Inbound Setup](/integrations/telephony/exotel#inbound-calling-setup)
 - [Vobiz Inbound Setup](/integrations/telephony/vobiz#inbound-calling-setup)
-- [KoreaAITel Inbound Setup](#koreaaitel)
 - [Asterisk ARI Inbound Setup](/integrations/telephony/asterisk-ari#inbound-calling)
 
 <Note>
@@ -122,28 +117,6 @@ WhatsApp is the exception: Meta does not call `/inbound/run`. Point your Meta
 app at the **Callback URL** shown on your WhatsApp configuration page instead,
 as described in [WhatsApp Inbound Setup](/integrations/telephony/whatsapp#step-4-configure-the-webhook-in-meta).
 </Note>
-
-### KoreaAITel
-
-KoreaAITel supports inbound calls only. In Dograh, create a **한국AI통신**
-configuration with your **Account ID** and the **Webhook Signing Secret** from
-**Dashboard > 개발자 > 웹훅**. Add the phone number and assign its **Inbound
-workflow**. Dograh uses the signing secret to verify the VoiceML webhook.
-Dograh omits `From`, `ForwardedFrom`, and `To` from the persisted run-log
-payload. When `CallerIdRestricted` is `true`, it also blanks `From` and
-`ForwardedFrom` during webhook normalization.
-
-In KoreaAITel, set that number's VoiceML webhook to:
-
-```text
-https://api.dograh.com/api/v1/telephony/inbound/run
-```
-
-For self-hosted Dograh, use your public API domain. Dograh responds with a
-VoiceML `<Connect><Stream>` response and receives call audio directly over
-WebSocket, so you do not need to run a relay server. Configure the number's
-VoiceML route in KoreaAITel; Dograh does not set this route for you. For
-vendor-side setup details, see the [KoreaAITel VoiceML documentation](https://platform.koreaaitel.com/docs/build/voiceml).
 
 ## Testing Inbound Calls
 

@@ -60,7 +60,7 @@ if ($Dev) {
 
 # Install pipecat in editable mode with all extras
 Write-Host "Installing pipecat dependencies..."
-$PipecatInstallArgs = @('-e', './pipecat[anthropic,cartesia,deepgram,openai,elevenlabs,groq,google,azure,sarvam,soundfile,silero,webrtc,speechmatics,openrouter,camb,mcp,inworld,smallest,aws-nova-sonic]')
+$PipecatInstallArgs = @('-e', './pipecat[cartesia,deepgram,openai,elevenlabs,groq,google,azure,sarvam,soundfile,silero,webrtc,speechmatics,openrouter,camb,mcp,inworld,smallest,aws-nova-sonic]')
 
 if ($Dev) {
     # Resolve dev tools with runtime dependencies so grpcio-tools cannot

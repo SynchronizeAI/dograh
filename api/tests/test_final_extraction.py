@@ -245,18 +245,15 @@ def worker(monkeypatch):
         AsyncMock(return_value=(run, 7)),
     )
     monkeypatch.setattr(
-        service.db_client,
-        "get_workflow_definition",
-        AsyncMock(return_value=SimpleNamespace(workflow_configurations={})),
+        service.db_client, "get_workflow_definition", AsyncMock(return_value=object())
     )
     monkeypatch.setattr(
         service,
         "hydrate_model_configuration_snapshot",
-        AsyncMock(
-            return_value=SimpleNamespace(
-                llm=SimpleNamespace(provider="openai", model="run-model")
-            )
-        ),
+        AsyncMock(return_value=object()),
+    )
+    monkeypatch.setattr(
+        service, "get_effective_ai_model_configuration_for_run", AsyncMock()
     )
     llm = SimpleNamespace(
         run_inference=AsyncMock(return_value='{"name":"Ada"}'), cleanup=AsyncMock()
@@ -288,9 +285,8 @@ async def test_worker_uses_child_model_and_is_idempotent(worker, variable):
     service.hydrate_model_configuration_snapshot.assert_awaited_once_with(
         7, {"visit": "child"}
     )
-    create = service.create_llm_service
-    assert create.call_args.kwargs["correlation_id"] == "existing"
-    assert create.call_args.args[0].llm.model == "run-model"
+    service.get_effective_ai_model_configuration_for_run.assert_not_awaited()
+    assert service.create_llm_service.call_args.kwargs["correlation_id"] == "existing"
     llm.cleanup.assert_awaited_once()
     await service.run_final_extraction(1, 7, "lease")
     assert llm.run_inference.await_count == 1
@@ -516,136 +512,3 @@ async def test_fallback_cleanup_closes_every_owned_sdk_client(
     await service._close_llm(llm)
     assert primary._client.is_closed()
     assert fallback._client.is_closed()
-
-
-@pytest.mark.asyncio
-async def test_extraction_usage_counts_under_the_fallback_that_answered(
-    monkeypatch, worker
-):
-    from openai.types import CompletionUsage
-    from pipecat.services.openai.llm import OpenAILLMService
-
-    from api.schemas.llm_fallback import ErrorCondition
-    from api.services.pipecat.fallback_llm import FallbackLLMProcessor, FallbackRoute
-
-    _, _, saved = worker
-    primary, fallback = (
-        OpenAILLMService(
-            api_key="test",
-            enable_direct_mode=True,
-            settings=OpenAILLMService.Settings(model=model),
-        )
-        for model in ("primary-model", "backup-model")
-    )
-    primary._client = AsyncMock()
-    primary._client.chat.completions.create.side_effect = HTTPException(500)
-    fallback._client = AsyncMock()
-    fallback._client.chat.completions.create.return_value = SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content='{"name":"Ada"}'))],
-        usage=CompletionUsage(
-            prompt_tokens=100,
-            completion_tokens=20,
-            total_tokens=120,
-            prompt_tokens_details={"cached_tokens": 40},
-        ),
-    )
-    llm = FallbackLLMProcessor(
-        primary, routes=[FallbackRoute(condition=ErrorCondition(), service=fallback)]
-    )
-    monkeypatch.setattr(service, "create_llm_service", Mock(return_value=llm))
-    await service.run_final_extraction(1, 7, "lease")
-    assert saved.call_args.kwargs["variables"] == {"name": "Ada"}
-    [(key, usage)] = saved.call_args.kwargs["usage_info"]["llm"].items()
-    assert key == f"{fallback.name}|||backup-model"
-    assert (usage["prompt_tokens"], usage["cache_read_input_tokens"]) == (100, 40)
-    assert (usage["completion_tokens"], usage["total_tokens"]) == (20, 120)
-
-
-@pytest.mark.asyncio
-async def test_extraction_without_reported_usage_leaves_usage_info(worker):
-    _, _, saved = worker
-    await service.run_final_extraction(1, 7, "lease")
-    assert saved.call_args.kwargs["usage_info"] is None
-
-
-def test_merge_llm_usage_adds_counts_and_keeps_unreported_fields():
-    from api.services.pipecat.usage_metrics import merge_llm_usage
-
-    live = {"LLM#0|||m": {"prompt_tokens": 10, "cache_read_input_tokens": None}}
-    merged = merge_llm_usage(
-        live,
-        {
-            "LLM#0|||m": {"prompt_tokens": 5, "cache_read_input_tokens": 2},
-            "LLM#1|||n": {"prompt_tokens": 1, "reasoning_tokens": None},
-        },
-    )
-    assert merged == {
-        "LLM#0|||m": {"prompt_tokens": 15, "cache_read_input_tokens": 2},
-        "LLM#1|||n": {"prompt_tokens": 1, "reasoning_tokens": None},
-    }
-    assert live["LLM#0|||m"]["prompt_tokens"] == 10
-
-
-def test_extraction_schema_requires_every_variable_and_allows_null():
-    from api.services.workflow.pipecat_engine_variable_extractor import (
-        extraction_response_schema,
-    )
-
-    schema = extraction_response_schema(
-        [
-            ExtractionVariableDTO(name="name", type="string", prompt="Caller name"),
-            ExtractionVariableDTO(name="units", type="number"),
-            ExtractionVariableDTO(name="urgent", type="boolean"),
-        ]
-    )
-    assert schema == {
-        "type": "object",
-        "properties": {
-            "name": {
-                "anyOf": [{"type": "string"}, {"type": "null"}],
-                "description": "Caller name",
-            },
-            "units": {
-                "anyOf": [{"type": "number"}, {"type": "null"}],
-                "description": "units",
-            },
-            "urgent": {
-                "anyOf": [{"type": "boolean"}, {"type": "null"}],
-                "description": "urgent",
-            },
-        },
-        "required": ["name", "units", "urgent"],
-        "additionalProperties": False,
-    }
-
-
-@pytest.mark.asyncio
-async def test_final_extraction_sends_schema_for_the_run_model(worker):
-    from api.services.workflow.pipecat_engine_variable_extractor import (
-        extraction_response_schema,
-    )
-
-    run, llm, saved = worker
-    await service.run_final_extraction(1, 7, "lease")
-
-    assert service.create_llm_service.call_args.args[0].llm.model == "run-model"
-    assert llm.run_inference.call_args.kwargs[
-        "response_schema"
-    ] == extraction_response_schema(
-        [ExtractionVariableDTO(name="name", type="string", prompt="Name")]
-    )
-    assert saved.call_args.kwargs["variables"] == {"name": "Ada"}
-    llm.run_inference.assert_awaited_once()
-    assert saved.call_args.kwargs["status"] == "done"
-
-
-@pytest.mark.asyncio
-async def test_live_extraction_keeps_the_free_text_request(monkeypatch):
-    from api.services.workflow.pipecat_engine_variable_extractor import (
-        extract_variables,
-    )
-
-    llm = SimpleNamespace(run_inference=AsyncMock(return_value='{"name": "Ada"}'))
-    variables = [ExtractionVariableDTO(name="name", type="string")]
-    assert await extract_variables(llm, variables, "user: Ada") == {"name": "Ada"}
-    assert llm.run_inference.call_args.kwargs["response_schema"] is None

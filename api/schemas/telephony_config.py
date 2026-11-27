@@ -22,9 +22,6 @@ from api.services.telephony.providers.cloudonix.config import (
 from api.services.telephony.providers.exotel.config import (
     ExotelConfigurationRequest,
 )
-from api.services.telephony.providers.koreaaitel.config import (
-    KoreaAITelConfigurationRequest,
-)
 from api.services.telephony.providers.plivo.config import (
     PlivoConfigurationRequest,
 )
@@ -56,7 +53,6 @@ TelephonyConfigRequest = Annotated[
         ARIConfigurationRequest,
         CloudonixConfigurationRequest,
         ExotelConfigurationRequest,
-        KoreaAITelConfigurationRequest,
         PlivoConfigurationRequest,
         TelnyxConfigurationRequest,
         TwilioConfigurationRequest,

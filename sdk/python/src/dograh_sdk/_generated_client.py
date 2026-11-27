@@ -40,10 +40,6 @@ class _GeneratedClient:
         data = self._request("POST", "/workflow/create/definition", json=body.model_dump(mode="json", exclude_none=True))
         return WorkflowResponse.model_validate(data)
 
-    def delete_workflow_run(self, workflow_id: int, run_id: int) -> Any:
-        """Delete a completed telephony workflow run and its stored artifacts."""
-        return self._request("DELETE", f"/workflow/{workflow_id}/runs/{run_id}")
-
     def get_node_type(self, name: str) -> NodeSpec:
         """Fetch a single node spec by name."""
         data = self._request("GET", f"/node-types/{name}")

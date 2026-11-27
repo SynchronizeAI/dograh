@@ -533,14 +533,6 @@ class ServiceSelection(BaseModel):
     provider_connection_uuid: Annotated[UUID, Field(title='Provider Connection Uuid')]
 
 
-class TTSFallbackRuleServiceSelection(BaseModel):
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    condition: ErrorCondition
-    target: ServiceSelection
-
-
 class ToolDelayedAudioMessage(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -1133,16 +1125,6 @@ class STTFallbackRuleServiceSelection(BaseModel):
     target: ServiceSelection
 
 
-class TTSFallbackPolicyServiceSelection(BaseModel):
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    version: Annotated[Literal[1], Field(title='Version')] = 1
-    rules: Annotated[
-        list[TTSFallbackRuleServiceSelection] | None, Field(max_length=1, title='Rules')
-    ] = None
-
-
 class TransferCallConfig(BaseModel):
     """
     Configuration for Transfer Call tools.
@@ -1343,7 +1325,6 @@ class ModelConfigurationOverride(BaseModel):
     stt: ServiceOverride | None = None
     stt_fallback: STTFallbackPolicyServiceSelection | None = None
     tts: ServiceOverride | None = None
-    tts_fallback: TTSFallbackPolicyServiceSelection | None = None
     realtime: ServiceOverride | None = None
     embeddings: ServiceOverride | None = None
 

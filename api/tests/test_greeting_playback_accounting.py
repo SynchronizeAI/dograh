@@ -206,6 +206,26 @@ async def test_no_output_never_commits_requested_text(outcome):
 
 
 @pytest.mark.asyncio
+async def test_turn_strategy_update_replaces_the_normal_call_strategy():
+    current = SimpleNamespace(start=["local-start"], stop=["local-stop"])
+    controller = SimpleNamespace(
+        user_turn_strategies=current,
+        update_strategies=AsyncMock(),
+    )
+    greeting = GreetingController.__new__(GreetingController)
+    greeting._user = SimpleNamespace(user_turn_controller=controller)
+    greeting._normal_strategies = None
+    greeting._greeting_strategy = None
+    greeting._min_words = None
+    destination = SimpleNamespace(start=["external-start"], stop=["external-stop"])
+
+    await greeting.update_turn_strategies(destination)
+
+    controller.update_strategies.assert_awaited_once_with(destination)
+    assert greeting._normal_strategies is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "outcome",
     [

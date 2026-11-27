@@ -26,7 +26,6 @@ ENGINE_OWNED_CONTEXT_KEYS = frozenset(
         "answer_supervisor",
         "tool_results",
         "llm_fallback_metrics",
-        "tts_fallback_metrics",
         "sip_call_id",
         "extracted_variables",
         "nodes_visited",
@@ -38,23 +37,6 @@ ENGINE_OWNED_CONTEXT_KEYS = frozenset(
 
 class ExtractionResponseError(ValueError):
     """The model did not return a usable extraction response."""
-
-
-def extraction_response_schema(variables: List[ExtractionVariableDTO]) -> dict:
-    """Every requested variable as a top-level key, null when the call lacks it."""
-    properties = {
-        v.name: {
-            "anyOf": [{"type": v.type.value}, {"type": "null"}],
-            "description": v.prompt or v.name,
-        }
-        for v in variables
-    }
-    return {
-        "type": "object",
-        "properties": properties,
-        "required": list(properties),
-        "additionalProperties": False,
-    }
 
 
 class VariableExtractionManager:
@@ -118,14 +100,8 @@ async def extract_variables(
     extraction_context.set_messages(extraction_messages)
 
     # Override any conversational system instruction retained by the client.
-    # Post-call (strict) extraction has the provider enforce the variables'
-    # schema; Pipecat ignores it where the provider or model cannot.
     llm_response = await llm.run_inference(
-        extraction_context,
-        system_instruction=system_prompt,
-        response_schema=extraction_response_schema(extraction_variables)
-        if strict
-        else None,
+        extraction_context, system_instruction=system_prompt
     )
 
     model_name = getattr(llm, "model_name", "unknown")

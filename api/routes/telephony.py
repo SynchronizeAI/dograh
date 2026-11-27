@@ -494,14 +494,6 @@ async def _create_inbound_workflow_run(
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
     run_inputs = await prepare_workflow_run_inputs(db_client, workflow)
-    raw_webhook_data = normalized_data.raw_data
-    if provider == WorkflowRunMode.KOREAAITEL.value:
-        raw_webhook_data = {
-            key: value
-            for key, value in normalized_data.raw_data.items()
-            if key.lower() not in {"from", "forwardedfrom", "to"}
-        }
-
     workflow_run = await db_client.create_workflow_run(
         workflow_run_name,
         workflow_id,
@@ -529,7 +521,7 @@ async def _create_inbound_workflow_run(
                 "from_country": normalized_data.from_country,
                 "to_country": normalized_data.to_country,
                 "from_phone_number_id": from_phone_number_id,
-                "raw_webhook_data": raw_webhook_data,
+                "raw_webhook_data": normalized_data.raw_data,
                 **(
                     {"sip_headers": normalized_data.sip_headers}
                     if normalized_data.sip_headers
@@ -828,12 +820,7 @@ async def handle_inbound_run(request: Request):
     logger.info("Inbound /run dispatch received")
 
     try:
-        signed_data, raw_body = await parse_webhook_request(request)
-        # 한국AI통신's follow-up requests (`<Dial action>`, `<Redirect>`) omit the
-        # first request's AccountId, CallStatus and ForwardedFrom, so the server that
-        # redirects a call carries them in this URL, which the signature covers. The
-        # form wins, and only the form is verified.
-        webhook_data = {**request.query_params, **signed_data}
+        webhook_data, raw_body = await parse_webhook_request(request)
         headers = dict(request.headers)
 
         provider_class = await _detect_provider(webhook_data, headers)
@@ -908,7 +895,7 @@ async def handle_inbound_run(request: Request):
             telephony_configuration_id, config.organization_id
         )
         signature_valid = await provider_instance.verify_inbound_signature(
-            str(request.url), signed_data, headers, raw_body
+            str(request.url), webhook_data, headers, raw_body
         )
         if not signature_valid:
             logger.warning(
@@ -918,30 +905,6 @@ async def handle_inbound_run(request: Request):
             return provider_class.generate_validation_error_response(
                 TelephonyError.SIGNATURE_VALIDATION_FAILED
             )
-
-        logger.info(f"/inbound/run signature verified for {provider_class.PROVIDER_NAME}")
-
-        if provider_class.PROVIDER_NAME == WorkflowRunMode.KOREAAITEL.value:
-            existing_run = await db_client.get_workflow_run_by_call_id(
-                normalized_data.call_id,
-                organization_id=config.organization_id,
-                mode=provider_class.PROVIDER_NAME,
-                telephony_configuration_id=telephony_configuration_id,
-            )
-            if existing_run:
-                backend_endpoint, wss_backend_endpoint = await get_backend_endpoints()
-                websocket_url = ws_auth.build_media_ws_url(
-                    wss_backend_endpoint,
-                    existing_run.workflow_id,
-                    config.organization_id,
-                    existing_run.id,
-                )
-                return await provider_instance.start_inbound_stream(
-                    websocket_url=websocket_url,
-                    workflow_run_id=existing_run.id,
-                    normalized_data=normalized_data,
-                    backend_endpoint=backend_endpoint,
-                )
 
         try:
             concurrency_slot = await call_concurrency.acquire_org_slot(
@@ -1018,14 +981,12 @@ async def handle_inbound_run(request: Request):
                 await call_concurrency.release_slot(concurrency_slot)
             raise
 
-    # Sync fork: 503, as a refusal is (#33, #36), so Twilio's VoiceFallbackUrl or
-    # 한국AI통신's voiceFallbackUrl (the line's voicemail) answers the caller.
     except ValueError as e:
         logger.error(f"/inbound/run request parsing error: {e}")
-        return generic_hangup_response(503)
+        return generic_hangup_response()
     except Exception as e:
         logger.error(f"/inbound/run unexpected error: {e}")
-        return generic_hangup_response(503)
+        return generic_hangup_response()
 
 
 @router.post("/inbound/fallback")

@@ -4,6 +4,7 @@ This allows easy switching between different providers (Twilio, Vonage, etc.)
 while keeping business logic decoupled from specific implementations.
 """
 
+import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -138,7 +139,6 @@ class TelephonyProvider(ABC):
     # Populated by provider constructors from the factory-normalized config.
     from_numbers: List[str] = []
     default_from_number: Optional[str] = None
-    configuration_name: Optional[str] = None  # set by the factory, for errors
     # Carrier paths on this configuration, and the trunk each active number is
     # authorized on. Empty unless the provider's integration models trunks.
     trunks: List[Dict[str, Any]] = []
@@ -168,24 +168,23 @@ class TelephonyProvider(ABC):
 
         return enabled[0] if len(enabled) == 1 else None
 
-    def select_from_number(self, from_number: Optional[str] = None) -> str:
-        """Return the explicit number, else the default caller ID; never a pool pick.
+    def select_from_number(self, from_number: Optional[str] = None) -> Optional[str]:
+        """Resolve the caller ID for a one-off outbound call.
 
-        Either must be an active number of this configuration.
+        Preference order: explicit ``from_number`` > the configuration's
+        default caller ID > random pick from the pool. Callers that want
+        rotation across the pool (e.g. the campaign dispatcher) must pass an
+        explicit ``from_number`` — the default caller ID only applies when no
+        number was requested. Returns None when the pool is empty and no
+        default is set.
         """
-        caller_id = from_number or self.default_from_number
-        name = self.configuration_name
-        if not caller_id:
-            raise ValueError(
-                f"Telephony configuration '{name}' has no default caller ID; "
-                "it receives calls only."
-            )
-        if caller_id not in self.from_numbers:
-            raise ValueError(
-                f"Caller ID {caller_id} is not an active number of "
-                f"telephony configuration '{name}'."
-            )
-        return caller_id
+        if from_number:
+            return from_number
+        if self.default_from_number:
+            return self.default_from_number
+        if self.from_numbers:
+            return random.choice(self.from_numbers)
+        return None
 
     @abstractmethod
     async def initiate_call(
@@ -203,7 +202,9 @@ class TelephonyProvider(ABC):
             to_number: The destination phone number
             webhook_url: The URL to receive call events
             workflow_run_id: Optional workflow run ID for tracking
-            from_number: Optional caller ID; see ``select_from_number``.
+            from_number: Optional caller ID to use. If None, the config's
+                default caller ID is used when set, else one is selected
+                randomly from the pool.
             **kwargs: Provider-specific additional parameters
 
         Returns:

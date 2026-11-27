@@ -215,7 +215,8 @@ class CreateCampaignRequest(BaseModel):
     traffic_split: TrafficSplitRequest | None = None
     source_type: str = Field(..., pattern="^csv$")
     source_id: str  # CSV file key
-    # Optional for backwards compatibility; omitted means the org's marked default.
+    # Optional for backwards compatibility. When omitted, the resolver prefers
+    # the marked default and then another ready active configuration.
     telephony_configuration_id: Optional[int] = None
     retry_config: Optional[RetryConfigRequest] = None
     max_concurrency: Optional[int] = Field(default=None, ge=1)

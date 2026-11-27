@@ -15,17 +15,13 @@ from api.errors.failure import (
     mark_failure_reported,
 )
 from api.services.gen_ai.json_parser import parse_llm_json
-from api.services.pipecat.usage_metrics import on_inference_usage
 from api.services.workflow.dto import QANodeData
 from api.services.workflow.qa.conversation import (
     build_conversation_structure,
     format_transcript,
     split_events_by_node,
 )
-from api.services.workflow.qa.llm_config import (
-    accumulate_token_usage,
-    create_qa_llm_service,
-)
+from api.services.workflow.qa.llm_config import create_qa_llm_service
 from api.services.workflow.qa.metrics import compute_call_metrics
 from api.services.workflow.qa.node_summary import (
     CONVERSATION_SUMMARY_SYSTEM_PROMPT,
@@ -39,31 +35,6 @@ from api.services.workflow.qa.tracing import (
 from api.utils.template_renderer import render_template
 
 _QA_LLM_ATTEMPTS = 3
-_QA_RESPONSE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "tags": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "tag": {"type": "string"},
-                    "reason": {"type": "string"},
-                },
-                "required": ["tag", "reason"],
-                "additionalProperties": False,
-            },
-        },
-        "call_quality_score": {"type": "number", "minimum": 1, "maximum": 10},
-        "overall_sentiment": {
-            "type": "string",
-            "enum": ["positive", "neutral", "negative"],
-        },
-        "summary": {"type": "string"},
-    },
-    "required": ["tags", "call_quality_score", "overall_sentiment", "summary"],
-    "additionalProperties": False,
-}
 
 
 async def _run_llm_inference(
@@ -71,7 +42,6 @@ async def _run_llm_inference(
     messages: list[dict],
     system_prompt: str,
     *,
-    response_schema: dict[str, Any] | None = None,
     workflow_run_id: int | None = None,
     failure_log_level: str = "ERROR",
 ) -> str | None:
@@ -86,10 +56,7 @@ async def _run_llm_inference(
     context.set_messages(messages)
     for attempt in range(1, _QA_LLM_ATTEMPTS + 1):
         try:
-            inference_kwargs: dict[str, Any] = {"system_instruction": system_prompt}
-            if response_schema is not None:
-                inference_kwargs["response_schema"] = response_schema
-            return await llm.run_inference(context, **inference_kwargs)
+            return await llm.run_inference(context, system_instruction=system_prompt)
         except Exception as exc:
             metadata = failure_metadata_for_processor(llm)
             failure = classify_exception(
@@ -201,10 +168,6 @@ async def run_per_node_qa_analysis(
         )
         return {"error": "no_api_key", "node_results": {}}
     llm, model = resolved_llm
-    token_usage: dict = {}
-    on_inference_usage(
-        llm, lambda _s, data: accumulate_token_usage(token_usage, data.value)
-    )
 
     # Ensure node summaries
     node_summaries = await ensure_node_summaries(
@@ -258,11 +221,7 @@ async def run_per_node_qa_analysis(
         # Call QA LLM
         try:
             raw_response = await _run_llm_inference(
-                llm,
-                messages,
-                system_content,
-                response_schema=_QA_RESPONSE_SCHEMA,
-                workflow_run_id=workflow_run_id,
+                llm, messages, system_content, workflow_run_id=workflow_run_id
             )
         except Exception as e:
             logger.warning(
@@ -318,7 +277,6 @@ async def run_per_node_qa_analysis(
     return {
         "node_results": node_results,
         "model": model,
-        "token_usage": token_usage,
     }
 
 
@@ -361,10 +319,6 @@ async def _run_whole_call_qa_analysis(
         )
         return {"error": "no_api_key", "node_results": {}}
     llm, model = resolved_llm
-    token_usage: dict = {}
-    on_inference_usage(
-        llm, lambda _s, data: accumulate_token_usage(token_usage, data.value)
-    )
 
     # Build messages — substitute all placeholders with sensible defaults
     template_context = {
@@ -380,11 +334,7 @@ async def _run_whole_call_qa_analysis(
 
     try:
         raw_response = await _run_llm_inference(
-            llm,
-            messages,
-            system_content,
-            response_schema=_QA_RESPONSE_SCHEMA,
-            workflow_run_id=workflow_run_id,
+            llm, messages, system_content, workflow_run_id=workflow_run_id
         )
     except Exception as e:
         logger.warning(f"QA analysis degraded for run {workflow_run_id}: {e}")
@@ -425,5 +375,4 @@ async def _run_whole_call_qa_analysis(
     return {
         "node_results": {"whole_call": node_result},
         "model": model,
-        "token_usage": token_usage,
     }

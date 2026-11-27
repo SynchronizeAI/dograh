@@ -46,6 +46,13 @@ An edge connects two nodes and fires when its condition is satisfied:
 
 `transition_speech` is optional — if set, the agent speaks it before moving to the next node.
 
+For text-to-speech voice turns, an Agent Node with an outgoing edge that has fixed
+transition speech holds generated question sentences until the response ends. If the
+response picks that edge, Dograh drops those questions so callers hear the fixed line
+instead. Statements before a held question stream as usual; the question and any
+following sentences wait together to preserve their order. Text chat and turns routed
+through recorded clips keep their existing behavior.
+
 ## Versioning
 
 Every time you update a workflow's `workflow_definition`, Dograh saves a new version while keeping the history. The current version is always what runs. Old versions are retained for auditing.

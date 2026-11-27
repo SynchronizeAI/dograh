@@ -77,6 +77,10 @@ class RecordingRouterProcessor(FrameProcessor):
         self._recording_playback_started = False
         self._second_marker_seen = False
 
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
     def set_enabled(self, enabled: bool) -> None:
         """Configure routing for the next response, preserving any in flight."""
         self._enabled = enabled

@@ -361,6 +361,7 @@ class AgentRuntimeFactory:
         generation_callbacks = AgentGenerationProcessor(
             generation_started_callback=callbacks.generation_started,
             llm_text_frame_callback=callbacks.llm_text_frame,
+            fixed_line_tools=runtime.fixed_line_tools,
         )
         pipeline = build_agent_generation_pipeline(
             runtime.llm,

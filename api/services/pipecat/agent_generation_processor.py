@@ -151,9 +151,7 @@ class AgentGenerationProcessor(FrameProcessor):
         if frame.function_calls and not calls:
             return
         lines = self._snapshot()
-        picked = any(
-            call.function_name in lines for call in calls
-        )
+        picked = any(call.function_name in lines for call in calls)
         if next_response:
             self._pending_picked |= picked
         else:

@@ -1018,12 +1018,14 @@ async def handle_inbound_run(request: Request):
                 await call_concurrency.release_slot(concurrency_slot)
             raise
 
+    # Sync fork: 503, as a refusal is (#33, #36), so Twilio's VoiceFallbackUrl or
+    # 한국AI통신's voiceFallbackUrl (the line's voicemail) answers the caller.
     except ValueError as e:
         logger.error(f"/inbound/run request parsing error: {e}")
-        return generic_hangup_response()
+        return generic_hangup_response(503)
     except Exception as e:
         logger.error(f"/inbound/run unexpected error: {e}")
-        return generic_hangup_response()
+        return generic_hangup_response(503)
 
 
 @router.post("/inbound/fallback")

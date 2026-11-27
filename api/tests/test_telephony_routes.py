@@ -956,3 +956,32 @@ async def test_telephony_websocket_leaves_run_initialized_until_stream_starts():
 
     provider.handle_websocket.assert_awaited_once_with(websocket, 33, 11, 502)
     mock_db.update_workflow_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["parse", "run"])
+async def test_an_inbound_error_answers_503_so_the_number_falls_back(
+    monkeypatch, failure
+):
+    """Sync fork: an unparsable request or a run that fails to start (a database
+    error) answers 503, as a refusal does, so the provider requests the number's
+    fallback (the line's voicemail) instead of running a 200 <Hangup/>."""
+    import api.routes.telephony as routes
+
+    request, _, _, _ = _setup_koreaaitel_webhook(monkeypatch, [None], [])
+    routes.call_concurrency.release_slot = AsyncMock()
+    if failure == "parse":
+        monkeypatch.setattr(
+            routes, "parse_webhook_request", AsyncMock(side_effect=ValueError("body"))
+        )
+    else:
+        monkeypatch.setattr(
+            routes,
+            "_create_inbound_workflow_run",
+            AsyncMock(side_effect=RuntimeError("database unavailable")),
+        )
+
+    response = await handle_inbound_run(request)
+
+    assert response.status_code == 503
+    assert response.body == b"<Response><Hangup/></Response>"

@@ -10,7 +10,10 @@ from typing import Awaitable, Callable, Optional
 
 from loguru import logger
 
-from api.services.pipecat.korean_sentence_aggregator import KoreanSentenceAggregator
+from api.services.pipecat.korean_sentence_aggregator import (
+    _CLOSING_DELIMITERS,
+    KoreanSentenceAggregator,
+)
 from pipecat.frames.frames import (
     AggregatedTextFrame,
     Frame,
@@ -27,7 +30,8 @@ from pipecat.utils.text.base_text_aggregator import TextType
 
 
 def _is_question(sentence: str) -> bool:
-    return sentence.rstrip("\"'”’)」』 ").endswith(("?", "？"))
+    closing = " " + "".join(_CLOSING_DELIMITERS)
+    return sentence.rstrip(closing).endswith(("?", "？"))
 
 
 class AgentGenerationProcessor(FrameProcessor):

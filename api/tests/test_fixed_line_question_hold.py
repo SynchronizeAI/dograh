@@ -350,10 +350,14 @@ class TestGenerationStage:
         assert await _through_stage(frames) == [statement, question]
 
     @pytest.mark.asyncio
-    async def test_a_quoted_question_is_still_a_question(self):
+    @pytest.mark.parametrize(
+        "quoted_question",
+        ["“Which sink is leaking?”", "«Quel évier fuit ?»"],
+    )
+    async def test_a_quoted_question_is_still_a_question(self, quoted_question):
         frames = [
             LLMFullResponseStartFrame(),
-            *_text("“Which sink is leaking?” Noted."),
+            *_text(f"{quoted_question} Noted."),
             _picks_collect_info(FunctionCallsFromLLMInfoFrame),
             LLMFullResponseEndFrame(),
         ]

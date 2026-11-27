@@ -2,7 +2,8 @@
 
 The edge's fixed line is the turn's question. Question sentences wait for the
 end of the response: they are dropped when the response picked such an edge and
-spoken in order otherwise. Statements are never held back.
+spoken in order otherwise. Statements before the first held question stream
+immediately; following sentences wait with it to preserve their order.
 """
 
 import time

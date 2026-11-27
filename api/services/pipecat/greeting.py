@@ -142,8 +142,6 @@ class GreetingController:
         self._normal_strategies = None
         self._min_words = None
         await controller.update_strategies(strategies)
-            return
-        await controller.update_strategies(strategies)
 
     async def _update_strategies(self, user: LLMUserAggregator, frame: Frame) -> None:
         if isinstance(frame, StartFrame):

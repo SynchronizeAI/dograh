@@ -696,6 +696,26 @@ def get_stt_settings_update(
     return type(stt._settings)(**settings) if settings else None
 
 
+async def apply_stt_keyterms(stt: STTService, keyterms: list[str]) -> None:
+    """Boost one call's terms on its running STT, a fallback's backup included.
+
+    The workflow ``dictionary`` is read once, when the STT is built and before
+    a pre-call fetch answers; these replace its terms for the rest of the call.
+    AssemblyAI applies them live (``UpdateConfiguration``, which replaces the
+    set); Soniox reconnects with them. Other providers keep their keyterms.
+    """
+    for service in getattr(stt, "services", None) or [stt]:
+        if isinstance(service, AssemblyAISTTService):
+            service._settings.keyterms_prompt = keyterms  # for a reconnect's URL
+            await service._send_update_configuration(keyterms_prompt=keyterms)
+        elif isinstance(service, SonioxSTTService):
+            await service._update_settings(
+                SonioxSTTSettings(context=SonioxContextObject(terms=keyterms))
+            )
+        else:
+            logger.info(f"{service} keeps its keyterms: no per-call update")
+
+
 @_report_service_factory_failures(ErrorSource.STT, config_section="stt")
 def create_single_stt_service(
     user_config,

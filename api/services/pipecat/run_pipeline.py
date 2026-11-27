@@ -1435,6 +1435,7 @@ async def _run_pipeline_impl(
         integration_runtime_sessions=integration_runtime_sessions,
         call_events_session=call_events_session,
         include_transcript_end_timestamps=include_transcript_end_timestamps,
+        stt=stt,
     )
 
     register_audio_data_handler(audio_buffer, workflow_run_id, in_memory_audio_buffer)

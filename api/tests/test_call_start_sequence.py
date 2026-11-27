@@ -5,13 +5,18 @@ exercised here against stubs rather than per transport.
 """
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from pipecat.services.assemblyai.stt import AssemblyAISTTService
+from pipecat.services.soniox.stt import SonioxSTTService
+from websockets.protocol import State
 
 from api.services.pipecat import event_handlers
 from api.services.pipecat.event_handlers import register_event_handlers
+from api.services.pipecat.fallback_stt import FallbackSTTService
 from api.services.pipecat.pre_call_fetch import PreCallFetchResult
 from api.services.pipecat.termination_funnel_processor import TerminationFunnelProcessor
 from api.services.workflow.pipecat_engine import PipecatEngine
@@ -34,7 +39,7 @@ class EventSource:
 class Call:
     """One call's start sequence wired to stubs, with an ordered event log."""
 
-    def __init__(self, monkeypatch, *, fetch_task, is_child=True):
+    def __init__(self, monkeypatch, *, fetch_task, is_child=True, stt=None):
         self.events: list[str] = []
         self.task, self.transport = EventSource(), EventSource()
         self.transport.output = Mock(
@@ -97,6 +102,7 @@ class Call:
             workflow_run=self.workflow_run,
             organization_id=7,
             run_model_configuration=RUN_CONFIG,
+            stt=stt,
         )
 
     async def ready(self) -> asyncio.Task:
@@ -325,3 +331,47 @@ async def test_cleanup_cancels_preparation_and_prevents_node_setup(monkeypatch):
     assert cancelled.is_set()
     assert not await call.engine.wait_for_generation_ready()
     call.engine.set_node.assert_not_awaited()
+
+
+def running_stt():
+    """AssemblyAI with a Soniox backup, as both reception workflows run, on open
+    sockets that only record what is sent."""
+    primary = AssemblyAISTTService(api_key="test", sample_rate=16000)
+    primary._websocket = SimpleNamespace(state=State.OPEN, send=AsyncMock())
+    backup = SonioxSTTService(api_key="test", sample_rate=16000)
+    backup._request_reconnect = AsyncMock()
+    return FallbackSTTService(primary, backup)
+
+
+@pytest.mark.asyncio
+async def test_pre_call_speech_terms_reach_the_running_stt(monkeypatch):
+    stt = running_stt()
+    fetch_task, release = pending_fetch(
+        PreCallFetchResult(
+            initial_context={"speech_terms": "Acme Roofing, Jane Doe ,"},
+            outcome="completed",
+        )
+    )
+    release.set()
+    connected = await Call(monkeypatch, fetch_task=fetch_task, stt=stt).ready()
+    await asyncio.wait_for(connected, 1)
+    terms = ["Acme Roofing", "Jane Doe"]
+    stt.primary._websocket.send.assert_awaited_once_with(
+        json.dumps({"type": "UpdateConfiguration", "keyterms_prompt": terms})
+    )
+    assert "Acme+Roofing" in stt.primary._build_ws_url()  # a reconnect keeps them
+    assert stt.backup._settings.context.terms == terms
+    stt.backup._request_reconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_fetch_without_speech_terms_leaves_the_stt_alone(monkeypatch):
+    stt = running_stt()
+    fetch_task, release = pending_fetch(
+        PreCallFetchResult(initial_context={"customer": "after"}, outcome="completed")
+    )
+    release.set()
+    connected = await Call(monkeypatch, fetch_task=fetch_task, stt=stt).ready()
+    await asyncio.wait_for(connected, 1)
+    stt.primary._websocket.send.assert_not_awaited()
+    stt.backup._request_reconnect.assert_not_awaited()

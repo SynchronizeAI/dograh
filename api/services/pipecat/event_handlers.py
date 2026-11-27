@@ -23,6 +23,7 @@ from api.services.pipecat.in_memory_buffers import (
 )
 from api.services.pipecat.pipeline_metrics_aggregator import PipelineMetricsAggregator
 from api.services.pipecat.pre_call_fetch import PreCallFetchResult
+from api.services.pipecat.service_factory import apply_stt_keyterms
 from api.services.pipecat.termination_funnel_processor import (
     TerminationFunnelProcessor,
     is_terminal_error,
@@ -98,6 +99,7 @@ def register_event_handlers(
     call_events_session=None,
     include_transcript_end_timestamps: bool = False,
     answer_supervisor=None,
+    stt=None,
 ):
     """Register all event handlers for transport and task events.
 
@@ -107,6 +109,8 @@ def register_event_handlers(
         run_model_configuration: The call-scoped configuration the run was
             authorized with; the first agent runs on it unless the fetch
             patches it.
+        stt: The call's STT; a fetch's ``speech_terms`` (comma-separated)
+            become its keyterms (``apply_stt_keyterms``).
 
     Returns:
         In-memory recording buffers for use by other handlers.
@@ -164,6 +168,18 @@ def register_event_handlers(
                 f"{list(fetched.initial_context.keys())}"
             )
         engine.record_context({"pre_call_fetch_outcome": fetched.outcome})
+        terms = (fetched.initial_context or {}).get("speech_terms")
+        keyterms = (
+            [t.strip() for t in terms.split(",") if t.strip()]
+            if isinstance(terms, str)
+            else []
+        )
+        if stt is not None and keyterms:
+            try:
+                await apply_stt_keyterms(stt, keyterms)
+                logger.info(f"Pre-call speech terms sent to STT: {len(keyterms)}")
+            except Exception as e:
+                logger.warning(f"Pre-call speech terms not applied: {type(e).__name__}")
         if fetched.model_overrides is None:
             return run_model_configuration
         if not engine.active_agent.is_child:

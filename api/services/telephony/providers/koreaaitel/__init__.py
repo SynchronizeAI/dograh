@@ -2,8 +2,8 @@
 
 Missing OSS capability: Dograh has no provider for 한국AI통신's VoiceML webhook
 and Stream, which is Twilio-shaped but with other field names, an HMAC-SHA256
-signature and no Twilio REST API. Inbound only: the number's VoiceML webhook
-points at ``/inbound/run``.
+signature and a Bearer-key calls API. Inbound: the number's VoiceML webhook
+points at ``/inbound/run``. Outbound: ``POST /calls``, ``/twiml`` and ``routes.py``.
 """
 
 from typing import Any, Dict
@@ -25,6 +25,7 @@ def _config_loader(value: Dict[str, Any]) -> Dict[str, Any]:
         "provider": "koreaaitel",
         "account_id": value.get("account_id"),
         "signing_secret": value.get("signing_secret"),
+        "api_key": value.get("api_key"),
     }
 
 
@@ -46,6 +47,13 @@ _UI_METADATA = ProviderUIMetadata(
             sensitive=True,
             description="Dashboard > 개발자 > 웹훅 > Webhook Signing Secret",
         ),
+        ProviderUIField(
+            name="api_key",
+            label="API Key",
+            type="password",
+            required=False,
+            sensitive=True,
+        ),
     ],
 )
 
@@ -59,7 +67,6 @@ SPEC = ProviderSpec(
     config_request_cls=KoreaAITelConfigurationRequest,
     ui_metadata=_UI_METADATA,
     account_id_credential_field="account_id",
-    supports_outbound=False,
 )
 
 

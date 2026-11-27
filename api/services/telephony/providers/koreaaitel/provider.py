@@ -1,27 +1,31 @@
-"""한국AI통신 implementation of the TelephonyProvider interface (inbound only).
+"""한국AI통신 implementation of the TelephonyProvider interface.
 
 Modeled on ``twilio/provider.py``. The vendor differs from Twilio in its field
 names (``CallId``/``AccountId``, ``streamId``/``callId``), its signature
 (HMAC-SHA256, Base64, over the URL plus the sorted key/value pairs) and in
-having no REST call control: the call ends when the stream closes. Numbers are
-routed outside Dograh, as with ARI.
+having no call control after ``POST /calls``: the call ends when the stream
+closes. Numbers are routed outside Dograh, as with ARI.
 """
 
 import base64
 import hashlib
 import hmac
 import json
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from fastapi import Response
+import aiohttp
+from fastapi import HTTPException, Response
 from loguru import logger
 
-from api.enums import WorkflowRunMode
+from api.enums import TelephonyCallStatus, WorkflowRunMode
+from api.services.telephony import ws_auth
 from api.services.telephony.base import (
+    CallInitiationResult,
     NormalizedInboundData,
     ProviderSyncResult,
     TelephonyProvider,
 )
+from api.utils.common import get_backend_endpoints
 from api.utils.telephony_address import normalize_telephony_address
 
 if TYPE_CHECKING:
@@ -36,6 +40,15 @@ def _canonical(raw: str) -> str:
     return normalize_telephony_address(raw, country_hint=_COUNTRY).canonical
 
 
+def _national(raw: str) -> str:
+    """The calls API takes numbers as dialled; 8-digit 1xxx-xxxx numbers have no leading 0."""
+    number = "".join(c for c in raw if c not in " -()")
+    if not number.startswith("+82"):
+        return number  # a foreign number gets the vendor's UNSUPPORTED_COUNTRY
+    rest = number[3:]
+    return rest if rest[:1] == "1" and len(rest) == 8 else "0" + rest
+
+
 def compute_signature(signing_secret: str, url: str, params: Dict[str, Any]) -> str:
     """The vendor's ``X-Signature``: Base64(HMAC-SHA256(secret, url + k1v1k2v2...))."""
     data = url + "".join(f"{k}{v}" for k, v in sorted(params.items()))
@@ -45,25 +58,76 @@ def compute_signature(signing_secret: str, url: str, params: Dict[str, Any]) -> 
 
 class KoreaAITelProvider(TelephonyProvider):
     PROVIDER_NAME = WorkflowRunMode.KOREAAITEL.value
+    WEBHOOK_ENDPOINT = "twiml"  # shared route, as Cloudonix
 
     def __init__(self, config: Dict[str, Any]):
         self.account_id = config.get("account_id")
         self.signing_secret = config.get("signing_secret")
+        self.api_key = config.get("api_key")
         self.from_numbers = config.get("from_numbers", [])
+        self.default_from_number = config.get("default_from_number")
 
-    # ======== Not offered: inbound only, no call-control or transfer API ========
+    async def initiate_call(
+        self,
+        to_number: str,
+        webhook_url: str,
+        workflow_run_id: Optional[int] = None,
+        from_number: Optional[str] = None,
+        **kwargs: Any,
+    ) -> CallInitiationResult:
+        if not self.validate_config() or workflow_run_id is None:
+            raise ValueError("한국AI통신 not properly configured or no run id")
+        from_number = self.select_from_number(from_number)  # never a guess (#31)
+        backend_endpoint, _ = await get_backend_endpoints()
+        body = {
+            "To": _national(to_number),
+            "From": _national(from_number),
+            "Url": webhook_url,
+            "StatusCallback": f"{backend_endpoint}/api/v1/telephony/koreaaitel/status-callback/{workflow_run_id}",
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Idempotency-Key": f'"dograh-run-{workflow_run_id}"',  # one run, one call
+        }
+        url = f"https://api.koreaaitel.com/v1/accounts/{self.account_id}/calls"
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=body, headers=headers) as response:
+                call = await response.json()
+                if response.status != 201:
+                    raise HTTPException(
+                        status_code=response.status, detail=json.dumps(call)
+                    )
+        return CallInitiationResult(
+            call_id=call["callId"],
+            status=call.get("status", "queued"),
+            caller_number=from_number,
+            provider_metadata={"call_id": call["callId"]},
+            raw_response=call,
+        )
 
-    async def initiate_call(self, *args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError("한국AI통신 provider is inbound only")
-
-    async def get_webhook_response(self, *args: Any, **kwargs: Any) -> str:
-        raise NotImplementedError("한국AI통신 provider is inbound only")
+    async def get_webhook_response(
+        self, workflow_id: int, organization_id: int, workflow_run_id: int
+    ) -> str:
+        _, wss_backend_endpoint = await get_backend_endpoints()
+        ws_url = ws_auth.build_media_ws_url(
+            wss_backend_endpoint, workflow_id, organization_id, workflow_run_id
+        )
+        return (await self.start_inbound_stream(websocket_url=ws_url)).body.decode()
 
     async def get_call_status(self, call_id: str) -> Dict[str, Any]:
-        raise NotImplementedError("한국AI통신 provider has no call-status API")
+        raise NotImplementedError("한국AI통신 status arrives by callback")
 
     def parse_status_callback(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        raise NotImplementedError("한국AI통신 status callbacks are not routed here")
+        raw = data.get("CallStatus", "")
+        status = "busy" if raw == "rejected" else raw  # as for Vonage
+        return {
+            "call_id": data.get("CallId", ""),
+            "status": TelephonyCallStatus.from_raw(status) or status,
+            "duration": data.get("Duration"),
+            "extra": {k: v for k, v in data.items() if k.lower() not in ("from", "to")},
+        }
+
+    # ======== Not offered: no call-control or transfer API ========
 
     async def transfer_call(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
         raise NotImplementedError("한국AI통신 provider does not support transfers")
@@ -82,7 +146,7 @@ class KoreaAITelProvider(TelephonyProvider):
         return ProviderSyncResult(ok=True)
 
     def validate_config(self) -> bool:
-        return bool(self.account_id and self.signing_secret)
+        return bool(self.account_id and self.signing_secret and self.api_key)
 
     # ======== Inbound ========
 

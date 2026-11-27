@@ -11,3 +11,4 @@ class KoreaAITelConfigurationRequest(BaseModel):
     provider: Literal["koreaaitel"] = Field(default="koreaaitel")
     account_id: str = Field(..., description="한국AI통신 account ID")
     signing_secret: str = Field(..., description="Webhook Signing Secret")
+    api_key: str | None = None  # needed to place calls, not to receive them

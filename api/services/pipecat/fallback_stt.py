@@ -54,11 +54,24 @@ def _stop_primary_reconnects(primary: FrameProcessor) -> None:
     ``WebsocketService`` would otherwise try three times, 4-10s apart.
     ``STTService._reconnect`` would buffer audio and replay it after a new
     socket. Neither is what a failover call should do.
+
+    A reconnect the primary asks for in ``_update_settings`` (Soniox applies the
+    per-call speech terms that way) is on purpose and still runs, now or after
+    the caller stops speaking, but not once the primary was abandoned
+    (``_disconnecting`` is set by ``_prepare_switch``): a reconnect then would
+    open a second, unread and billed stream.
     """
     if hasattr(primary, "_reconnect_on_error"):
         primary._reconnect_on_error = False
+    settings_reconnect = False
+    reconnect = getattr(primary, "_reconnect", None)
+    update_settings = getattr(primary, "_update_settings", None)
 
     async def _fail_instead_of_reconnecting():
+        nonlocal settings_reconnect
+        if settings_reconnect and not getattr(primary, "_disconnecting", False):
+            settings_reconnect = False
+            return await reconnect()
         buffer = getattr(primary, "_reconnect_audio_buffer", None)
         if buffer is not None:
             buffer.clear()
@@ -71,8 +84,20 @@ def _stop_primary_reconnects(primary: FrameProcessor) -> None:
             exception=ConnectionError("STT fallback stopped reconnect"),
         )
 
-    if hasattr(primary, "_reconnect"):
+    if reconnect:
         primary._reconnect = _fail_instead_of_reconnecting
+
+    async def _update_settings(delta):
+        nonlocal settings_reconnect
+        settings_reconnect = True
+        try:
+            return await update_settings(delta)
+        finally:
+            # Still set only when the reconnect waits for the caller to finish.
+            settings_reconnect = getattr(primary, "_need_reconnect", False)
+
+    if reconnect and update_settings:
+        primary._update_settings = _update_settings
 
     # Deepgram retries in a separate connection task and ignores the generic
     # reconnect controls. Cancel that task only after its error frame has made

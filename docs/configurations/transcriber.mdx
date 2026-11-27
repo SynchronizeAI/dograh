@@ -46,6 +46,18 @@ Unset keeps AssemblyAI's default.
 When a configured STT fallback takes over, turn handling changes for later
 turns; see [Speech recognition (STT) fallback](./stt-fallback).
 
+## Soniox end of turn
+
+Turn on **Enable endpoint detection** in the Soniox STT settings to let Soniox
+end the caller's turn instead of Dograh's local turn detection. It is off by
+default. `max_endpoint_delay_ms` (500 to 3000 ms) is the longest silence Soniox
+waits before ending a turn; unset keeps Soniox's default. Select `stt-rt-v6`
+as the model for Korean.
+
+With an AssemblyAI Universal-3 Pro backup (see
+[Speech recognition (STT) fallback](./stt-fallback)), the backup ends turns
+itself when it takes over.
+
 ## Flux eager end of turn
 
 For Deepgram `flux-general-en` and `flux-general-multi`, you can enable

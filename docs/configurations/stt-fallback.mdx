@@ -56,7 +56,7 @@ This policy stops those reconnects and connects the backup on the first connecti
 
 There is no health check and no switch back to the primary.
 
-When a fallback replaces a primary that supplied external turn endings, later turns start from the backup transcript and local voice activity, then end through confidence-gated Smart Turn. A completion prediction must reach 0.99 confidence; lower-confidence predictions do not end the turn. Smart Turn uses the workflow's `smart_turn_stop_secs`, with a minimum of the 2-second default. The primary's provider-controlled turn endings stay active until failover occurs.
+When a fallback replaces a primary that supplied external turn endings, later turns start from the backup transcript and local voice activity, then end through confidence-gated Smart Turn. A completion prediction must reach 0.99 confidence; lower-confidence predictions do not end the turn. Smart Turn uses the workflow's `smart_turn_stop_secs`, with a minimum of the 2-second default. The primary's provider-controlled turn endings stay active until failover occurs. A backup that ends turns itself (AssemblyAI end of turn, which an AssemblyAI Universal-3 Pro backup always uses behind a Soniox primary with endpoint detection on) keeps provider turn endings, and Smart Turn is not used.
 
 A named model configuration without a recognizer fallback never stores or returns the `stt_fallback` key.
 

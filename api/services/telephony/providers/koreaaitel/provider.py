@@ -165,7 +165,10 @@ class KoreaAITelProvider(TelephonyProvider):
 
     @staticmethod
     def generate_validation_error_response(error_type) -> tuple:
-        return Response(content=_REJECT, media_type="application/xml")
+        """Sync fork: answered 503, as Twilio's refusal is, so the vendor requests the number's
+        ``voiceFallbackUrl`` (the line's voicemail) for a non-2xx answer (/docs/build/voiceml,
+        대체 URL); a number without one gets the vendor's own error message."""
+        return Response(content=_REJECT, media_type="application/xml", status_code=503)
 
     async def handle_websocket(
         self,

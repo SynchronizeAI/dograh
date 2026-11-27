@@ -754,7 +754,8 @@ async def test_unsigned_koreaaitel_webhook_does_not_log_caller_number(monkeypatc
     finally:
         logger.remove(sink_id)
 
-    assert response.status_code == 200
+    # Sync fork: a refusal answers 503 so the vendor takes the number's voiceFallbackUrl.
+    assert response.status_code == 503
     assert "<Reject" in response.body.decode()
     captured_logs = log_capture.getvalue()
     assert "01012345678" not in captured_logs

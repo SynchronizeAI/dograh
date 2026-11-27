@@ -418,6 +418,35 @@ class TestGenerationStage:
         assert await _through_stage(frames) == [STATEMENT]
 
     @pytest.mark.asyncio
+    async def test_empty_snapshot_is_cleared_before_the_next_response(self):
+        snapshot_reads = 0
+
+        def fixed_line_tools():
+            nonlocal snapshot_reads
+            snapshot_reads += 1
+            return set() if snapshot_reads == 1 else {"collect_info"}
+
+        stage = AgentGenerationProcessor(fixed_line_tools=fixed_line_tools)
+        down, _ = await run_test(
+            stage,
+            frames_to_send=[
+                LLMFullResponseStartFrame(),
+                LLMTextFrame("The first node has no fixed line."),
+                LLMFullResponseEndFrame(),
+                LLMFullResponseStartFrame(),
+                LLMTextFrame(QUESTION),
+                _picks_collect_info(FunctionCallsStartedFrame, "call_2"),
+                LLMFullResponseEndFrame(),
+            ],
+        )
+
+        assert snapshot_reads == 2
+        assert [f.text for f in down if isinstance(f, LLMTextFrame)] == [
+            "The first node has no fixed line."
+        ]
+        assert not any(isinstance(f, AggregatedTextFrame) for f in down)
+
+    @pytest.mark.asyncio
     async def test_interruption_clears_the_pick_for_the_next_response(self):
         frames = [
             LLMFullResponseStartFrame(),

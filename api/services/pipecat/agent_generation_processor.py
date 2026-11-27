@@ -58,12 +58,15 @@ class AgentGenerationProcessor(FrameProcessor):
         self._held: list[str] = []
         self._sends_info = False
         self._info_call_ids: set[str] = set()
+        self._response_started = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, LLMFullResponseStartFrame):
-            await self._reset()
+            preserve_snapshot = not self._response_started and self._lines is not None
+            await self._reset(preserve_snapshot=preserve_snapshot)
+            self._response_started = True
             self._snapshot()
             if self._generation_started_callback:
                 await self._generation_started_callback()
@@ -93,10 +96,10 @@ class AgentGenerationProcessor(FrameProcessor):
             if not self._sends_info:
                 self._note_picks(frame, self._info_call_ids)
             self._info_call_ids.difference_update(call_ids)
-        elif isinstance(frame, LLMFullResponseEndFrame) and self._lines:
+        elif isinstance(frame, LLMFullResponseEndFrame):
             await self._finish()
         elif isinstance(frame, InterruptionFrame):
-            await self._close()
+            await self._reset()
 
         await self.push_frame(frame, direction)
 
@@ -130,15 +133,14 @@ class AgentGenerationProcessor(FrameProcessor):
             call.function_name in lines for call in calls
         )
 
-    async def _reset(self):
+    async def _reset(self, *, preserve_snapshot: bool = False):
         await self._sentences.reset()
         self._held.clear()
         self._sends_info = False
-
-    async def _close(self):
-        await self._reset()
-        self._lines = None
-        self._picked = False
+        if not preserve_snapshot:
+            self._lines = None
+            self._picked = False
+        self._response_started = False
 
     async def _release(self, sentence: str):
         if self._held or _is_question(sentence):
@@ -157,7 +159,7 @@ class AgentGenerationProcessor(FrameProcessor):
             )
         for sentence in kept:
             await self._say(sentence)
-        await self._close()
+        await self._reset()
 
     async def _say(self, sentence: str):
         await self.push_frame(AggregatedTextFrame(sentence, TextType.SENTENCE))

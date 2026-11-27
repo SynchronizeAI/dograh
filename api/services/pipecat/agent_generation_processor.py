@@ -62,6 +62,7 @@ class AgentGenerationProcessor(FrameProcessor):
         self._held: list[str] = []
         self._sends_info = False
         self._info_call_ids: set[str] = set()
+        self._pending_picked = False
         self._response_started = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -69,7 +70,14 @@ class AgentGenerationProcessor(FrameProcessor):
 
         if isinstance(frame, LLMFullResponseStartFrame):
             preserve_snapshot = not self._response_started and self._lines is not None
-            await self._reset(preserve_snapshot=preserve_snapshot)
+            # A distinct started frame can overtake this response's start.
+            defer_pending_pick = self._sends_info
+            pending_picked = self._pending_picked and not defer_pending_pick
+            await self._reset(
+                preserve_snapshot=preserve_snapshot,
+                preserve_pending_pick=defer_pending_pick,
+            )
+            self._picked |= pending_picked
             self._response_started = True
             self._snapshot()
             if self._generation_started_callback:
@@ -97,8 +105,16 @@ class AgentGenerationProcessor(FrameProcessor):
             # exists it comes first, and the started frame can arrive after the
             # response has ended (Google, OpenAI), too late to mean anything.
             call_ids = {call.tool_call_id for call in frame.function_calls}
-            if not self._sends_info:
-                self._note_picks(frame, self._info_call_ids)
+            # A different ID is a new response, even if it arrives before this
+            # response's end frame.
+            is_next_response = self._sends_info and not call_ids.issubset(
+                self._info_call_ids
+            )
+            self._note_picks(
+                frame,
+                self._info_call_ids,
+                next_response=is_next_response,
+            )
             self._info_call_ids.difference_update(call_ids)
         elif isinstance(frame, LLMFullResponseEndFrame):
             await self._finish()
@@ -123,6 +139,8 @@ class AgentGenerationProcessor(FrameProcessor):
         self,
         frame: FunctionCallsFromLLMInfoFrame | FunctionCallsStartedFrame,
         ignored_call_ids: Optional[set[str]] = None,
+        *,
+        next_response: bool = False,
     ):
         ignored_call_ids = ignored_call_ids or set()
         calls = [
@@ -133,14 +151,22 @@ class AgentGenerationProcessor(FrameProcessor):
         if frame.function_calls and not calls:
             return
         lines = self._snapshot()
-        self._picked |= any(
+        picked = any(
             call.function_name in lines for call in calls
         )
+        if next_response:
+            self._pending_picked |= picked
+        else:
+            self._picked |= picked
 
-    async def _reset(self, *, preserve_snapshot: bool = False):
+    async def _reset(
+        self, *, preserve_snapshot: bool = False, preserve_pending_pick: bool = False
+    ):
         await self._sentences.reset()
         self._held.clear()
         self._sends_info = False
+        if not preserve_pending_pick:
+            self._pending_picked = False
         if not preserve_snapshot:
             self._lines = None
             self._picked = False
@@ -163,7 +189,7 @@ class AgentGenerationProcessor(FrameProcessor):
             )
         for sentence in kept:
             await self._say(sentence)
-        await self._reset()
+        await self._reset(preserve_pending_pick=True)
 
     async def _say(self, sentence: str):
         await self.push_frame(AggregatedTextFrame(sentence, TextType.SENTENCE))

@@ -437,6 +437,10 @@ class TestGenerationStage:
                 LLMFullResponseStartFrame(),
                 LLMTextFrame("The first node has no fixed line."),
                 LLMFullResponseEndFrame(),
+                # System tool-call frames overtake queued text frames. Keep
+                # the second response after the first response's end so its
+                # call is not attributed to the preceding node snapshot.
+                SleepFrame(0.1),
                 LLMFullResponseStartFrame(),
                 LLMTextFrame(QUESTION),
                 _picks_collect_info(FunctionCallsStartedFrame, "call_2"),

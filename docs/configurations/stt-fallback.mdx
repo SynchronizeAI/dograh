@@ -52,7 +52,9 @@ Pipecat's `ServiceSwitcher` routes audio to one recognizer at a time.
 
 Its stock `ServiceSwitcherStrategyFailover` moves only after the service is no longer usable, which a websocket reaches after three reconnects spaced 4-10 seconds apart.
 
-This policy stops those reconnects and connects the backup on the first connection error instead.
+This policy stops automatic retries after a connection error and connects the backup on that error instead.
+
+Reconnects requested by a live settings update, such as refreshed speech terms, continue on the primary and do not trigger fallback.
 
 There is no health check and no switch back to the primary.
 

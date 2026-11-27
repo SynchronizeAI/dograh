@@ -53,10 +53,11 @@ class AgentGenerationProcessor(FrameProcessor):
         self._llm_text_frame_callback = llm_text_frame_callback
         self._fixed_line_tools = fixed_line_tools
         self._sentences = KoreanSentenceAggregator()
-        self._lines: set[str] = set()
+        self._lines: Optional[set[str]] = None
         self._picked = False
         self._held: list[str] = []
         self._sends_info = False
+        self._info_call_ids: set[str] = set()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -80,12 +81,18 @@ class AgentGenerationProcessor(FrameProcessor):
             return
         if isinstance(frame, FunctionCallsFromLLMInfoFrame):
             self._sends_info = True
+            self._info_call_ids.update(
+                call.tool_call_id for call in frame.function_calls
+            )
             self._note_picks(frame)
-        elif isinstance(frame, FunctionCallsStartedFrame) and not self._sends_info:
+        elif isinstance(frame, FunctionCallsStartedFrame):
             # Anthropic and Bedrock send only this one. Where the info frame
             # exists it comes first, and the started frame can arrive after the
             # response has ended (Google, OpenAI), too late to mean anything.
-            self._note_picks(frame)
+            call_ids = {call.tool_call_id for call in frame.function_calls}
+            if not self._sends_info:
+                self._note_picks(frame, self._info_call_ids)
+            self._info_call_ids.difference_update(call_ids)
         elif isinstance(frame, LLMFullResponseEndFrame) and self._lines:
             await self._finish()
         elif isinstance(frame, InterruptionFrame):
@@ -101,21 +108,36 @@ class AgentGenerationProcessor(FrameProcessor):
         left the node by the time the start is seen. Whichever comes first
         reads the node.
         """
-        if not self._lines and self._fixed_line_tools:
-            self._lines = self._fixed_line_tools()
+        if self._lines is None:
+            self._lines = self._fixed_line_tools() if self._fixed_line_tools else set()
         return self._lines
 
-    def _note_picks(self, frame: FunctionCallsFromLLMInfoFrame):
+    def _note_picks(
+        self,
+        frame: FunctionCallsFromLLMInfoFrame | FunctionCallsStartedFrame,
+        ignored_call_ids: Optional[set[str]] = None,
+    ):
+        ignored_call_ids = ignored_call_ids or set()
+        calls = [
+            call
+            for call in frame.function_calls
+            if call.tool_call_id not in ignored_call_ids
+        ]
+        if frame.function_calls and not calls:
+            return
         lines = self._snapshot()
-        self._picked |= any(c.function_name in lines for c in frame.function_calls)
+        self._picked |= any(
+            call.function_name in lines for call in calls
+        )
 
     async def _reset(self):
         await self._sentences.reset()
         self._held.clear()
+        self._sends_info = False
 
     async def _close(self):
         await self._reset()
-        self._lines = set()
+        self._lines = None
         self._picked = False
 
     async def _release(self, sentence: str):

@@ -288,12 +288,12 @@ def _text(text: str, size: int = 7) -> list[LLMTextFrame]:
     return [LLMTextFrame(text[i : i + size]) for i in range(0, len(text), size)]
 
 
-def _picks_collect_info(frame_type) -> TextFrame:
+def _picks_collect_info(frame_type, call_id: str = "call_1") -> TextFrame:
     return frame_type(
         function_calls=[
             FunctionCallFromLLM(
                 function_name="collect_info",
-                tool_call_id="call_1",
+                tool_call_id=call_id,
                 arguments={},
                 context=None,
             )
@@ -377,6 +377,45 @@ class TestGenerationStage:
         ]
 
         assert await _through_stage(frames) == [STATEMENT, QUESTION]
+
+    @pytest.mark.asyncio
+    async def test_empty_fixed_line_snapshot_is_not_read_again_at_response_start(self):
+        snapshot_reads = 0
+
+        def fixed_line_tools():
+            nonlocal snapshot_reads
+            snapshot_reads += 1
+            return set() if snapshot_reads == 1 else {"collect_info"}
+
+        stage = AgentGenerationProcessor(fixed_line_tools=fixed_line_tools)
+        down, _ = await run_test(
+            stage,
+            frames_to_send=[
+                _picks_collect_info(FunctionCallsStartedFrame),
+                LLMFullResponseStartFrame(),
+                LLMTextFrame(QUESTION),
+                LLMFullResponseEndFrame(),
+            ],
+        )
+
+        assert snapshot_reads == 1
+        assert [f.text for f in down if isinstance(f, LLMTextFrame)] == [QUESTION]
+        assert not any(isinstance(f, AggregatedTextFrame) for f in down)
+
+    @pytest.mark.asyncio
+    async def test_started_only_pick_is_seen_after_an_info_frame_response(self):
+        frames = [
+            LLMFullResponseStartFrame(),
+            *_text(STATEMENT),
+            _picks_collect_info(FunctionCallsFromLLMInfoFrame),
+            LLMFullResponseEndFrame(),
+            LLMFullResponseStartFrame(),
+            *_text(QUESTION),
+            _picks_collect_info(FunctionCallsStartedFrame, "call_2"),
+            LLMFullResponseEndFrame(),
+        ]
+
+        assert await _through_stage(frames) == [STATEMENT]
 
     @pytest.mark.asyncio
     async def test_interruption_clears_the_pick_for_the_next_response(self):

@@ -327,10 +327,18 @@ def _bind_stt_fallback_turns(
     *,
     uses_external_turns: bool,
 ) -> None:
-    """After external STT fails over, use confidence-gated Smart Turn."""
+    """After external STT fails over, use confidence-gated Smart Turn.
+
+    A backup that ends turns itself (AssemblyAI end of turn) keeps the provider
+    turn strategies: Smart Turn would cut callers off mid-sentence.
+    """
     from api.services.pipecat.fallback_stt import FallbackSTTService
 
     if not uses_external_turns or not isinstance(stt, FallbackSTTService):
+        return
+    backup = getattr(stt, "backup", None)
+    metadata = getattr(backup, "service_metadata_frame", None)
+    if metadata and metadata().user_turn_strategies is not None:
         return
     fallback_smart_turn_stop_secs = max(
         DEFAULT_SMART_TURN_STOP_SECS,

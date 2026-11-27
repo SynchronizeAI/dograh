@@ -334,8 +334,14 @@ def _stt_uses_flux(user_config) -> bool:
     return False
 
 
+def _soniox_endpointing(stt_config) -> bool:
+    return stt_config.provider == ServiceProviders.SONIOX and getattr(
+        stt_config, "enable_endpoint_detection", False
+    )
+
+
 def stt_uses_external_turns(user_config) -> bool:
-    if _stt_uses_flux(user_config):
+    if _stt_uses_flux(user_config) or _soniox_endpointing(user_config.stt):
         return True
     if user_config.stt.provider == ServiceProviders.CARTESIA.value:
         return user_config.stt.model == "ink-2"
@@ -616,7 +622,11 @@ def _stt_configurable_settings(config, *, for_update: bool = False) -> dict[str,
         }
     if provider == ServiceProviders.SONIOX:
         hints = [Language(language)] if language and language != "multi" else []
-        return {"language_hints": hints} if hints or for_update else {}
+        settings = {"language_hints": hints} if hints or for_update else {}
+        delay = getattr(config, "max_endpoint_delay_ms", None)
+        if _soniox_endpointing(config) and delay is not None:
+            settings["max_endpoint_delay_ms"] = delay
+        return settings
     if provider == ServiceProviders.SPEECHMATICS:
         return {"language": language or "en"}
     if provider == ServiceProviders.AZURE_SPEECH:
@@ -936,9 +946,10 @@ def create_single_stt_service(
         return SonioxSTTService(
             api_key=user_config.stt.api_key,
             settings=SonioxSTTSettings(**settings_kwargs),
-            # Local VAD ends the turn and triggers Soniox finalize; Soniox's own
-            # endpoint detection stays off so turn strategies behave as for Nova.
-            vad_force_turn_endpoint=True,
+            # Default: local VAD ends the turn and triggers Soniox finalize, so
+            # turn strategies behave as for Nova. With endpoint detection on,
+            # Soniox ends the turn and the pipeline follows it (external turns).
+            vad_force_turn_endpoint=not _soniox_endpointing(user_config.stt),
             sample_rate=audio_config.transport_in_sample_rate,
         )
     elif user_config.stt.provider == ServiceProviders.SPEECHMATICS.value:
@@ -1031,16 +1042,21 @@ def create_stt_service(
     target_config = user_config.model_copy(
         update={"stt": policy.rules[0].target, "stt_fallback": None}
     )
+    # Soniox's own turns leave Smart Turn out of the call, so an AssemblyAI backup
+    # ends turns itself when it takes over.
+    backup_turns = (
+        "assemblyai" if _soniox_endpointing(user_config.stt) else turn_stop_strategy
+    )
     try:
         backup = create_single_stt_service(
             target_config,
             audio_config,
             keyterms,
             correlation_id,
-            turn_stop_strategy=turn_stop_strategy,
+            turn_stop_strategy=backup_turns,
             register_campaign_errors=False,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - preserve primary when optional backup setup fails
         logger.warning(
             f"STT fallback backup could not be constructed ({type(exc).__name__}); "
             "continuing with primary only"
@@ -1584,7 +1600,7 @@ def create_tts_service(
             register_campaign_errors=False,
         )
         _enable_korean_sentence_aggregation(backup, speech_language)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - preserve primary when optional backup setup fails
         logger.warning(
             f"TTS fallback backup could not be constructed ({type(exc).__name__}); "
             "continuing with primary only"
@@ -1687,8 +1703,7 @@ def create_llm_service_from_provider(
         )
         store = (
             {"store": False}
-            if provider == ServiceProviders.OPENAI.value
-            and is_official_openai_endpoint
+            if provider == ServiceProviders.OPENAI.value and is_official_openai_endpoint
             else {}
         )
         if "gpt-5" in model:

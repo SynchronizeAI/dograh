@@ -23,6 +23,7 @@ from pipecat.processors.frame_processor import (
 )
 from pipecat.services.assemblyai.stt import AssemblyAISTTService
 from pipecat.services.deepgram.stt import DeepgramSTTService
+from pipecat.services.soniox.stt import SonioxSTTService
 from pipecat.turns.user_stop import (
     ExternalUserTurnStopStrategy,
     TurnAnalyzerUserTurnStopStrategy,
@@ -30,10 +31,11 @@ from pipecat.turns.user_stop import (
 from pipecat.turns.user_turn_controller import UserTurnController
 from pipecat.utils.asyncio.task_manager import TaskManager
 
-from api.services.pipecat.fallback_stt import FallbackSTTService
 from api.services.pipecat import run_pipeline as run_pipeline_module
+from api.services.pipecat.fallback_stt import FallbackSTTService
 from api.services.pipecat.greeting import GreetingController
 from api.services.pipecat.run_pipeline import _bind_stt_fallback_turns
+from api.services.pipecat.service_factory import apply_stt_keyterms
 from api.services.pipecat.termination_funnel_processor import (
     TerminationFunnelProcessor,
 )
@@ -134,6 +136,127 @@ async def test_replaced_reconnect_does_not_replay_or_retry():
     await pipeline.cleanup()
 
 
+async def _soniox_primary_pipeline(backup):
+    primary = SonioxSTTService(
+        api_key="disposable", sample_rate=16000, vad_force_turn_endpoint=False
+    )
+    primary._connect = AsyncMock()
+    primary._do_reconnect = AsyncMock()
+    stt, pipeline = await _pipeline(primary, backup)
+    return primary, stt, pipeline
+
+
+@pytest.mark.asyncio
+async def test_soniox_speech_terms_update_reconnects_without_failover():
+    backup = FakeSTT("backup")
+    primary, stt, pipeline = await _soniox_primary_pipeline(backup)
+
+    await apply_stt_keyterms(stt, ["Dograh", "Soniox"])
+    await asyncio.sleep(0.05)
+
+    primary._do_reconnect.assert_awaited_once()
+    assert stt.strategy.active_service is primary
+    assert stt.fallback_metrics == {"switched": 0}
+    assert primary.is_usable
+
+    # The excuse covers a settings update's reconnect only, not a later one,
+    # also after an update that changed nothing.
+    await apply_stt_keyterms(stt, ["Dograh", "Soniox"])
+    await asyncio.sleep(0.05)
+    primary._do_reconnect.assert_awaited_once()
+    await primary._request_reconnect()
+    await asyncio.sleep(0.05)
+    primary._do_reconnect.assert_awaited_once()
+    assert stt.strategy.active_service is backup
+    assert stt.fallback_metrics == {"switched": 1}
+    await pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_soniox_speech_terms_update_mid_speech_reconnects_after_the_turn():
+    backup = FakeSTT("backup")
+    primary, stt, pipeline = await _soniox_primary_pipeline(backup)
+    primary._can_reconnect = False  # the caller is speaking
+
+    await apply_stt_keyterms(stt, ["Dograh"])
+    await asyncio.sleep(0.05)
+    assert primary._need_reconnect
+    primary._do_reconnect.assert_not_awaited()
+
+    await primary._maybe_reconnect_on_user_stopped_speaking()
+    await asyncio.sleep(0.05)
+
+    primary._do_reconnect.assert_awaited_once()
+    assert stt.strategy.active_service is primary
+    assert stt.fallback_metrics == {"switched": 0}
+    await pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_soniox_real_disconnect_after_terms_update_still_fails_over():
+    backup = FakeSTT("backup")
+    primary, stt, pipeline = await _soniox_primary_pipeline(backup)
+
+    await apply_stt_keyterms(stt, ["Dograh"])
+    await asyncio.sleep(0.05)
+    primary._do_reconnect.assert_awaited_once()
+    assert stt.fallback_metrics == {"switched": 0}
+
+    await primary.push_error(
+        "Soniox websocket closed", exception=ConnectionError("closed by server")
+    )
+    await asyncio.sleep(0.05)
+
+    assert stt.strategy.active_service is backup
+    assert stt.fallback_metrics == {"switched": 1}
+    await pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_speech_terms_after_failover_do_not_reconnect_the_abandoned_primary():
+    backup = FakeSTT("backup")
+    primary, stt, pipeline = await _soniox_primary_pipeline(backup)
+    await primary.push_error(
+        "Soniox websocket closed", exception=ConnectionError("closed")
+    )
+    await asyncio.sleep(0.05)
+    assert stt.strategy.active_service is backup
+    assert not primary.is_usable
+
+    # The pre-call fetch can return after failover. Pipecat marks the service
+    # usable again on any settings change, so only a real reconnect would show.
+    await apply_stt_keyterms(stt, ["Dograh"])
+    await asyncio.sleep(0.05)
+
+    primary._do_reconnect.assert_not_awaited()
+    assert stt.strategy.active_service is backup
+    await pipeline.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_assemblyai_backup_takes_over_with_its_own_end_of_turn():
+    backup = AssemblyAISTTService(
+        api_key="disposable", sample_rate=16000, vad_force_turn_endpoint=False
+    )
+    backup._connect = AsyncMock()
+    primary, stt, pipeline = await _soniox_primary_pipeline(backup)
+    greeting = SimpleNamespace(use_transcription_turns=AsyncMock())
+    aggregator = SimpleNamespace(
+        user_turn_controller=SimpleNamespace(_user_turn_stop_timeout=None)
+    )
+    _bind_stt_fallback_turns(stt, aggregator, greeting, {}, uses_external_turns=True)
+
+    await primary.push_error("Soniox connection closed")
+    await asyncio.sleep(0.05)
+
+    assert stt.strategy.active_service is backup
+    # No Smart Turn is installed: the call keeps the provider turn strategies
+    # and AssemblyAI proposes the turn ends.
+    greeting.use_transcription_turns.assert_not_awaited()
+    assert aggregator.user_turn_controller._user_turn_stop_timeout is None
+    await pipeline.cleanup()
+
+
 @pytest.mark.asyncio
 async def test_deepgram_503_connection_error_switches_before_retry(monkeypatch):
     import pipecat.services.deepgram.stt as deepgram_stt
@@ -165,7 +288,9 @@ async def test_deepgram_503_connection_error_switches_before_retry(monkeypatch):
     monkeypatch.setattr(deepgram_stt, "ApiError", ApiError)
     primary = DeepgramSTTService(api_key="disposable", sample_rate=16000)
     primary._client = SimpleNamespace(
-        listen=SimpleNamespace(v1=SimpleNamespace(connect=UnavailableEndpoint().connect))
+        listen=SimpleNamespace(
+            v1=SimpleNamespace(connect=UnavailableEndpoint().connect)
+        )
     )
     backup = FakeSTT("backup")
     stt, pipeline = await _pipeline(primary, backup)

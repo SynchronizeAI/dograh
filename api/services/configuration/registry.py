@@ -2584,6 +2584,22 @@ class SonioxSTTConfiguration(BaseSTTConfiguration):
             "docs_url": "https://soniox.com/docs/stt/concepts/supported-languages",
         },
     )
+    enable_endpoint_detection: bool = Field(
+        default=False,
+        description=(
+            "Let Soniox end the caller's turn (its own endpoint detection) "
+            "instead of Dograh's local turn detection."
+        ),
+    )
+    max_endpoint_delay_ms: int | None = Field(
+        default=None,
+        ge=500,
+        le=3000,
+        description=(
+            "Longest silence (ms) Soniox waits before ending a turn. Unset "
+            "keeps Soniox's default. Used with Soniox endpoint detection."
+        ),
+    )
 
 
 @register_stt(provider=AZURE_SPEECH_PROVIDER)

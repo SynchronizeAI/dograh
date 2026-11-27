@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.assemblyai.stt import AssemblyAISTTService
 from pipecat.services.soniox.stt import SonioxSTTService
 from websockets.protocol import State
@@ -335,20 +336,31 @@ async def test_cleanup_cancels_preparation_and_prevents_node_setup(monkeypatch):
 
 def running_stt():
     """AssemblyAI with a Soniox backup, as both reception workflows run, on open
-    sockets that only record what is sent."""
+    sockets that only record what is sent; the backup's frames wait in a list."""
     primary = AssemblyAISTTService(api_key="test", sample_rate=16000)
     primary._websocket = SimpleNamespace(state=State.OPEN, send=AsyncMock())
     backup = SonioxSTTService(api_key="test", sample_rate=16000)
-    backup._request_reconnect = AsyncMock()
+    backup.queue_frame = AsyncMock()
     return FallbackSTTService(primary, backup)
 
 
 @pytest.mark.asyncio
-async def test_pre_call_speech_terms_reach_the_running_stt(monkeypatch):
+async def test_pre_call_speech_terms_reach_the_running_stt_without_holding_the_opening(
+    monkeypatch,
+):
     stt = running_stt()
+    reconnecting, reconnected = asyncio.Event(), asyncio.Event()
+
+    async def slow_reconnect():
+        reconnecting.set()
+        await reconnected.wait()
+
+    stt.backup._do_reconnect = slow_reconnect
+    many = [f"Term {n}" for n in range(120)]
     fetch_task, release = pending_fetch(
         PreCallFetchResult(
-            initial_context={"speech_terms": "Acme Roofing, Jane Doe ,"},
+            initial_context={"customer": "after"},
+            speech_terms=",".join(["Acme Roofing", " Jane Doe ", "", *many]),
             outcome="completed",
         )
     )
@@ -359,13 +371,23 @@ async def test_pre_call_speech_terms_reach_the_running_stt(monkeypatch):
     # Only the recognizer hears them: no prompt variable, nothing kept with the run.
     assert "speech_terms" not in call.engine._call_context_vars
     assert "speech_terms" not in call.persist.await_args.kwargs["initial_context"]
-    terms = ["Acme Roofing", "Jane Doe"]
+    terms = ["Acme Roofing", "Jane Doe", *many]
+    # AssemblyAI live, up to the 100 it takes.
     stt.primary._websocket.send.assert_awaited_once_with(
-        json.dumps({"type": "UpdateConfiguration", "keyterms_prompt": terms})
+        json.dumps({"type": "UpdateConfiguration", "keyterms_prompt": terms[:100]})
     )
     assert "Acme+Roofing" in stt.primary._build_ws_url()  # a reconnect keeps them
+    # The call opened with the backup's reconnect not yet begun; its own queue
+    # applies the terms after.
+    call.engine.start_initial_agent.assert_awaited_once()
+    [(update,)] = [c.args for c in stt.backup.queue_frame.await_args_list]
+    applying = asyncio.create_task(
+        stt.backup.process_frame(update, FrameDirection.DOWNSTREAM)
+    )
+    await asyncio.wait_for(reconnecting.wait(), 1)
     assert stt.backup._settings.context.terms == terms
-    stt.backup._request_reconnect.assert_awaited_once()
+    reconnected.set()
+    await asyncio.wait_for(applying, 1)
 
 
 @pytest.mark.asyncio
@@ -378,4 +400,4 @@ async def test_a_fetch_without_speech_terms_leaves_the_stt_alone(monkeypatch):
     connected = await Call(monkeypatch, fetch_task=fetch_task, stt=stt).ready()
     await asyncio.wait_for(connected, 1)
     stt.primary._websocket.send.assert_not_awaited()
-    stt.backup._request_reconnect.assert_not_awaited()
+    stt.backup.queue_frame.assert_not_awaited()

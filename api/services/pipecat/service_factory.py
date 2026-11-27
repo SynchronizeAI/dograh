@@ -46,6 +46,7 @@ from api.services.pipecat.murf_tts import MurfTTSService
 from api.services.pipecat.openai_spoken_tool_calls import OpenAISpokenToolCallMixin
 from api.services.pipecat.spoken_tool_calls import SpokenToolCallMixin
 from api.utils.url_security import validate_user_configured_service_url
+from pipecat.frames.frames import STTUpdateSettingsFrame
 from pipecat.metrics.metrics import LLMTokenUsage
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameProcessorSetup
@@ -702,15 +703,18 @@ async def apply_stt_keyterms(stt: STTService, keyterms: list[str]) -> None:
     The workflow ``dictionary`` is read once, when the STT is built and before
     a pre-call fetch answers; these replace its terms for the rest of the call.
     AssemblyAI applies them live (``UpdateConfiguration``, which replaces the
-    set); Soniox reconnects with them. Other providers keep their keyterms.
+    set); Soniox reconnects with them from its own frame queue, so the opening
+    never waits on a backup's reconnect. Other providers keep their keyterms.
     """
     for service in getattr(stt, "services", None) or [stt]:
         if isinstance(service, AssemblyAISTTService):
-            service._settings.keyterms_prompt = keyterms  # for a reconnect's URL
-            await service._send_update_configuration(keyterms_prompt=keyterms)
+            terms = keyterms[:100]  # AssemblyAI's limit: more is an error, a failover
+            service._settings.keyterms_prompt = terms  # for a reconnect's URL
+            await service._send_update_configuration(keyterms_prompt=terms)
         elif isinstance(service, SonioxSTTService):
-            await service._update_settings(
-                SonioxSTTSettings(context=SonioxContextObject(terms=keyterms))
+            context = SonioxContextObject(terms=keyterms)
+            await service.queue_frame(
+                STTUpdateSettingsFrame(delta=SonioxSTTSettings(context=context))
             )
         else:
             logger.info(f"{service} keeps its keyterms: no per-call update")

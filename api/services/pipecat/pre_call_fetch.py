@@ -41,14 +41,17 @@ class PreCallFetchResult:
     # It is validated where it is applied, after the caller is connected, so
     # a malformed value is rejected there rather than failing the fetch.
     model_overrides: Any = None
+    # The hook's `speech_terms` (comma-separated), beside `initial_context`:
+    # the recognizer's alone, so no call variable and nothing kept with the run.
+    speech_terms: Any = None
     outcome: str = "unavailable"
 
 
-def _extract_model_overrides(response_data: dict) -> Any:
+def _extract_beside_context(response_data: dict, key: str) -> Any:
     container = response_data.get("call_inbound")
     if not isinstance(container, dict):
         container = response_data
-    return container.get("model_overrides")
+    return container.get(key)
 
 
 def _extract_initial_context(response_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -203,7 +206,10 @@ async def execute_pre_call_fetch_result(
                 )
                 return PreCallFetchResult(
                     initial_context=initial_context_vars,
-                    model_overrides=_extract_model_overrides(response_data),
+                    model_overrides=_extract_beside_context(
+                        response_data, "model_overrides"
+                    ),
+                    speech_terms=_extract_beside_context(response_data, "speech_terms"),
                     outcome="completed",
                 )
             else:

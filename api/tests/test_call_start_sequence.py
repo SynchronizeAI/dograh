@@ -353,8 +353,12 @@ async def test_pre_call_speech_terms_reach_the_running_stt(monkeypatch):
         )
     )
     release.set()
-    connected = await Call(monkeypatch, fetch_task=fetch_task, stt=stt).ready()
+    call = Call(monkeypatch, fetch_task=fetch_task, stt=stt)
+    connected = await call.ready()
     await asyncio.wait_for(connected, 1)
+    # Only the recognizer hears them: no prompt variable, nothing kept with the run.
+    assert "speech_terms" not in call.engine._call_context_vars
+    assert "speech_terms" not in call.persist.await_args.kwargs["initial_context"]
     terms = ["Acme Roofing", "Jane Doe"]
     stt.primary._websocket.send.assert_awaited_once_with(
         json.dumps({"type": "UpdateConfiguration", "keyterms_prompt": terms})

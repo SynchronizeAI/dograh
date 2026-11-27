@@ -110,7 +110,7 @@ def register_event_handlers(
             authorized with; the first agent runs on it unless the fetch
             patches it.
         stt: The call's STT; a fetch's ``speech_terms`` (comma-separated)
-            become its keyterms (``apply_stt_keyterms``).
+            become its keyterms (``apply_stt_keyterms``) and no call variable.
 
     Returns:
         In-memory recording buffers for use by other handlers.
@@ -159,6 +159,8 @@ def register_event_handlers(
 
         Returns the configuration the first agent runs on.
         """
+        # The recognizer's input, not a call variable: never kept with the run.
+        terms = (fetched.initial_context or {}).pop("speech_terms", None)
         if fetched.initial_context:
             engine._call_context_vars = merge_external_initial_context(
                 engine._call_context_vars, fetched.initial_context
@@ -168,7 +170,6 @@ def register_event_handlers(
                 f"{list(fetched.initial_context.keys())}"
             )
         engine.record_context({"pre_call_fetch_outcome": fetched.outcome})
-        terms = (fetched.initial_context or {}).get("speech_terms")
         keyterms = (
             [t.strip() for t in terms.split(",") if t.strip()]
             if isinstance(terms, str)

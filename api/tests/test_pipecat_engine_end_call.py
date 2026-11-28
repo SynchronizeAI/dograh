@@ -395,8 +395,10 @@ class TestEndCallViaNodeTransition:
             ):
                 await run_engine_test_pipeline(task, engine, transport)
 
-        # Should have 3 LLM generations
-        assert llm.get_current_step() == 3
+        # 2 LLM generations: the agent node's response already spoke its goodbye
+        # alongside end_call, so the end node does not generate a second closing
+        # (see test_end_node_playback.py).
+        assert llm.get_current_step() == 2
 
         # Verify end_call_with_reason was called
         assert len(test_helper.end_call_reasons) >= 1

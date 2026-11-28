@@ -5,6 +5,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from pipecat.frames.frames import (
+    LLMFullResponseStartFrame,
+    LLMTextFrame,
+    SpeechBoundaryFrame,
+)
+from pipecat.processors.frame_processor import FrameProcessor
 from pydantic import TypeAdapter, ValidationError
 
 from api.schemas.tool import CreateToolRequest, ToolMessages
@@ -30,9 +36,11 @@ def plan(text="Checking.", delays=()):
 
 class Harness:
     def __init__(self):
-        self.agent = SimpleNamespace(visit_id="visit-1")
+        self.llm = FrameProcessor()
+        self.agent = SimpleNamespace(visit_id="visit-1", llm=self.llm)
         self.active = True
         self.speech_playback = SpeechPlaybackTracker()
+        self.speech_playback.observe_responses(self.llm)
         self._bot_is_speaking = False
         self._workflow_run_id = 1
         self.spoken = asyncio.Queue()
@@ -53,6 +61,27 @@ class Harness:
         speech = self.speech_playback.create()
         speech.finish(PlaybackOutcome.PLAYED)
         return speech
+
+    async def respond(self, text=None, *, play=False):
+        """One LLM response of the agent, with the text it spoke before any tool call.
+
+        Returns its speech id.
+        """
+        start = LLMFullResponseStartFrame()
+        await self.llm._call_event_handler("on_before_push_frame", start)
+        if text:
+            await self.llm._call_event_handler(
+                "on_before_push_frame", LLMTextFrame(text)
+            )
+        if play:
+            playback, speech_id = (
+                self.speech_playback,
+                start.metadata["dograh_speech_id"],
+            )
+            playback.after_output(None, SpeechBoundaryFrame(speech_id, True))
+            playback.note_output()
+            playback.after_output(None, SpeechBoundaryFrame(speech_id, False))
+        return start.metadata["dograh_speech_id"]
 
     def start(self, name, messages=None, *, timeout=1):
         release = asyncio.Event()
@@ -104,6 +133,70 @@ async def test_first_configured_invocation_owns_messages_until_group_drains(harn
     assert await h.next_message() == "Next."
     new_release.set()
     await new.task
+
+
+@pytest.mark.asyncio
+async def test_response_that_spoke_is_the_start_line_of_its_tool_turn(harness):
+    await harness.respond("Let me check.")
+    execution, release = harness.start("check", plan("Checking."))
+    assert await harness.entered.get() == "check"
+    await asyncio.sleep(0.05)
+    assert harness.spoken.empty()
+    release.set()
+    await execution.task
+    assert harness.spoken.empty()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("earlier_turn_spoke", [False, True])
+async def test_response_without_speech_keeps_the_start_line(
+    harness, earlier_turn_spoke
+):
+    if earlier_turn_spoke:
+        # Speech of an earlier response is not this tool turn's lead-in.
+        await harness.respond("Let me check.")
+    await harness.respond()
+    execution, release = harness.start("check", plan("Checking."))
+    assert await harness.next_message() == "Checking."
+    release.set()
+    await execution.task
+    assert harness.spoken.empty()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["interrupted", "failed"])
+async def test_lead_in_that_never_reached_the_caller_keeps_the_start_line(
+    harness, ending
+):
+    speech_id = await harness.respond("Let me check.")
+    playback = harness.speech_playback
+    if ending == "interrupted":
+        playback.cancel_all(PlaybackOutcome.INTERRUPTED)
+    else:
+        # The response ended without any audio reaching the caller.
+        playback.after_output(None, SpeechBoundaryFrame(speech_id, True))
+        playback.after_output(None, SpeechBoundaryFrame(speech_id, False))
+    assert playback.spoken_response(harness.llm) is None
+    execution, release = harness.start("check", plan("Checking."))
+    assert await harness.next_message() == "Checking."
+    release.set()
+    await execution.task
+    assert harness.spoken.empty()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("lead_in", "expected"),
+    [("Let me check.", ["Waiting 20."]), (None, ["Checking.", "Waiting 20."])],
+)
+async def test_delayed_message_plays_while_slow_tool_runs(harness, lead_in, expected):
+    await harness.respond(lead_in, play=True)
+    execution, release = harness.start("slow", plan("Checking.", [20]))
+    assert [await harness.next_message() for _ in expected] == expected
+    release.set()
+    await execution.task
+    await asyncio.sleep(0.04)
+    assert harness.spoken.empty()
 
 
 @pytest.mark.asyncio

@@ -146,6 +146,8 @@ The API stores these entries in `definition.messages`:
 
 For a recording, use `type: "audio"` and its numeric `recording_id` instead of `text`. Send an empty array to disable announcements. MCP tools use the same format.
 
+The start message is skipped when the agent already spoke in the response that called the tool, so each tool turn has one waiting line. Delayed messages still play after their delay.
+
 When several tools run together, the first called tool with messages supplies the announcements. Delayed updates stop being scheduled when that tool finishes. If speech holds up several updates, only the latest overdue update is queued. The agent then responds using the tool result.
 
 ### What the agent receives

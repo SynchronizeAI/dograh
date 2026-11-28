@@ -187,6 +187,16 @@ class TelephonyProvider(ABC):
             )
         return caller_id
 
+    def select_transfer_from_number(self, call_number: Optional[str] = None) -> str:
+        """The call's number if active, else the default.
+
+        Only Twilio, Telnyx, Plivo, and Cloudonix transfers apply this as caller ID.
+        Twilio SIP transfers retain the original caller as SIP ``From`` when available.
+        """
+        return self.select_from_number(
+            call_number if call_number in self.from_numbers else None
+        )
+
     @abstractmethod
     async def initiate_call(
         self,

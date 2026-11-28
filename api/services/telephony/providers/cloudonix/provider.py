@@ -1402,6 +1402,7 @@ class CloudonixProvider(TelephonyProvider):
         transfer_id: str,
         conference_name: str,
         timeout: int = 30,
+        from_number: str | None = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         """Dial the transfer destination into a conference via Cloudonix.
@@ -1420,7 +1421,7 @@ class CloudonixProvider(TelephonyProvider):
         if not self.validate_config():
             raise ValueError("Cloudonix provider not properly configured")
 
-        from_number = self.select_from_number()
+        from_number = self.select_transfer_from_number(from_number)
         if from_number is None:
             raise ValueError(
                 "No phone numbers configured for Cloudonix provider; a caller-id "

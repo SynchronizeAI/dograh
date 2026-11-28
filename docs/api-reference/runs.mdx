@@ -52,6 +52,13 @@ If you specifically need the API Trigger route, see [Trigger an outbound agent r
 
 Your agent prompt can then reference `{{customer_name}}` and `{{appointment_date}}` and they will be substituted when the run starts.
 
+On public outbound run routes, these routing keys are reserved and discarded
+when placed inside `initial_context`: `telephony_configuration_id`,
+`from_phone_number_id`, `caller_number`, `called_number`, `phone_number`, and
+`direction`. Pass `telephony_configuration_id` and `from_phone_number_id` as
+top-level request fields, and pass the destination as top-level
+`phone_number`. Dograh determines the call numbers and direction from the call.
+
 ## Run status values
 
 | Status | Description |

@@ -110,6 +110,7 @@ async def initiate_call(
         telephony_configuration_id = await resolve_outbound_configuration_id(
             request.telephony_configuration_id,
             user.selected_organization_id,
+            from_phone_number_id=request.from_phone_number_id,
             db=db_client,
         )
         provider = await get_telephony_provider_by_id(
@@ -173,7 +174,7 @@ async def initiate_call(
         phone_row = await db_client.get_phone_number_for_config(
             request.from_phone_number_id, telephony_configuration_id
         )
-        if not phone_row or not phone_row.is_active:
+        if not phone_row:
             raise HTTPException(status_code=400, detail="from_phone_number_not_found")
         from_number = phone_row.address_normalized
 

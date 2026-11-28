@@ -12,7 +12,9 @@ from api.routes.public_agent import (
     router,
 )
 from api.services.call_concurrency import CallConcurrencyLimitError
+from api.services.telephony import outbound_readiness
 from api.services.telephony.outbound_readiness import OutboundSetupIncompleteError
+from api.tests.support.phone_numbers import phone_number as _number
 
 
 @pytest.fixture(autouse=True)
@@ -346,6 +348,122 @@ def test_trigger_route_rejects_caller_id_outside_resolved_config():
 
     assert response.status_code == 400
     assert response.json() == {"detail": "from_phone_number_not_found"}
+
+
+def _trigger_with_real_readiness(
+    numbers, *, phone_row=None, pinned_id=None, initial_context=None
+):
+    """POST a trigger call on configuration 123 with the real outbound pre-flight."""
+    client = TestClient(_make_test_app())
+    workflow = _active_workflow(trigger_path="trigger-uuid-123")
+    provider = _provider()
+    body = {
+        "phone_number": "+15550100123",
+        "telephony_configuration_id": 123,
+        **({"from_phone_number_id": pinned_id} if pinned_id is not None else {}),
+        **({"initial_context": initial_context} if initial_context else {}),
+    }
+
+    with (
+        patch("api.routes.public_agent.db_client") as mock_db,
+        patch("api.routes.public_agent.call_concurrency") as mock_concurrency,
+        patch(
+            "api.routes.public_agent.resolve_outbound_configuration_id",
+            new=outbound_readiness.resolve_outbound_configuration_id,
+        ),
+        patch(
+            "api.routes.public_agent.authorize_workflow_run_start",
+            new=AsyncMock(
+                return_value=SimpleNamespace(has_quota=True, error_message="")
+            ),
+        ),
+        patch(
+            "api.routes.public_agent.get_telephony_provider_by_id",
+            new=AsyncMock(return_value=provider),
+        ),
+        patch(
+            "api.routes.public_agent.get_backend_endpoints",
+            new=AsyncMock(return_value=("https://api.example.com", "wss://ignored")),
+        ),
+    ):
+        mock_concurrency.acquire_org_slot = AsyncMock(return_value=object())
+        mock_concurrency.bind_workflow_run = AsyncMock()
+        mock_concurrency.release_workflow_run_slot = AsyncMock()
+        mock_concurrency.release_slot = AsyncMock()
+        mock_db.validate_api_key = AsyncMock(
+            return_value=SimpleNamespace(id=7, organization_id=11, created_by=22)
+        )
+        mock_db.get_agent_trigger_by_path = AsyncMock(
+            return_value=SimpleNamespace(
+                workflow_id=workflow.id, organization_id=11, state="active"
+            )
+        )
+        mock_db.get_workflow = AsyncMock(return_value=workflow)
+        mock_db.get_telephony_configuration_for_org = AsyncMock(
+            return_value=SimpleNamespace(
+                id=123, name="Customer AI line", provider="twilio", credentials={}
+            )
+        )
+        mock_db.list_phone_numbers_for_config = AsyncMock(return_value=numbers)
+        mock_db.list_trunks_for_config = AsyncMock(return_value=[])
+        mock_db.get_phone_number_for_config = AsyncMock(return_value=phone_row)
+        mock_db.create_workflow_run = AsyncMock(return_value=SimpleNamespace(id=501))
+        mock_db.update_workflow_run = AsyncMock()
+
+        response = client.post(
+            "/public/agent/trigger-uuid-123",
+            headers={"X-API-Key": "test-api-key"},
+            json=body,
+        )
+
+    return response, mock_db, provider
+
+
+def test_trigger_pinned_to_an_active_number_dials_without_a_default_caller_id():
+    response, mock_db, provider = _trigger_with_real_readiness(
+        [_number(5), _number(6)],
+        phone_row=SimpleNamespace(is_active=True, address_normalized="+15550100005"),
+        pinned_id=5,
+    )
+
+    assert response.status_code == 200
+    mock_db.get_phone_number_for_config.assert_awaited_once_with(5, 123)
+    assert provider.initiate_call.await_args.kwargs["from_number"] == "+15550100005"
+
+
+def test_trigger_pinned_to_an_unusable_number_is_refused_before_dialing():
+    response, mock_db, provider = _trigger_with_real_readiness(
+        [_number(4, default=True)], pinned_id=5
+    )
+
+    assert response.status_code == 400
+    assert "The pinned caller ID is not an active number." in response.json()["detail"]
+    mock_db.create_workflow_run.assert_not_awaited()
+    provider.initiate_call.assert_not_awaited()
+
+
+def test_trigger_caller_context_cannot_redirect_the_call():
+    response, mock_db, _provider_ = _trigger_with_real_readiness(
+        [_number(4, default=True)],
+        initial_context={
+            "telephony_configuration_id": 999,
+            "from_phone_number_id": 4,
+            "caller_number": "+15550100198",
+            "called_number": "+15550100197",
+            "phone_number": "+15550100196",
+            "direction": "inbound",
+            "customer_name": "Ada",
+        },
+    )
+
+    assert response.status_code == 200
+    context = mock_db.create_workflow_run.await_args.kwargs["initial_context"]
+    assert context["telephony_configuration_id"] == 123
+    assert context["phone_number"] == context["called_number"] == "+15550100123"
+    assert context["direction"] == "outbound"
+    assert "from_phone_number_id" not in context
+    assert "caller_number" not in context
+    assert context["customer_name"] == "Ada"
 
 
 def test_workflow_uuid_route_uses_scoped_lookup_and_shared_execution():

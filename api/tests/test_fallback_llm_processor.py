@@ -477,6 +477,32 @@ async def test_only_winner_tools_signatures_and_usage_escape(harness, monkeypatc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("text", [None, "Sure."])
+async def test_tool_hook_runs_after_the_response_frames_were_pushed(
+    harness, monkeypatch, text
+):
+    """A tool hook sees the response already delivered, as with a direct service."""
+    tool = Part(function_call=FunctionCall(name="book", args={}, id="booking"))
+    parts = [Part(text=text), tool] if text else [tool]
+    install_streams(
+        harness, monkeypatch, Stream(chunk(parts=parts)), Stream(asyncio.Event())
+    )
+    pushed, at_hook = [], []
+    harness.llm.add_event_handler(
+        "on_before_push_frame", lambda _, frame: pushed.append(type(frame))
+    )
+
+    async def prepared(*_):
+        at_hook.extend(pushed)
+
+    harness.llm.register_function("book", AsyncMock())
+    harness.llm.add_event_handler("on_function_calls_prepared", prepared)
+    await generate(harness)
+    assert LLMFullResponseStartFrame in at_hook
+    assert (LLMTextFrame in at_hook) == bool(text)
+
+
+@pytest.mark.asyncio
 async def test_runtime_instructions_reach_both_and_inference_uses_primary(
     harness, monkeypatch
 ):

@@ -38,10 +38,13 @@ from pipecat.turns.user_mute import (
     CallbackUserMuteStrategy,
     MuteUntilFirstBotCompleteUserMuteStrategy,
 )
+from pipecat.services.llm_service import LLMService
 from pipecat.utils.enums import EndTaskReason
 
 from api.enums import ToolCategory
+from api.schemas.llm_fallback import ErrorCondition
 from api.schemas.workflow_configurations import CallDispositionOption
+from api.services.pipecat.fallback_llm import FallbackLLMProcessor, FallbackRoute
 from api.services.workflow.disposition_extraction import DispositionExtractionService
 from api.services.workflow.dto import (
     EdgeDataDTO,
@@ -418,6 +421,84 @@ class TestEndCallViaNodeTransition:
         assert any(test_helper.should_mute_user_calls), (
             "should_mute_user should return True after end call"
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("goodbye_with_end_call", [False, True])
+    async def test_end_call_under_fallback_reads_its_own_response(
+        self, three_node_workflow: WorkflowGraph, monkeypatch, goodbye_with_end_call
+    ):
+        """The end-call check must see the response that called end_call.
+
+        The previous response ("Sure.") already played. Behind a fallback
+        processor the end-call response's frames sit in its outbox when the tool
+        runs; a busy outbox (simulated with one suspension per pushed frame) used
+        to leave the previous response as the latest speech, so a silent end_call
+        hung up with no goodbye. A goodbye in the end_call response is still the
+        only closing.
+        """
+        push_frame = LLMService.push_frame
+
+        async def lagging_push_frame(self, *args, **kwargs):
+            if isinstance(self, FallbackLLMProcessor):
+                await asyncio.sleep(0)
+            return await push_frame(self, *args, **kwargs)
+
+        monkeypatch.setattr(LLMService, "push_frame", lagging_push_frame)
+        end_call_step = (
+            MockLLMService.create_mixed_chunks(
+                text="Goodbye!",
+                function_name="end_call",
+                arguments={},
+                tool_call_id="call_end",
+            )
+            if goodbye_with_end_call
+            else MockLLMService.create_function_call_chunks("end_call", {}, "call_end")
+        )
+        primary = MockLLMService(
+            mock_steps=[
+                MockLLMService.create_mixed_chunks(
+                    text="Sure.",
+                    function_name="collect_info",
+                    arguments={},
+                    tool_call_id="call_collect",
+                ),
+                end_call_step,
+                MockLLMService.create_text_chunks("Thanks for calling. Goodbye."),
+            ],
+            chunk_delay=0.001,
+            enable_direct_mode=True,
+        )
+        backup = MockLLMService(
+            mock_steps=[], chunk_delay=0.001, enable_direct_mode=True
+        )
+        llm = FallbackLLMProcessor(
+            primary,
+            routes=[FallbackRoute(ErrorCondition(), backup)],
+            first_output_timeout_secs=5,
+        )
+        test_helper = EndCallTestHelper()
+        engine, _, transport, task = await create_engine_with_tracking(
+            three_node_workflow, llm, test_helper
+        )
+
+        with (
+            patch(
+                "api.db:db_client.get_organization_id_by_workflow_run_id",
+                new_callable=AsyncMock,
+                return_value=1,
+            ),
+            patch.object(
+                VariableExtractionManager,
+                "_perform_extraction",
+                new_callable=AsyncMock,
+                return_value={"user_intent": "x"},
+            ),
+        ):
+            await run_engine_test_pipeline(task, engine, transport)
+
+        # The end node generates its closing exactly when end_call was silent.
+        assert primary.get_current_step() == (2 if goodbye_with_end_call else 3)
+        assert test_helper.end_call_reasons == [EndTaskReason.END_CALL.value]
 
 
 class TestEndCallViaCustomTool:

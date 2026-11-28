@@ -4,7 +4,8 @@ Modeled on ``twilio/provider.py``. The vendor differs from Twilio in its field
 names (``CallId``/``AccountId``, ``streamId``/``callId``), its signature
 (HMAC-SHA256, Base64, over the URL plus the sorted key/value pairs) and in
 having no call control after ``POST /calls``: the call ends when the stream
-closes. Numbers are routed outside Dograh, as with ARI.
+closes (our ``<Connect action>`` reply hangs up). Numbers are routed outside
+Dograh, as with ARI.
 """
 
 import base64
@@ -109,11 +110,16 @@ class KoreaAITelProvider(TelephonyProvider):
     async def get_webhook_response(
         self, workflow_id: int, organization_id: int, workflow_run_id: int
     ) -> str:
-        _, wss_backend_endpoint = await get_backend_endpoints()
+        backend_endpoint, wss_backend_endpoint = await get_backend_endpoints()
         ws_url = ws_auth.build_media_ws_url(
             wss_backend_endpoint, workflow_id, organization_id, workflow_run_id
         )
-        return (await self.start_inbound_stream(websocket_url=ws_url)).body.decode()
+        response = await self.start_inbound_stream(
+            websocket_url=ws_url,
+            workflow_run_id=workflow_run_id,
+            backend_endpoint=backend_endpoint,
+        )
+        return response.body.decode()
 
     async def get_call_status(self, call_id: str) -> Dict[str, Any]:
         raise NotImplementedError("한국AI통신 status arrives by callback")
@@ -214,11 +220,22 @@ class KoreaAITelProvider(TelephonyProvider):
             return False
         return await self.verify_webhook_signature(url, webhook_data, signature)
 
-    async def start_inbound_stream(self, *, websocket_url: str, **kwargs: Any):
-        """``<Connect>`` without ``action``: the call ends when the stream closes."""
+    async def start_inbound_stream(
+        self,
+        *,
+        websocket_url: str,
+        workflow_run_id: int,
+        backend_endpoint: str,
+        **kwargs: Any,
+    ):
+        """``<Connect action>``: when the stream closes the vendor posts why
+        (StreamEvent, StreamCloseCode, StreamCloseReason) and the reply hangs up,
+        so the call still ends with the stream but its close code is kept (run 37263
+        closed after 3.4 s and nothing said how)."""
+        action = f"{backend_endpoint}/api/v1/telephony/koreaaitel/stream-ended/{workflow_run_id}"
         voiceml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Connect>
+    <Connect action="{action}">
         <Stream url="{websocket_url}"/>
     </Connect>
 </Response>"""

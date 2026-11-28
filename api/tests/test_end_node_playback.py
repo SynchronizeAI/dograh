@@ -10,6 +10,7 @@ from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     CancelFrame,
     EndFrame,
+    InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
@@ -19,7 +20,7 @@ from pipecat.frames.frames import (
     TTSStoppedFrame,
 )
 from pipecat.processors.aggregators.llm_context import LLMContext
-from pipecat.processors.frame_processor import FrameDirection
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.enums import EndTaskReason
 
 from api.services.pipecat.speech_playback import PlaybackOutcome
@@ -223,3 +224,147 @@ async def test_text_delivery_completes_the_shared_playback_wait(engine, source):
         if not waiting.done():
             waiting.cancel()
             await asyncio.gather(waiting, return_exceptions=True)
+
+
+async def respond(engine, text, *, play=False):
+    """Emit one LLM response from the active agent's LLM; optionally play it out."""
+    llm = engine.active_agent.llm
+    playback = engine.speech_playback
+    start = LLMFullResponseStartFrame()
+    await llm._call_event_handler("on_before_push_frame", start)
+    if text is not None:
+        await llm._call_event_handler("on_before_push_frame", LLMTextFrame(text))
+    speech_id = start.metadata["dograh_speech_id"]
+    if play:
+        playback.after_output(None, SpeechBoundaryFrame(speech_id, True))
+        playback.note_output()
+        playback.after_output(None, SpeechBoundaryFrame(speech_id, False))
+    return speech_id
+
+
+async def call_end_transition(engine):
+    transition = await engine._create_transition_func("move_to_end_call", "end")
+    result = AsyncMock()
+    await transition(SimpleNamespace(arguments={}, result_callback=result))
+    properties = result.await_args.kwargs["properties"]
+    return properties.run_llm, asyncio.create_task(properties.on_context_updated())
+
+
+@pytest.fixture
+def llm_engine(engine):
+    llm = FrameProcessor()
+    engine.active_agent.llm = llm
+    engine.speech_playback.observe_responses(llm)
+    return engine
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("playback", ["still_playing", "already_played"])
+async def test_speech_in_the_transition_response_is_the_closing(llm_engine, playback):
+    engine = llm_engine
+    speech_id = await respond(
+        engine, "You're welcome. Goodbye.", play=playback == "already_played"
+    )
+
+    run_llm, finishing = await call_end_transition(engine)
+    try:
+        # The end node must not generate a second goodbye after this one.
+        assert run_llm is False
+        if playback == "still_playing":
+            await asyncio.sleep(0)
+            # Hanging up now would cut the goodbye that is still being played.
+            engine.call_worker.queue_frame.assert_not_awaited()
+            engine.speech_playback.after_output(
+                None, SpeechBoundaryFrame(speech_id, True)
+            )
+            engine.speech_playback.note_output()
+            engine.speech_playback.after_output(
+                None, SpeechBoundaryFrame(speech_id, False)
+            )
+        await asyncio.wait_for(finishing, timeout=1)
+        engine.perform_final_variable_extraction.assert_awaited_once()
+        terminal = engine.call_worker.queue_frame.await_args.args[0]
+        assert isinstance(terminal, EndFrame)
+        assert terminal.reason == EndTaskReason.END_CALL.value
+        assert not engine.speech_playback.pending
+    finally:
+        if not finishing.done():
+            finishing.cancel()
+            await asyncio.gather(finishing, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome", [PlaybackOutcome.FAILED, PlaybackOutcome.INTERRUPTED]
+)
+async def test_unsuccessful_transition_response_generates_end_node_closing(
+    llm_engine, outcome
+):
+    engine = llm_engine
+    fallback_requested = asyncio.Event()
+
+    async def request_fallback(_context):
+        fallback_requested.set()
+
+    engine.active_agent.run_llm = AsyncMock(side_effect=request_fallback)
+    speech_id = await respond(engine, "You're welcome. Goodbye.")
+
+    run_llm, finishing = await call_end_transition(engine)
+    try:
+        assert run_llm is False
+        await asyncio.sleep(0)
+        engine.call_worker.queue_frame.assert_not_awaited()
+
+        if outcome is PlaybackOutcome.FAILED:
+            engine.speech_playback.after_output(
+                None, SpeechBoundaryFrame(speech_id, True)
+            )
+            engine.speech_playback.after_output(
+                None, SpeechBoundaryFrame(speech_id, False)
+            )
+        else:
+            engine.speech_playback.after_output(
+                None, SpeechBoundaryFrame(speech_id, True)
+            )
+            engine.speech_playback.note_output()
+            await engine.speech_playback.before_output(None, InterruptionFrame())
+        await asyncio.wait_for(fallback_requested.wait(), timeout=1)
+
+        engine.active_agent.run_llm.assert_awaited_once_with(engine.context)
+        assert not finishing.done()
+        await respond(engine, "Thank you for calling. Goodbye.", play=True)
+        await asyncio.wait_for(finishing, timeout=1)
+        assert isinstance(engine.call_worker.queue_frame.await_args.args[0], EndFrame)
+    finally:
+        if not finishing.done():
+            finishing.cancel()
+            await asyncio.gather(finishing, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("earlier", ["none", "earlier_turn_spoke", "cut_off"])
+async def test_end_node_still_closes_when_its_response_was_not_spoken(
+    llm_engine, earlier
+):
+    engine = llm_engine
+    if earlier == "earlier_turn_spoke":
+        await respond(engine, "Anything else?", play=True)
+    if earlier == "cut_off":
+        # The caller interrupted the goodbye before the transition ran.
+        await respond(engine, "Goodbye now.")
+        engine.speech_playback.cancel_all(PlaybackOutcome.INTERRUPTED)
+    else:
+        await respond(engine, " ... ")  # this turn only called the transition
+
+    run_llm, finishing = await call_end_transition(engine)
+    try:
+        assert run_llm is None
+        await asyncio.sleep(0)
+        assert not finishing.done()
+        await respond(engine, "Thank you for calling. Goodbye.", play=True)
+        await asyncio.wait_for(finishing, timeout=1)
+        assert isinstance(engine.call_worker.queue_frame.await_args.args[0], EndFrame)
+    finally:
+        if not finishing.done():
+            finishing.cancel()
+            await asyncio.gather(finishing, return_exceptions=True)

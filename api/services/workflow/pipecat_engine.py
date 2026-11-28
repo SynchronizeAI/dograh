@@ -545,9 +545,12 @@ class PipecatEngine:
 
                 next_node = agent.workflow.nodes[transition_to_node]
                 is_end_node = next_node.is_end
+                spoken = None
                 if is_end_node:
-                    # Register before the tool result can trigger generation.
-                    closing_speech = self.speech_playback.expect_response(
+                    # Speech in the response that called this is already the closing.
+                    spoken = self.speech_playback.spoken_response(agent.llm)
+                    # Else register before the tool result can trigger generation.
+                    closing_speech = spoken or self.speech_playback.expect_response(
                         source=agent.llm
                     )
                     self._mute_pipeline = True
@@ -559,7 +562,17 @@ class PipecatEngine:
                         # model generation, and transport playback free to continue.
                         # EndFrame closes realtime sessions; transport draining
                         # alone cannot recover audio the model hasn't sent yet.
-                        await closing_speech.wait()
+                        played = await closing_speech.wait()
+                        if (
+                            not played
+                            and spoken is not None
+                            and self.agent_can_act(agent)
+                        ):
+                            fallback_speech = self.speech_playback.expect_response(
+                                source=agent.llm
+                            )
+                            await agent.run_llm(self.context)
+                            await fallback_speech.wait()
                         if self.agent_can_act(agent):
                             await self.end_call_with_reason(
                                 EndTaskReason.END_CALL.value
@@ -572,7 +585,8 @@ class PipecatEngine:
                     # for the caller answers on the caller's next turn.
                     run_llm=(
                         False
-                        if speech_queued and not next_node.respond_immediately
+                        if spoken
+                        or (speech_queued and not next_node.respond_immediately)
                         else None
                     ),
                     on_context_updated=on_context_updated,

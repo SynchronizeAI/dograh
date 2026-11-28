@@ -586,6 +586,7 @@ class PlivoProvider(TelephonyProvider):
         transfer_id: str,
         conference_name: str,
         timeout: int = 30,
+        from_number: str | None = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         """Dial the transfer destination and point its answer URL at the conference.
@@ -597,7 +598,7 @@ class PlivoProvider(TelephonyProvider):
         if not self.validate_config():
             raise ValueError("Plivo provider not properly configured")
 
-        from_number = self.select_from_number()
+        from_number = self.select_transfer_from_number(from_number)
         logger.info(f"Selected phone number {from_number} for transfer call")
 
         backend_endpoint, _ = await get_backend_endpoints()

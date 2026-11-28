@@ -14,6 +14,7 @@ from api.routes.public_agent import (
 from api.services.call_concurrency import CallConcurrencyLimitError
 from api.services.telephony import outbound_readiness
 from api.services.telephony.outbound_readiness import OutboundSetupIncompleteError
+from api.tests.support.phone_numbers import phone_number as _number
 
 
 @pytest.fixture(autouse=True)
@@ -349,17 +350,9 @@ def test_trigger_route_rejects_caller_id_outside_resolved_config():
     assert response.json() == {"detail": "from_phone_number_not_found"}
 
 
-def _number(number_id, *, default=False, active=True):
-    return SimpleNamespace(
-        id=number_id,
-        is_active=active,
-        is_default_caller_id=default,
-        inbound_workflow_id=None,
-        telephony_trunk_id=None,
-    )
-
-
-def _trigger_with_real_readiness(numbers, *, phone_row=None, pinned_id=None):
+def _trigger_with_real_readiness(
+    numbers, *, phone_row=None, pinned_id=None, initial_context=None
+):
     """POST a trigger call on configuration 123 with the real outbound pre-flight."""
     client = TestClient(_make_test_app())
     workflow = _active_workflow(trigger_path="trigger-uuid-123")
@@ -368,6 +361,7 @@ def _trigger_with_real_readiness(numbers, *, phone_row=None, pinned_id=None):
         "phone_number": "+15550100123",
         "telephony_configuration_id": 123,
         **({"from_phone_number_id": pinned_id} if pinned_id is not None else {}),
+        **({"initial_context": initial_context} if initial_context else {}),
     }
 
     with (
@@ -437,52 +431,39 @@ def test_trigger_pinned_to_an_active_number_dials_without_a_default_caller_id():
     assert provider.initiate_call.await_args.kwargs["from_number"] == "+15550100005"
 
 
-def test_trigger_without_a_pinned_number_stays_receive_only_without_a_default():
-    response, mock_db, provider = _trigger_with_real_readiness([_number(5), _number(6)])
-
-    assert response.status_code == 400
-    assert "it receives calls only" in response.json()["detail"]
-    mock_db.create_workflow_run.assert_not_awaited()
-    provider.initiate_call.assert_not_awaited()
-
-
-@pytest.mark.parametrize(
-    "numbers, phone_row, detail_has",
-    [
-        pytest.param(
-            [_number(4), _number(5, active=False)],
-            SimpleNamespace(is_active=False, address_normalized="+15550100005"),
-            "it receives calls only",
-            id="inactive-without-default",
-        ),
-        pytest.param(
-            [_number(4)], None, "it receives calls only", id="other-without-default"
-        ),
-        pytest.param(
-            [_number(4, default=True), _number(5, active=False)],
-            SimpleNamespace(is_active=False, address_normalized="+15550100005"),
-            "from_phone_number_not_found",
-            id="inactive-with-default",
-        ),
-        pytest.param(
-            [_number(4, default=True)],
-            None,
-            "from_phone_number_not_found",
-            id="other-with-default",
-        ),
-    ],
-)
-def test_trigger_pinned_to_an_unusable_number_is_refused_before_dialing(
-    numbers, phone_row, detail_has
-):
+def test_trigger_pinned_to_an_unusable_number_is_refused_before_dialing():
     response, mock_db, provider = _trigger_with_real_readiness(
-        numbers, phone_row=phone_row, pinned_id=5
+        [_number(4, default=True)], pinned_id=5
     )
 
     assert response.status_code == 400
-    assert detail_has in response.json()["detail"]
+    assert "The pinned caller ID is not an active number." in response.json()["detail"]
     mock_db.create_workflow_run.assert_not_awaited()
     provider.initiate_call.assert_not_awaited()
+
+
+def test_trigger_caller_context_cannot_redirect_the_call():
+    response, mock_db, _provider_ = _trigger_with_real_readiness(
+        [_number(4, default=True)],
+        initial_context={
+            "telephony_configuration_id": 999,
+            "from_phone_number_id": 4,
+            "caller_number": "+15550100198",
+            "called_number": "+15550100197",
+            "phone_number": "+15550100196",
+            "direction": "inbound",
+            "customer_name": "Ada",
+        },
+    )
+
+    assert response.status_code == 200
+    context = mock_db.create_workflow_run.await_args.kwargs["initial_context"]
+    assert context["telephony_configuration_id"] == 123
+    assert context["phone_number"] == context["called_number"] == "+15550100123"
+    assert context["direction"] == "outbound"
+    assert "from_phone_number_id" not in context
+    assert "caller_number" not in context
+    assert context["customer_name"] == "Ada"
 
 
 def test_workflow_uuid_route_uses_scoped_lookup_and_shared_execution():

@@ -30,6 +30,10 @@ def test_explicit_active_number_wins_over_default():
     assert provider.select_from_number(POOL[2]) == POOL[2]
 
 
+def test_explicit_active_number_needs_no_default_caller_id():
+    assert _provider().select_from_number(POOL[2]) == POOL[2]
+
+
 def test_default_caller_id_used_when_no_explicit_number():
     provider = _provider(default_from_number=POOL[1])
     assert provider.select_from_number() == POOL[1]
@@ -60,6 +64,18 @@ def test_no_default_caller_id_refuses_instead_of_picking_from_the_pool():
 def test_empty_pool_without_default_is_refused():
     with pytest.raises(ValueError, match="has no default caller ID"):
         _provider(from_numbers=[]).select_from_number()
+
+
+def test_transfer_presents_the_calls_own_number_without_a_default_caller_id():
+    assert _provider().select_transfer_from_number(POOL[2]) == POOL[2]
+
+
+def test_transfer_without_a_usable_call_number_behaves_as_before():
+    provider = _provider(default_from_number=POOL[1])
+    assert provider.select_transfer_from_number() == POOL[1]
+    assert provider.select_transfer_from_number("+15555550199") == POOL[1]
+    with pytest.raises(ValueError, match="has no default caller ID"):
+        _provider().select_transfer_from_number("+15555550199")
 
 
 @pytest.mark.asyncio

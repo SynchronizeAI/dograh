@@ -14,6 +14,7 @@ from api.routes.telephony import _handle_telephony_websocket, handle_inbound_run
 from api.services.auth.depends import get_user
 from api.services.call_concurrency import CallConcurrencyLimitError
 from api.services.telephony.providers.koreaaitel.provider import KoreaAITelProvider
+from api.tests.support.phone_numbers import phone_number as _number
 
 
 def _make_test_app() -> FastAPI:
@@ -161,16 +162,6 @@ def test_initiate_call_refuses_a_configuration_without_default_caller_id(
     provider.initiate_call.assert_not_awaited()
 
 
-def _number(number_id, *, default=False, active=True):
-    return SimpleNamespace(
-        id=number_id,
-        is_active=active,
-        is_default_caller_id=default,
-        inbound_workflow_id=None,
-        telephony_trunk_id=None,
-    )
-
-
 def _initiate_call_pinned_to_number_5(numbers, phone_row):
     """POST /initiate-call on configuration 55 pinned to number 5, real pre-flight."""
     client = TestClient(_make_test_app())
@@ -238,39 +229,13 @@ def test_initiate_call_pinned_to_an_active_number_dials_without_a_default_caller
     assert provider.initiate_call.await_args.kwargs["from_number"] == "+15550100005"
 
 
-@pytest.mark.parametrize(
-    "numbers, phone_row, detail_has",
-    [
-        pytest.param(
-            [_number(4), _number(5, active=False)],
-            SimpleNamespace(is_active=False, address_normalized="+15550100005"),
-            "it receives calls only",
-            id="inactive-without-default",
-        ),
-        pytest.param(
-            [_number(4)], None, "it receives calls only", id="other-without-default"
-        ),
-        pytest.param(
-            [_number(4, default=True), _number(5, active=False)],
-            SimpleNamespace(is_active=False, address_normalized="+15550100005"),
-            "from_phone_number_not_found",
-            id="inactive-with-default",
-        ),
-        pytest.param(
-            [_number(4, default=True)],
-            None,
-            "from_phone_number_not_found",
-            id="other-with-default",
-        ),
-    ],
-)
-def test_initiate_call_pinned_to_an_unusable_number_is_refused_before_dialing(
-    numbers, phone_row, detail_has
-):
-    response, mock_db, provider = _initiate_call_pinned_to_number_5(numbers, phone_row)
+def test_initiate_call_pinned_to_an_unusable_number_is_refused_before_dialing():
+    response, mock_db, provider = _initiate_call_pinned_to_number_5(
+        [_number(4, default=True)], None
+    )
 
     assert response.status_code == 400
-    assert detail_has in response.json()["detail"]
+    assert "The pinned caller ID is not an active number." in response.json()["detail"]
     mock_db.create_workflow_run.assert_not_awaited()
     provider.initiate_call.assert_not_awaited()
 

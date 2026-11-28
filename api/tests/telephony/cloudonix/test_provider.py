@@ -1131,6 +1131,42 @@ async def test_transfer_calls_are_pinned_to_the_managed_trunk_name():
 
 
 @pytest.mark.asyncio
+async def test_transfer_presents_the_calls_own_number_without_a_default_caller_id():
+    provider = CloudonixProvider(
+        {
+            "bearer_token": "secret-token",
+            "domain_id": "friendly-name.cloudonix.net",
+            "from_numbers": ["+15551230001", "+15551230003"],
+        }
+    )
+    session = _TrunkSession(
+        get_responses=[],
+        post_response=_FakeResponse(200, {"token": "transfer-session-token"}),
+    )
+
+    with (
+        patch(
+            "api.services.telephony.providers.cloudonix.provider.aiohttp.ClientSession",
+            return_value=session,
+        ),
+        patch(
+            "api.services.telephony.providers.cloudonix.provider.get_backend_endpoints",
+            new=AsyncMock(
+                return_value=("https://api.example.com", "wss://ws.example.com")
+            ),
+        ),
+    ):
+        await provider.transfer_call(
+            destination="+15551230002",
+            transfer_id="transfer-1",
+            conference_name="conference-1",
+            from_number="+15551230003",
+        )
+
+    assert session.post_calls[0][1]["json"]["caller-id"] == "+15551230003"
+
+
+@pytest.mark.asyncio
 async def test_disabled_outbound_trunk_is_not_sent_with_outbound_calls():
     provider = CloudonixProvider(
         {

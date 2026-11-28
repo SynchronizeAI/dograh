@@ -72,10 +72,12 @@ async def _ensure_row_outbound_setup_ready(
         )
     # A call pinned to an active number of this configuration names its own
     # caller ID; every unpinned path still needs the configuration's default.
-    pinned = from_phone_number_id is not None and any(
-        number.id == from_phone_number_id for number in active_numbers
-    )
-    if not pinned and not any(number.is_default_caller_id for number in active_numbers):
+    if from_phone_number_id is not None:
+        if all(number.id != from_phone_number_id for number in active_numbers):
+            raise OutboundSetupIncompleteError(
+                row.id, row.name, "The pinned caller ID is not an active number."
+            )
+    elif not any(number.is_default_caller_id for number in active_numbers):
         raise OutboundSetupIncompleteError(
             row.id, row.name, "It has no default caller ID; it receives calls only."
         )

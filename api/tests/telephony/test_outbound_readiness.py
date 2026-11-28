@@ -18,21 +18,12 @@ from api.services.telephony.outbound_readiness import (
     ensure_outbound_setup_ready,
     resolve_outbound_configuration_id,
 )
+from api.tests.support.phone_numbers import phone_number as _number
 
 
 def _row(config_id=21, name="Internal test lines", provider="twilio"):
     return SimpleNamespace(
         id=config_id, name=name, provider=provider, credentials={"account_sid": "AC1"}
-    )
-
-
-def _number(*, default=False, active=True, number_id=None):
-    return SimpleNamespace(
-        id=number_id,
-        is_active=active,
-        is_default_caller_id=default,
-        inbound_workflow_id=None,
-        telephony_trunk_id=None,
     )
 
 
@@ -134,32 +125,24 @@ async def test_a_pinned_call_without_a_configuration_id_uses_only_the_marked_def
 
 
 @pytest.mark.asyncio
-async def test_the_same_configuration_unpinned_still_receives_calls_only():
-    db = _db(row=_row(), numbers=[_number(number_id=5)])
-
-    with pytest.raises(OutboundSetupIncompleteError, match="receives calls only"):
-        await ensure_outbound_setup_ready(21, 7, db=db)
-    with pytest.raises(OutboundSetupIncompleteError, match="receives calls only"):
-        await resolve_outbound_configuration_id(21, 7, db=db)
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "numbers, pinned_id",
     [
-        pytest.param(
-            [_number(number_id=4), _number(number_id=5, active=False)], 5, id="inactive"
-        ),
-        pytest.param([_number(number_id=4)], 99, id="other-configuration"),
+        pytest.param([_number(4), _number(5, active=False)], 5, id="inactive"),
+        pytest.param([_number(4)], 99, id="other-configuration"),
+        pytest.param([_number(4, default=True)], 99, id="other-with-a-default"),
     ],
 )
-async def test_a_pinned_number_that_is_not_an_active_one_of_the_configuration_is_refused(
+async def test_a_pin_that_is_not_an_active_number_is_refused_as_a_bad_pin(
     numbers, pinned_id
 ):
     db = _db(row=_row(), numbers=numbers)
 
-    with pytest.raises(OutboundSetupIncompleteError, match="receives calls only"):
+    with pytest.raises(OutboundSetupIncompleteError) as excinfo:
         await ensure_outbound_setup_ready(21, 7, from_phone_number_id=pinned_id, db=db)
+
+    assert "The pinned caller ID is not an active number." in str(excinfo.value)
+    assert "no default caller ID" not in str(excinfo.value)
 
 
 @pytest.mark.asyncio

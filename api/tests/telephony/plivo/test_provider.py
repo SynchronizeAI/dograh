@@ -74,3 +74,34 @@ async def test_transfer_call_dials_destination_with_answer_and_hangup_urls():
         "ring_timeout": 20,
     }
     assert result["call_sid"] == "destination-request-uuid"
+
+
+@pytest.mark.asyncio
+async def test_transfer_presents_the_calls_own_number_without_a_default_caller_id():
+    provider = PlivoProvider(
+        {
+            "auth_id": "MA123",
+            "auth_token": "secret",
+            "from_numbers": ["+15551230001", "+15551230003"],
+        }
+    )
+    session = _Session()
+
+    with (
+        patch(
+            "api.services.telephony.providers.plivo.provider.get_backend_endpoints",
+            new=AsyncMock(return_value=("https://backend.test", "wss://backend.test")),
+        ),
+        patch(
+            "api.services.telephony.providers.plivo.provider.aiohttp.ClientSession",
+            return_value=session,
+        ),
+    ):
+        await provider.transfer_call(
+            destination="+15551230002",
+            transfer_id="transfer-1",
+            conference_name="conference-1",
+            from_number="+15551230003",
+        )
+
+    assert session.post_calls[0][1]["from"] == "15551230003"

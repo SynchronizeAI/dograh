@@ -34,6 +34,12 @@ from api.utils.common import get_backend_endpoints
 
 router = APIRouter(prefix="/public/agent", route_class=SecretSafeRoute)
 
+# The trigger decides where a call is placed and to whom, never its caller.
+_CALL_ROUTING_KEYS = frozenset(
+    ("telephony_configuration_id", "from_phone_number_id", "caller_number")
+    + ("called_number", "phone_number", "direction")
+)
+
 
 class TriggerCallRequest(BaseModel):
     """Request model for triggering a call via API"""
@@ -238,7 +244,7 @@ async def _execute_resolved_target(
         phone_row = await db_client.get_phone_number_for_config(
             request.from_phone_number_id, resolved_cfg_id
         )
-        if not phone_row or not phone_row.is_active:
+        if not phone_row:
             raise HTTPException(status_code=400, detail="from_phone_number_not_found")
         from_number = phone_row.address_normalized
 
@@ -267,7 +273,12 @@ async def _execute_resolved_target(
     if api_key_created_by is not None:
         initial_context["api_key_created_by"] = api_key_created_by
     initial_context = merge_external_initial_context(
-        initial_context, request.initial_context
+        initial_context,
+        {
+            key: value
+            for key, value in (request.initial_context or {}).items()
+            if key not in _CALL_ROUTING_KEYS
+        },
     )
     # The destination describes the actual call and must not be overridden by
     # caller-supplied context.

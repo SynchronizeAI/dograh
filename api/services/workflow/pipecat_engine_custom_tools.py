@@ -868,6 +868,10 @@ class CustomToolManager:
                     return
 
                 original_call_sid = workflow_run.gathered_context.get("call_id")
+                # The transfer leg presents the number this call itself used.
+                ctx = getattr(workflow_run, "initial_context", None) or {}
+                outbound = ctx.get("direction") == "outbound"
+                call_number = ctx.get("caller_number" if outbound else "called_number")
 
                 # Generate a unique transfer ID for tracking this transfer
                 transfer_id = str(uuid.uuid4())
@@ -945,6 +949,7 @@ class CustomToolManager:
                         transfer_id=transfer_id,
                         conference_name=conference_name,
                         timeout=timeout_seconds,
+                        **({"from_number": call_number} if call_number else {}),
                         **(
                             {"introduction_audio_url": introduction_audio_url}
                             if introduction_audio_url

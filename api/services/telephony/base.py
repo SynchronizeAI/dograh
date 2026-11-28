@@ -187,6 +187,12 @@ class TelephonyProvider(ABC):
             )
         return caller_id
 
+    def select_transfer_from_number(self, call_number: Optional[str] = None) -> str:
+        """The number this call used while it is still ours, else the default."""
+        return self.select_from_number(
+            call_number if call_number in self.from_numbers else None
+        )
+
     @abstractmethod
     async def initiate_call(
         self,

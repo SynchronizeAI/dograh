@@ -738,3 +738,41 @@ def test_hangup_cause_maps_to_call_status(hangup_cause, expected):
     )
 
     assert parsed["status"] == expected
+
+
+@pytest.mark.asyncio
+async def test_transfer_presents_the_calls_own_number_without_a_default_caller_id():
+    provider = TelnyxProvider(
+        {
+            "api_key": "placeholder-api-key",
+            "connection_id": "connection-id",
+            "from_numbers": ["+15551230002", "+15551230003"],
+        }
+    )
+    response = MagicMock(status=200)
+    response.__aenter__ = AsyncMock(return_value=response)
+    response.__aexit__ = AsyncMock(return_value=False)
+    response.text = AsyncMock(return_value='{"data": {"call_control_id": "leg-1"}}')
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.post.return_value = response
+
+    with (
+        patch(
+            "api.services.telephony.providers.telnyx.provider.get_backend_endpoints",
+            new=AsyncMock(return_value=("https://api.example.com", "wss://ignored")),
+        ),
+        patch(
+            "api.services.telephony.providers.telnyx.provider.aiohttp.ClientSession",
+            return_value=session,
+        ),
+    ):
+        await provider.transfer_call(
+            destination="+15551230009",
+            transfer_id="transfer-1",
+            conference_name="conference-1",
+            from_number="+15551230003",
+        )
+
+    assert session.post.call_args.kwargs["json"]["from"] == "+15551230003"

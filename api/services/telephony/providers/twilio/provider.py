@@ -687,6 +687,7 @@ class TwilioProvider(TelephonyProvider):
         conference_name: str,
         timeout: int = 30,
         introduction_audio_url: str | None = None,
+        from_number: str | None = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         """
@@ -712,7 +713,7 @@ class TwilioProvider(TelephonyProvider):
         if not self.validate_config():
             raise ValueError("Twilio provider not properly configured")
 
-        account_number = self.select_from_number()
+        account_number = self.select_transfer_from_number(from_number)
 
         backend_endpoint, _ = await get_backend_endpoints()
 

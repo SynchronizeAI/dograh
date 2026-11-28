@@ -110,6 +110,7 @@ async def initiate_call(
         telephony_configuration_id = await resolve_outbound_configuration_id(
             request.telephony_configuration_id,
             user.selected_organization_id,
+            from_phone_number_id=request.from_phone_number_id,
             db=db_client,
         )
         provider = await get_telephony_provider_by_id(

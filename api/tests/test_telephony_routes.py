@@ -161,6 +161,120 @@ def test_initiate_call_refuses_a_configuration_without_default_caller_id(
     provider.initiate_call.assert_not_awaited()
 
 
+def _number(number_id, *, default=False, active=True):
+    return SimpleNamespace(
+        id=number_id,
+        is_active=active,
+        is_default_caller_id=default,
+        inbound_workflow_id=None,
+        telephony_trunk_id=None,
+    )
+
+
+def _initiate_call_pinned_to_number_5(numbers, phone_row):
+    """POST /initiate-call on configuration 55 pinned to number 5, real pre-flight."""
+    client = TestClient(_make_test_app())
+    provider = _provider()
+
+    with (
+        patch("api.routes.telephony.db_client") as mock_db,
+        patch("api.routes.telephony.call_concurrency") as mock_concurrency,
+        patch(
+            "api.routes.telephony.authorize_workflow_run_start",
+            new=AsyncMock(
+                return_value=SimpleNamespace(has_quota=True, error_message="")
+            ),
+        ),
+        patch(
+            "api.routes.telephony.get_telephony_provider_by_id",
+            new=AsyncMock(return_value=provider),
+        ),
+        patch(
+            "api.routes.telephony.get_backend_endpoints",
+            new=AsyncMock(return_value=("https://api.example.com", "wss://ignored")),
+        ),
+        patch(
+            "api.services.organization_preferences.get_organization_preferences",
+            new=AsyncMock(return_value=SimpleNamespace(test_phone_number=None)),
+        ),
+    ):
+        mock_concurrency.acquire_org_slot = AsyncMock(return_value=object())
+        mock_concurrency.bind_workflow_run = AsyncMock()
+        mock_concurrency.release_slot = AsyncMock()
+        mock_concurrency.release_workflow_run_slot = AsyncMock()
+        _stub_outbound_setup_lookup(mock_db)
+        mock_db.list_phone_numbers_for_config = AsyncMock(return_value=numbers)
+        mock_db.get_phone_number_for_config = AsyncMock(return_value=phone_row)
+        mock_db.get_workflow = AsyncMock(return_value=_workflow())
+        mock_db.get_draft_version = AsyncMock(return_value=None)
+        mock_db.create_workflow_run = AsyncMock(
+            return_value=SimpleNamespace(
+                id=501, name="WR-TEL-OUT-00000001", initial_context={}
+            )
+        )
+        mock_db.update_workflow_run = AsyncMock()
+
+        response = client.post(
+            "/telephony/initiate-call",
+            json={
+                "workflow_id": 33,
+                "phone_number": "+15550100123",
+                "telephony_configuration_id": 55,
+                "from_phone_number_id": 5,
+            },
+        )
+
+    return response, mock_db, provider
+
+
+def test_initiate_call_pinned_to_an_active_number_dials_without_a_default_caller_id():
+    response, mock_db, provider = _initiate_call_pinned_to_number_5(
+        [_number(5), _number(6)],
+        SimpleNamespace(is_active=True, address_normalized="+15550100005"),
+    )
+
+    assert response.status_code == 200
+    mock_db.get_phone_number_for_config.assert_awaited_once_with(5, 55)
+    assert provider.initiate_call.await_args.kwargs["from_number"] == "+15550100005"
+
+
+@pytest.mark.parametrize(
+    "numbers, phone_row, detail_has",
+    [
+        pytest.param(
+            [_number(4), _number(5, active=False)],
+            SimpleNamespace(is_active=False, address_normalized="+15550100005"),
+            "it receives calls only",
+            id="inactive-without-default",
+        ),
+        pytest.param(
+            [_number(4)], None, "it receives calls only", id="other-without-default"
+        ),
+        pytest.param(
+            [_number(4, default=True), _number(5, active=False)],
+            SimpleNamespace(is_active=False, address_normalized="+15550100005"),
+            "from_phone_number_not_found",
+            id="inactive-with-default",
+        ),
+        pytest.param(
+            [_number(4, default=True)],
+            None,
+            "from_phone_number_not_found",
+            id="other-with-default",
+        ),
+    ],
+)
+def test_initiate_call_pinned_to_an_unusable_number_is_refused_before_dialing(
+    numbers, phone_row, detail_has
+):
+    response, mock_db, provider = _initiate_call_pinned_to_number_5(numbers, phone_row)
+
+    assert response.status_code == 400
+    assert detail_has in response.json()["detail"]
+    mock_db.create_workflow_run.assert_not_awaited()
+    provider.initiate_call.assert_not_awaited()
+
+
 def test_initiate_call_without_a_marked_default_configuration_is_refused():
     app = _make_test_app()
     client = TestClient(app)

@@ -301,7 +301,12 @@ async def test_unsuccessful_transition_response_generates_end_node_closing(
     llm_engine, outcome
 ):
     engine = llm_engine
-    engine.active_agent.run_llm = AsyncMock()
+    fallback_requested = asyncio.Event()
+
+    async def request_fallback(_context):
+        fallback_requested.set()
+
+    engine.active_agent.run_llm = AsyncMock(side_effect=request_fallback)
     speech_id = await respond(engine, "You're welcome. Goodbye.")
 
     run_llm, finishing = await call_end_transition(engine)
@@ -323,7 +328,7 @@ async def test_unsuccessful_transition_response_generates_end_node_closing(
             )
             engine.speech_playback.note_output()
             await engine.speech_playback.before_output(None, InterruptionFrame())
-        await asyncio.sleep(0)
+        await asyncio.wait_for(fallback_requested.wait(), timeout=1)
 
         engine.active_agent.run_llm.assert_awaited_once_with(engine.context)
         assert not finishing.done()

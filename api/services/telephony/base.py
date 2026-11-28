@@ -188,7 +188,10 @@ class TelephonyProvider(ABC):
         return caller_id
 
     def select_transfer_from_number(self, call_number: Optional[str] = None) -> str:
-        """The number this call used while it is still ours, else the default."""
+        """The call's number if active, else the default.
+
+        Only Twilio, Telnyx, Plivo, and Cloudonix transfers apply this as caller ID.
+        """
         return self.select_from_number(
             call_number if call_number in self.from_numbers else None
         )

@@ -545,9 +545,12 @@ class PipecatEngine:
 
                 next_node = agent.workflow.nodes[transition_to_node]
                 is_end_node = next_node.is_end
+                spoken = None
                 if is_end_node:
-                    # Register before the tool result can trigger generation.
-                    closing_speech = self.speech_playback.expect_response(
+                    # Speech in the response that called this is already the closing.
+                    spoken = self.speech_playback.spoken_response(agent.llm)
+                    # Else register before the tool result can trigger generation.
+                    closing_speech = spoken or self.speech_playback.expect_response(
                         source=agent.llm
                     )
                     self._mute_pipeline = True
@@ -572,7 +575,8 @@ class PipecatEngine:
                     # for the caller answers on the caller's next turn.
                     run_llm=(
                         False
-                        if speech_queued and not next_node.respond_immediately
+                        if spoken
+                        or (speech_queued and not next_node.respond_immediately)
                         else None
                     ),
                     on_context_updated=on_context_updated,

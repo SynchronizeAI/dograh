@@ -17,6 +17,7 @@ from pipecat.frames.frames import (
     InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
+    LLMTextFrame,
     OutputAudioRawFrame,
     SpeechBoundaryFrame,
     SpeechOutputAudioRawFrame,
@@ -28,6 +29,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.string import TextPartForConcatenation, concatenate_aggregated_text
+from pipecat.utils.text.alnum_utils import has_alnum
 
 
 class PlaybackOutcome(Enum):
@@ -176,6 +178,8 @@ class SpeechPlaybackTracker:
         self._expected_source: FrameProcessor | None = None
         self._response_sources: dict[FrameProcessor, str | None] = {}
         self._provider_responses: dict[tuple[FrameProcessor, str], str] = {}
+        # Each source's latest response that carried speech, whoever requested it.
+        self._spoken: dict[FrameProcessor, SpeechPlayback] = {}
         self._observers: list[SpeechPlaybackObserver] = []
 
     def add_observer(self, observer: SpeechPlaybackObserver) -> None:
@@ -251,6 +255,7 @@ class SpeechPlaybackTracker:
             # output for another speech request whose boundaries overlap them.
             speech_id = speech.id if speech and not speech.done else str(uuid.uuid4())
             self._response_sources[source] = speech_id
+            self._spoken.pop(source, None)
             if response_key:
                 self._provider_responses[response_key] = speech_id
             frame.metadata["dograh_speech_id"] = speech_id
@@ -268,6 +273,30 @@ class SpeechPlaybackTracker:
             frame.metadata["dograh_speech_id"] = speech_id
             if self._response_sources[source] == speech_id:
                 self._response_sources[source] = None
+        elif source not in self._spoken and self._is_speech(frame):
+            speech_id = self._provider_responses.get(response_key) or (
+                self._response_sources.get(source)
+            )
+            if speech_id:
+                speech = self.pending.get(speech_id)
+                if speech is None:
+                    # Nobody asked for this response; adopt its id to await it.
+                    speech = SpeechPlayback(self, mute_user=False, timeout=35)
+                    speech.id = speech_id
+                    self.pending[speech_id] = speech
+                self._spoken[source] = speech
+
+    @staticmethod
+    def _is_speech(frame: Frame) -> bool:
+        if isinstance(frame, (LLMTextFrame, TTSTextFrame)):  # not user transcripts
+            return not frame.skip_tts and has_alnum(frame.text)
+        return isinstance(frame, OutputAudioRawFrame) and bool(frame.audio)
+
+    def spoken_response(self, source) -> SpeechPlayback | None:
+        """The speech of `source`'s latest response, unless it already failed."""
+        speech = self._spoken.get(source)
+        if speech and speech.outcome in (None, PlaybackOutcome.PLAYED):
+            return speech
 
     def cancel_all(self, outcome: PlaybackOutcome = PlaybackOutcome.CLOSED) -> None:
         for observer in self._observers:
@@ -288,6 +317,7 @@ class SpeechPlaybackTracker:
                 )
             self._response_sources.clear()
             self._provider_responses.clear()
+            self._spoken.clear()
 
     def bind_output(self, output) -> None:
         if self._output:

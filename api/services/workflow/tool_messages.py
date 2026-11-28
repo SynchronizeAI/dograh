@@ -62,7 +62,12 @@ class ToolMessageSession:
         self.engine = engine
         self.agent = agent
         self.tool_call_id = tool_call_id
-        self.start_variants = [message for message in plan if message.event == "start"]
+        # One waiting line per tool turn: a response that spoke before calling the
+        # tool already announced it. Delayed updates still follow.
+        spoke = engine.speech_playback.spoken_response(agent.llm) is not None
+        self.start_variants = [
+            message for message in plan if message.event == "start" and not spoke
+        ]
         self.delayed_variants: dict[int, ToolMessages] = {}
         for message in plan:
             if message.event == "delayed":

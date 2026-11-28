@@ -49,8 +49,10 @@ from pipecat.services.google.llm import GoogleLLMService
 from pipecat.services.llm_service import LLMService
 from pipecat.services.settings import LLMSettings
 from pipecat.utils.asyncio.task_manager import TaskManager
+from pydantic import TypeAdapter
 
 from api.schemas.llm_fallback import ErrorCondition, NoOutputCondition
+from api.schemas.tool import ToolMessages
 from api.services.pipecat import fallback_llm
 from api.services.pipecat.fallback_llm import FallbackLLMProcessor, FallbackRoute
 
@@ -1280,3 +1282,52 @@ async def test_only_winner_is_accepted_by_dograh_tool_owner(
     await engine.active_agent.finish_tool_calls()
     assert len(saved) == 1
     assert len(engine._gathered_context["tool_results"]) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("spoke_now", "start_lines"), [(False, ["Checking."]), (True, [])]
+)
+async def test_start_line_follows_the_response_that_called_the_tool(
+    harness, monkeypatch, simple_workflow, spoke_now, start_lines
+):
+    """Only this response's lead-in replaces the start line, never an earlier one's."""
+    from api.services.workflow.pipecat_engine import PipecatEngine
+
+    engine = PipecatEngine(
+        llm=harness.llm,
+        workflow=simple_workflow,
+        context=LLMContext(),
+        call_context_vars={},
+        workflow_run_id=123,
+    )
+    engine.speech_playback.observe_responses(harness.llm)
+    engine.queue_speech = AsyncMock()
+    messages = TypeAdapter(ToolMessages).validate_python(
+        [{"event": "start", "type": "text", "text": "Checking."}]
+    )
+    handled = []
+
+    async def handler(params):
+        handled.append(params.tool_call_id)
+        await params.result_callback({"saved": True})
+
+    harness.llm.register_function(
+        "book", engine.active_agent.bind_tool(engine, handler, messages=messages)
+    )
+    # The previous response spoke; the backup answers this one after the primary stalls.
+    install_streams(
+        harness, monkeypatch, Stream(chunk("Let me check.")), Stream(chunk("unused"))
+    )
+    await generate(harness)
+    tool = Part(function_call=FunctionCall(name="book", args={}, id="booking"))
+    parts = [Part(text="One moment."), tool] if spoke_now else [tool]
+    install_streams(
+        harness, monkeypatch, Stream(asyncio.Event()), Stream(chunk(parts=parts))
+    )
+    await generate(harness)
+    await engine.active_agent.finish_tool_calls()
+    assert handled == ["booking"]
+    assert [
+        c.kwargs["text"] for c in engine.queue_speech.await_args_list
+    ] == start_lines

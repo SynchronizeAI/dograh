@@ -51,8 +51,10 @@ turns; see [Speech recognition (STT) fallback](./stt-fallback).
 Turn on **Enable endpoint detection** in the Soniox STT settings to let Soniox
 end the caller's turn instead of Dograh's local turn detection. It is off by
 default. `max_endpoint_delay_ms` (500 to 3000 ms) is the longest silence Soniox
-waits before ending a turn; unset keeps Soniox's default. Select `stt-rt-v6`
-as the model for Korean.
+waits before ending a turn; unset keeps Soniox's default. `endpoint_sensitivity`
+(-1.0 to 1.0, higher ends turns sooner) and `endpoint_latency_adjustment_level`
+(0 to 3, higher is faster but may cost a little accuracy) tune it further; unset
+keeps Soniox's default. Select `stt-rt-v6` as the model for Korean.
 
 ## Flux eager end of turn
 

@@ -2600,6 +2600,26 @@ class SonioxSTTConfiguration(BaseSTTConfiguration):
             "keeps Soniox's default. Used with Soniox endpoint detection."
         ),
     )
+    endpoint_sensitivity: float | None = Field(
+        default=None,
+        ge=-1.0,
+        le=1.0,
+        description=(
+            "How readily Soniox ends a turn, -1.0 to 1.0; higher ends it sooner. "
+            "Unset keeps Soniox's default (0.0). Used with Soniox endpoint "
+            "detection."
+        ),
+    )
+    endpoint_latency_adjustment_level: int | None = Field(
+        default=None,
+        ge=0,
+        le=3,
+        description=(
+            "Cuts Soniox endpoint latency, 0 to 3; higher is faster but may cost "
+            "a little accuracy. Unset keeps Soniox's default (0). Used with "
+            "Soniox endpoint detection."
+        ),
+    )
 
 
 @register_stt(provider=AZURE_SPEECH_PROVIDER)

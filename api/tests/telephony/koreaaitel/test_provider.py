@@ -198,3 +198,22 @@ async def test_vendor_stop_ends_input_like_a_disconnect():
     assert (await ws.receive())["text"] == mark  # logged by name, passed on
     assert (await ws.receive())["type"] == "websocket.disconnect"
     assert ws.client_state == "CONNECTED"  # everything else is the real socket
+
+
+@pytest.mark.asyncio
+async def test_vendor_stop_ends_pipecats_receive_loop():
+    from pipecat.transports.websocket.fastapi import _WebSocketMessageIterator
+
+    from api.services.telephony.providers.koreaaitel.transport import (
+        _VendorStopEndsInput,
+    )
+
+    media = json.dumps({"event": "media", "media": {"payload": "AAAA"}})
+    stop = json.dumps({"event": "stop", "stop": {"callId": "CA9f8e"}})
+    never_read = json.dumps({"event": "media", "media": {"payload": "BBBB"}})
+    socket = _Socket([media, stop, never_read])
+
+    received = [
+        m async for m in _WebSocketMessageIterator(_VendorStopEndsInput(socket))
+    ]
+    assert received == [media] and socket._texts == [never_read]

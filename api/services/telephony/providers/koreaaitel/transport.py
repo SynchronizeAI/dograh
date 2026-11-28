@@ -17,10 +17,11 @@ from .serializers import TwilioFrameSerializer
 
 
 class _VendorStopEndsInput:
-    """Missing OSS capability: pipecat's Twilio path ends a call only when the socket
-    closes, and the vendor's socket can stay open after its stream ended (run 37263:
-    closed at the vendor, open here for 16 s). The vendor's ``stop`` is read as the
-    disconnect it means; other non-media events are logged by name."""
+    """Missing OSS capability: pipecat's Twilio serializer drops the vendor's ``stop``
+    and ends a call only when the socket closes (run 37263: the vendor logged its
+    stream closed, and no close reached us for 16 s). ``stop`` is read as the
+    disconnect it means; other non-media events and the socket's own close are
+    logged, so the next drop shows what arrived."""
 
     def __init__(self, websocket: WebSocket):
         self._websocket = websocket
@@ -30,6 +31,10 @@ class _VendorStopEndsInput:
 
     async def receive(self):
         message = await self._websocket.receive()
+        if message.get("type") == "websocket.disconnect":
+            logger.info(
+                f"한국AI통신 socket closed: code={message.get('code')} reason={message.get('reason')!r}"
+            )
         text = message.get("text")
         if text and '"media"' not in text[:40]:  # media leads with its event name
             try:
@@ -54,7 +59,8 @@ async def create_transport(
     is_realtime: bool = False,
     stream_id: str,
 ):
-    """No credentials and no REST hang-up: the call ends when pipecat closes the socket."""
+    """No credentials and no REST hang-up: pipecat closes the socket and the reply to
+    ``<Connect action>`` hangs up."""
     serializer = TwilioFrameSerializer(
         stream_sid=stream_id,
         params=TwilioFrameSerializer.InputParams(auto_hang_up=False),

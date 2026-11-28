@@ -4,7 +4,8 @@ Modeled on ``twilio/provider.py``. The vendor differs from Twilio in its field
 names (``CallId``/``AccountId``, ``streamId``/``callId``), its signature
 (HMAC-SHA256, Base64, over the URL plus the sorted key/value pairs) and in
 having no call control after ``POST /calls``: the call ends when the stream
-closes. Numbers are routed outside Dograh, as with ARI.
+closes (our ``<Connect action>`` reply hangs up). Numbers are routed outside
+Dograh, as with ARI.
 """
 
 import base64
@@ -229,8 +230,8 @@ class KoreaAITelProvider(TelephonyProvider):
     ):
         """``<Connect action>``: when the stream closes the vendor posts why
         (StreamEvent, StreamCloseCode, StreamCloseReason) and the reply hangs up,
-        so the call still ends with the stream but the reason is kept (run 37263
-        closed after 3.4 s with no reason anywhere)."""
+        so the call still ends with the stream but its close code is kept (run 37263
+        closed after 3.4 s and nothing said how)."""
         action = f"{backend_endpoint}/api/v1/telephony/koreaaitel/stream-ended/{workflow_run_id}"
         voiceml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>

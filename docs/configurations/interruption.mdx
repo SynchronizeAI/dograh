@@ -67,3 +67,5 @@ You can set different interruption behavior for each node. For example, disable 
 | Either | No | Yes | User input is processed normally |
 
 When interruption is disabled, the platform mutes the user's audio input while the bot is speaking. Once the bot finishes, the microphone is automatically unmuted and the user can respond normally.
+
+For a call's idle reminder, if the caller starts speaking before its audio becomes audible, Dograh removes the unplayed reminder from the context used for the caller's next reply. Once reminder audio begins, the workflow's usual interruption behavior applies.

@@ -18,6 +18,7 @@ from pipecat.frames.frames import (
     FunctionCallResultFrame,
     FunctionCallsStartedFrame,
     HeartbeatFrame,
+    LLMContextFrame,
     StartFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
@@ -90,6 +91,8 @@ class CallMonitorProcessor(FrameProcessor):
         self._idle_task: asyncio.Task | None = None
         self._retry_count = 0
         self._total_idle_events = 0
+        self.reminder: dict | None = None  # idle prompt queued, not yet audible
+        self._outrun: dict | None = None  # reminder the caller spoke over
         self.on_idle_diagnostic: Callable[..., None] | None = None
         self._waiting_for_user = False
         self._user_turn_active = False
@@ -138,10 +141,19 @@ class CallMonitorProcessor(FrameProcessor):
         self._user_turn_active = True
         self._waiting_for_user = False
         self._retry_count = 0
+        # A reminder the caller outruns before it is audible never happened.
+        self._outrun, self.reminder = self.reminder or self._outrun, None
+        self._drop_outrun_reminder(self.user_aggregator)
         # Only an accepted interruption cancels an outstanding bot response.
         if self._deadline_kind == "idle":
             self._cancel_deadline()
         self._cancel_idle_action()
+
+    def _drop_outrun_reminder(self, context) -> None:
+        """A reminder the caller spoke over was never heard: keep it from the reply."""
+        outrun = self._outrun
+        if outrun is not None and context is not None:
+            context.transform_messages(lambda ms: [m for m in ms if m is not outrun])
 
     def _user_stopped(self, _aggregator=None, *_args) -> None:
         was_active = self._user_turn_active
@@ -288,8 +300,15 @@ class CallMonitorProcessor(FrameProcessor):
             self._user_started()
         elif isinstance(frame, UserStoppedSpeakingFrame):
             self._user_stopped()
+        elif (
+            isinstance(frame, LLMContextFrame)
+            and direction is FrameDirection.DOWNSTREAM
+        ):
+            # The reminder may land in the context after the caller started.
+            self._drop_outrun_reminder(frame.context)
         elif isinstance(frame, (BotStartedSpeakingFrame, BotSpeakingFrame)):
             self._bot_speaking = True
+            self.reminder = None  # audible: a later interruption is ordinary
             if self._deadline_kind == "idle":
                 self._cancel_deadline()
             # These precede the transport write. Delivered audio, observed at

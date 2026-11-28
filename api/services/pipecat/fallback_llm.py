@@ -266,6 +266,8 @@ class FallbackLLMProcessor(LLMService):
         attempt = _attempt.get()
         if attempt and items:
             self._choose(attempt)
+            # Hook observers see the response already delivered, as with a direct service.
+            await self._flush_output()
         if (
             attempt is None
             or attempt.race.winner is not attempt

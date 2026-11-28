@@ -623,14 +623,9 @@ def _stt_configurable_settings(config, *, for_update: bool = False) -> dict[str,
     if provider == ServiceProviders.SONIOX:
         hints = [Language(language)] if language and language != "multi" else []
         settings = {"language_hints": hints} if hints or for_update else {}
-        if _soniox_endpointing(config):
-            for name in (
-                "max_endpoint_delay_ms",
-                "endpoint_sensitivity",
-                "endpoint_latency_adjustment_level",
-            ):
-                if getattr(config, name, None) is not None:
-                    settings[name] = getattr(config, name)
+        delay = getattr(config, "max_endpoint_delay_ms", None)
+        if _soniox_endpointing(config) and delay is not None:
+            settings["max_endpoint_delay_ms"] = delay
         return settings
     if provider == ServiceProviders.SPEECHMATICS:
         return {"language": language or "en"}

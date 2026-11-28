@@ -101,7 +101,7 @@ async def test_signature_invalid_or_missing():
 
 
 @pytest.mark.asyncio
-async def test_inbound_voiceml_connects_stream_without_action():
+async def test_inbound_voiceml_reports_the_stream_end_to_its_run():
     ws_url = "wss://dograh.example/api/v1/telephony/ws/7/11/123/tok"
     response = await _provider().start_inbound_stream(
         websocket_url=ws_url,
@@ -112,7 +112,8 @@ async def test_inbound_voiceml_connects_stream_without_action():
     body = response.body.decode()
     assert response.media_type == "application/xml"
     assert f'<Stream url="{ws_url}"/>' in body
-    assert "<Connect>" in body and "action" not in body
+    action = "https://dograh.example/api/v1/telephony/koreaaitel/stream-ended/123"
+    assert f'<Connect action="{action}">' in body
 
 
 class _FakeWebSocket:
@@ -171,3 +172,29 @@ async def test_websocket_twilio_start_is_rejected():
 
     assert ws.closed == (4400, "Missing stream identifiers")
     run.assert_not_awaited()
+
+
+class _Socket:
+    def __init__(self, texts):
+        self._texts = list(texts)
+        self.client_state = "CONNECTED"
+
+    async def receive(self):
+        return {"type": "websocket.receive", "text": self._texts.pop(0)}
+
+
+@pytest.mark.asyncio
+async def test_vendor_stop_ends_input_like_a_disconnect():
+    from api.services.telephony.providers.koreaaitel.transport import (
+        _VendorStopEndsInput,
+    )
+
+    media = json.dumps({"event": "media", "media": {"payload": "AAAA"}})
+    stop = json.dumps({"event": "stop", "stop": {"callId": "CA9f8e"}})
+    mark = json.dumps({"event": "mark", "mark": {"name": "m1"}})
+    ws = _VendorStopEndsInput(_Socket([media, mark, stop]))
+
+    assert (await ws.receive())["text"] == media
+    assert (await ws.receive())["text"] == mark  # logged by name, passed on
+    assert (await ws.receive())["type"] == "websocket.disconnect"
+    assert ws.client_state == "CONNECTED"  # everything else is the real socket

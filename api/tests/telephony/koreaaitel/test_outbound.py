@@ -177,7 +177,8 @@ async def test_outbound_voiceml_fetch_is_signature_verified(monkeypatch):
             7, 42, 11, _request(URL, params, signed)
         )
     ws_url = "wss://dograh.example/api/v1/telephony/ws/7/11/42"  # the inbound VoiceML
-    assert f'<Stream url="{ws_url}"/>' in ok.body.decode() and b"action" not in ok.body
+    assert f'<Stream url="{ws_url}"/>' in ok.body.decode()
+    assert f'<Connect action="{BASE}/koreaaitel/stream-ended/42">' in ok.body.decode()
 
     for url, sent, signature in [
         (URL, {**params, "CallId": "CA-other"}, signed),  # tampered
@@ -222,6 +223,36 @@ async def test_status_callback_ignores_another_providers_run(monkeypatch):
     handle = status_routes.handle_koreaaitel_status_callback
     assert (await handle(42, _request(STATUS_URL, {}, None)))["status"] == "ignored"
     process.assert_not_awaited()
+
+
+async def test_stream_end_is_kept_for_a_signed_run_and_always_hangs_up(monkeypatch):
+    update = AsyncMock()
+    _routes(status_routes, monkeypatch, _provider())
+    monkeypatch.setattr(status_routes.db_client, "update_workflow_run", update)
+    url = f"{BASE}/koreaaitel/stream-ended/42"
+    params = {
+        "CallId": "CA9f8e",
+        "Direction": "outbound",
+        "StreamEvent": "failed",
+        "StreamCloseCode": "",
+        "StreamCloseReason": "",
+    }
+    signed = compute_signature(SECRET, url, params)
+    handle = status_routes.handle_koreaaitel_stream_ended
+
+    response = await handle(42, _request(url, params, signed))
+    assert b"<Hangup/>" in response.body and response.media_type == "application/xml"
+    kept = update.await_args.kwargs["logs"]["koreaaitel_stream_end"]
+    assert (kept["StreamEvent"], kept["StreamCloseCode"]) == ("failed", "")
+
+    update.reset_mock()
+    for sent, signature in [
+        ({**params, "StreamEvent": "stopped"}, signed),
+        (params, None),
+    ]:
+        response = await handle(42, _request(url, sent, signature))
+        assert b"<Hangup/>" in response.body
+    update.assert_not_awaited()
 
 
 def test_api_key_is_optional_to_save_but_needed_to_dial():

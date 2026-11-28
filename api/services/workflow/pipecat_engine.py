@@ -562,7 +562,17 @@ class PipecatEngine:
                         # model generation, and transport playback free to continue.
                         # EndFrame closes realtime sessions; transport draining
                         # alone cannot recover audio the model hasn't sent yet.
-                        await closing_speech.wait()
+                        played = await closing_speech.wait()
+                        if (
+                            not played
+                            and spoken is not None
+                            and self.agent_can_act(agent)
+                        ):
+                            fallback_speech = self.speech_playback.expect_response(
+                                source=agent.llm
+                            )
+                            await agent.run_llm(self.context)
+                            await fallback_speech.wait()
                         if self.agent_can_act(agent):
                             await self.end_call_with_reason(
                                 EndTaskReason.END_CALL.value

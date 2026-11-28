@@ -10,6 +10,7 @@ from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     CancelFrame,
     EndFrame,
+    InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
@@ -286,6 +287,49 @@ async def test_speech_in_the_transition_response_is_the_closing(llm_engine, play
         assert isinstance(terminal, EndFrame)
         assert terminal.reason == EndTaskReason.END_CALL.value
         assert not engine.speech_playback.pending
+    finally:
+        if not finishing.done():
+            finishing.cancel()
+            await asyncio.gather(finishing, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome", [PlaybackOutcome.FAILED, PlaybackOutcome.INTERRUPTED]
+)
+async def test_unsuccessful_transition_response_generates_end_node_closing(
+    llm_engine, outcome
+):
+    engine = llm_engine
+    engine.active_agent.run_llm = AsyncMock()
+    speech_id = await respond(engine, "You're welcome. Goodbye.")
+
+    run_llm, finishing = await call_end_transition(engine)
+    try:
+        assert run_llm is False
+        await asyncio.sleep(0)
+        engine.call_worker.queue_frame.assert_not_awaited()
+
+        if outcome is PlaybackOutcome.FAILED:
+            engine.speech_playback.after_output(
+                None, SpeechBoundaryFrame(speech_id, True)
+            )
+            engine.speech_playback.after_output(
+                None, SpeechBoundaryFrame(speech_id, False)
+            )
+        else:
+            engine.speech_playback.after_output(
+                None, SpeechBoundaryFrame(speech_id, True)
+            )
+            engine.speech_playback.note_output()
+            await engine.speech_playback.before_output(None, InterruptionFrame())
+        await asyncio.sleep(0)
+
+        engine.active_agent.run_llm.assert_awaited_once_with(engine.context)
+        assert not finishing.done()
+        await respond(engine, "Thank you for calling. Goodbye.", play=True)
+        await asyncio.wait_for(finishing, timeout=1)
+        assert isinstance(engine.call_worker.queue_frame.await_args.args[0], EndFrame)
     finally:
         if not finishing.done():
             finishing.cancel()

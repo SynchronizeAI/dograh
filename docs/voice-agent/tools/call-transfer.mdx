@@ -13,7 +13,7 @@ To hand the caller to **another Dograh agent** rather than to a phone number, us
 
 ## Supported providers
 
-Call transfer is available for telephony calls using Twilio, Telnyx, or Asterisk ARI providers.
+Call transfer is available for telephony calls using Twilio, Telnyx, Plivo, Cloudonix, or Asterisk ARI providers.
 
 <Warning>
 Web calls do not support call transfer.
@@ -33,6 +33,15 @@ For a successful transfer:
 6. When the destination answers, Dograh connects the caller and ends the AI agent's involvement.
 
 By default, the receiving person joins without a conversation summary. For Twilio calls, you can enable a spoken introduction before the two parties are connected.
+
+## Caller ID on transfers
+
+For Twilio, Telnyx, Plivo, and Cloudonix, a transfer uses the call's configured
+number when it is active in the configuration: the caller number for an
+outbound call, or the called number for an inbound call. Otherwise, it falls
+back to the configuration's default caller ID. A campaign transfer keeps the
+number used to dial that campaign call. For a Twilio transfer to a SIP
+destination, the SIP `From` remains the original caller when available.
 
 ## Transfer introduction
 

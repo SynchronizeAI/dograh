@@ -88,7 +88,9 @@ its own region, and each lists the numbers that dial out over it.
 ## Step 4: Add your phone numbers
 
 Cloudonix requires a caller ID on **every** outbound call and rejects the call
-without one, so this step is required even if you only care about inbound.
+without one, so this step is required even if you only care about inbound. See
+[outbound caller ID rules](/integrations/telephony/overview#outbound-caller-id)
+for when to set a default or select an active number per call.
 
 1. Choose **Add number** on the trunk whose carrier gave you the number — the
    trunk is then filled in for you. (**Add phone number** further down works
@@ -97,7 +99,8 @@ without one, so this step is required even if you only care about inbound.
 2. Enter a number your carrier delivers to you, in
    [E.164](https://en.wikipedia.org/wiki/E.164) format — `+`, country code,
    then the number, with no spaces or dashes, for example `+14155550123`
-3. Mark the number you want outbound calls to present as the **default caller ID**
+3. If you will use campaigns or calls without an explicitly selected number,
+   mark a phone number as the **default caller ID**.
 
 Add every DID you intend to use. A number your carrier does not own will be
 rejected by the carrier even though Dograh accepts it — which is why the trunk
@@ -128,9 +131,9 @@ application — see
 
 <AccordionGroup>
   <Accordion title="'Not ready for outbound calls' when starting a call">
-    The setup checklist on the configuration page names the missing step. The
-    two blocking ones are an enabled trunk (Step 3) and at least one phone
-    number (Step 4).
+    The setup checklist on the configuration page names the missing step. See
+    [outbound caller ID rules](/integrations/telephony/overview#outbound-caller-id)
+    for caller ID requirements; also confirm that the outbound trunk is enabled.
   </Accordion>
 
   <Accordion title="Outbound calls fail immediately at the carrier">

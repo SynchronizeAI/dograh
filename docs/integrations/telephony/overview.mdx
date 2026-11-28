@@ -89,6 +89,14 @@ All telephony providers are configured from a single page in Dograh:
 
 A single org can hold multiple configurations (for example, separate Twilio sub-accounts) and multiple phone numbers per configuration. Mark one configuration as the **default outbound** to use it for test calls and campaigns by default.
 
+### Outbound caller ID
+
+Provider setup checklist requirements still apply to every outbound call. Calls
+that do not pin a phone number need the configuration's default caller ID,
+including campaigns. A one-off call can pass `from_phone_number_id` to use an
+active number in its selected configuration without setting a default. A pin
+that is inactive or belongs to another configuration is rejected.
+
 ## Common Features
 
 The telephony integration in Dograh AI supports:

@@ -105,7 +105,7 @@ A successful request returns a `workflow_run_id` that you can use to [retrieve r
 
 ## Initial context
 
-`initial_context` is a JSON object containing any information you want your voice agent to access during the call. You can reference these values in your prompts using [template variables](/voice-agent/template-variables) — values enclosed in `{{` and `}}`.
+`initial_context` is a JSON object for data you want your voice agent to access during the call. You can reference these values in your prompts using [template variables](/voice-agent/template-variables) — values enclosed in `{{` and `}}`. Routing fields belong to the request itself and are ignored inside `initial_context`; see the [Runs API reference](/api-reference/runs#using-initial-context) for the reserved keys.
 
 For example, if your request includes:
 ```json
@@ -241,7 +241,7 @@ To use a specific caller ID from that configuration, also pass `from_phone_numbe
 }
 ```
 
-`from_phone_number_id` is the ID of a phone number configured under the selected telephony configuration. The number must be active and belong to that configuration; otherwise the request returns `400`. You can retrieve configured numbers with [List phone numbers](/api-reference/telephony-configs/phone-numbers/list).
+`from_phone_number_id` is the ID of a phone number configured under the selected telephony configuration. The number must be active and belong to that configuration; otherwise the request returns `400`. You can retrieve configured numbers with [List phone numbers](/api-reference/telephony-configs/phone-numbers/list). See [outbound caller ID rules](/integrations/telephony/overview#outbound-caller-id) for when a default caller ID is required.
 
 <Note>
 For full endpoint details including all parameters and response fields, see the [API reference](/api-reference/runs/trigger).

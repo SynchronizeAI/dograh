@@ -125,10 +125,14 @@ as described in [WhatsApp Inbound Setup](/integrations/telephony/whatsapp#step-4
 
 ### KoreaAITel
 
-KoreaAITel supports inbound calls only. In Dograh, create a **한국AI통신**
-configuration with your **Account ID** and the **Webhook Signing Secret** from
-**Dashboard > 개발자 > 웹훅**. Add the phone number and assign its **Inbound
-workflow**. Dograh uses the signing secret to verify the VoiceML webhook.
+In Dograh, create a **한국AI통신** configuration with your **Account ID** and
+the **Webhook Signing Secret** from **Dashboard > 개발자 > 웹훅**. Add the phone
+number and assign its **Inbound workflow**. Dograh uses the signing secret to
+verify the VoiceML webhook. To place calls from Dograh as well, add the **API
+Key** from **Dashboard > 개발자 > API 키** and mark a number as the default
+caller ID. A one-off call uses the default caller ID unless you choose another
+active number; a campaign rotates over every active number of the
+configuration, so keep only numbers meant for outbound active there.
 Dograh omits `From`, `ForwardedFrom`, and `To` from the persisted run-log
 payload. When `CallerIdRestricted` is `true`, it also blanks `From` and
 `ForwardedFrom` during webhook normalization.

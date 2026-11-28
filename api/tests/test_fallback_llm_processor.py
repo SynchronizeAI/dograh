@@ -46,6 +46,7 @@ from pipecat.processors.frame_processor import (
     FrameProcessorSetup,
 )
 from pipecat.services.google.llm import GoogleLLMService
+from pipecat.services.llm_service import LLMService
 from pipecat.services.settings import LLMSettings
 from pipecat.utils.asyncio.task_manager import TaskManager
 
@@ -500,6 +501,48 @@ async def test_tool_hook_runs_after_the_response_frames_were_pushed(
     await generate(harness)
     assert LLMFullResponseStartFrame in at_hook
     assert (LLMTextFrame in at_hook) == bool(text)
+
+
+@pytest.mark.asyncio
+async def test_interruption_while_response_frames_flush_drops_tool_batch(
+    harness, monkeypatch
+):
+    tool = Part(function_call=FunctionCall(name="book", args={}, id="booking"))
+    install_streams(
+        harness, monkeypatch, Stream(chunk(parts=[Part(text="Sure."), tool])), Stream()
+    )
+    pushed_start, release_start = asyncio.Event(), asyncio.Event()
+    push_frame = LLMService.push_frame
+
+    async def blocked_push_frame(self, frame, direction):
+        if self is harness.llm and isinstance(frame, LLMFullResponseStartFrame):
+            pushed_start.set()
+            await release_start.wait()
+        await push_frame(self, frame, direction)
+
+    monkeypatch.setattr(LLMService, "push_frame", blocked_push_frame)
+    handler, prepared = AsyncMock(), AsyncMock()
+    harness.llm.register_function("book", handler)
+    harness.llm.add_event_handler("on_function_calls_prepared", prepared)
+
+    generation = asyncio.create_task(
+        harness.llm.queue_frame(LLMContextFrame(LLMContext()))
+    )
+    await asyncio.wait_for(pushed_start.wait(), 1)
+    race = harness.llm._active_race
+    assert race is not None
+    interruption = asyncio.create_task(control(harness, InterruptionFrame()))
+    try:
+        async with asyncio.timeout(1):
+            while not race.interrupted:
+                await asyncio.sleep(0)
+    finally:
+        release_start.set()
+    await asyncio.wait_for(interruption, 1)
+    await generation
+
+    prepared.assert_not_awaited()
+    handler.assert_not_awaited()
 
 
 @pytest.mark.asyncio

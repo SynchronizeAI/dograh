@@ -32,13 +32,13 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
+from pipecat.services.llm_service import LLMService
 from pipecat.tests.mock_transport import MockTransport
 from pipecat.transports.base_transport import TransportParams
 from pipecat.turns.user_mute import (
     CallbackUserMuteStrategy,
     MuteUntilFirstBotCompleteUserMuteStrategy,
 )
-from pipecat.services.llm_service import LLMService
 from pipecat.utils.enums import EndTaskReason
 
 from api.enums import ToolCategory

@@ -9,9 +9,12 @@ points at ``/inbound/run``. Outbound: ``POST /calls``, ``/twiml`` and ``routes.p
 from typing import Any, Dict
 
 from api.services.telephony.registry import (
+    ProviderSetupChecklist,
     ProviderSpec,
     ProviderUIField,
     ProviderUIMetadata,
+    SetupStep,
+    caller_id_only_checklist,
     register,
 )
 
@@ -58,6 +61,17 @@ _UI_METADATA = ProviderUIMetadata(
 )
 
 
+def _setup_checklist(credentials, state):
+    """The shared caller-ID step, plus the API Key that placing (not receiving) calls needs."""
+    steps = caller_id_only_checklist(
+        display_name="한국AI통신", has_caller_id=state.active_phone_number_count > 0
+    ).steps
+    if not credentials.get("api_key"):
+        why = "Outbound calls need the API Key (Dashboard > 개발자 > API 키)."
+        steps = [SetupStep("api_key", "Add the API Key", why, False, True), *steps]
+    return ProviderSetupChecklist.from_steps(steps, docs_url=_UI_METADATA.docs_url)
+
+
 SPEC = ProviderSpec(
     name="koreaaitel",
     provider_cls=KoreaAITelProvider,
@@ -67,6 +81,7 @@ SPEC = ProviderSpec(
     config_request_cls=KoreaAITelConfigurationRequest,
     ui_metadata=_UI_METADATA,
     account_id_credential_field="account_id",
+    setup_checklist_resolver=_setup_checklist,
 )
 
 

@@ -1,5 +1,6 @@
 """한국AI통신 outbound: the calls API request, VoiceML, status mapping, signed webhooks."""
 
+import hashlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -50,10 +51,10 @@ def _endpoints():
     return patch(f"{PKG}.get_backend_endpoints", AsyncMock(return_value=ends))
 
 
-async def _call(provider, **kwargs):
+async def _call(provider, webhook_url=URL, **kwargs):
     kwargs = {"to_number": "+821012345678", "workflow_run_id": 42, **kwargs}
     with _endpoints():
-        return await provider.initiate_call(webhook_url=URL, **kwargs)
+        return await provider.initiate_call(webhook_url=webhook_url, **kwargs)
 
 
 async def test_initiate_call_posts_the_documented_request():
@@ -66,7 +67,7 @@ async def test_initiate_call_posts_the_documented_request():
     assert session.post.call_args.kwargs == {
         "headers": {
             "Authorization": "Bearer sk_test",
-            "Idempotency-Key": '"dograh-run-42"',
+            "Idempotency-Key": f'"{hashlib.sha256(URL.encode()).hexdigest()}"',
         },
         "json": {
             "To": "01012345678",
@@ -78,6 +79,17 @@ async def test_initiate_call_posts_the_documented_request():
     assert (result.call_id, result.status) == ("CA9f8e", "queued")
     assert result.caller_number == NUMBERS[1]  # Dograh's own E.164 form
     assert result.provider_metadata == {"call_id": "CA9f8e"}
+
+
+async def test_idempotency_key_is_one_per_run_and_deployment():
+    # The vendor scopes keys to the account; two deployments may both have run 42.
+    keys = []
+    for url in (URL, URL, URL.replace("dograh.example", "candidate.example")):
+        session, api = _api(201, {"callId": "CA1"})
+        with api:
+            await _call(_provider(), webhook_url=url)
+        keys.append(session.post.call_args.kwargs["headers"]["Idempotency-Key"])
+    assert keys[0] == keys[1] != keys[2]
 
 
 @pytest.mark.parametrize(
@@ -212,8 +224,19 @@ async def test_status_callback_ignores_another_providers_run(monkeypatch):
     process.assert_not_awaited()
 
 
-def test_api_key_is_an_optional_sensitive_field_and_outbound_is_on():
+def test_api_key_is_optional_to_save_but_needed_to_dial():
     field = next(f for f in SPEC.ui_metadata.fields if f.name == "api_key")
     assert field.sensitive and not field.required
     assert SPEC.supports_outbound
     assert _config_loader({"api_key": "sk_test"})["api_key"] == "sk_test"
+
+    def ready(numbers, **credentials):  # an inbound-only config has no key
+        state = SimpleNamespace(active_phone_number_count=numbers)
+        return SPEC.setup_checklist_resolver(credentials, state)
+
+    keyless = ready(1)
+    assert (
+        not keyless.ready_for_outbound and "API Key" in keyless.outbound_blocked_reason
+    )
+    assert not ready(0, api_key="sk_test").ready_for_outbound  # still needs a number
+    assert ready(1, api_key="sk_test").ready_for_outbound

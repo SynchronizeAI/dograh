@@ -87,7 +87,8 @@ class KoreaAITelProvider(TelephonyProvider):
         }
         headers = {
             "Authorization": f"Bearer {self.api_key}",
-            "Idempotency-Key": f'"dograh-run-{workflow_run_id}"',  # one run, one call
+            # One run on one deployment, one call: the vendor scopes keys to the account.
+            "Idempotency-Key": f'"{hashlib.sha256(webhook_url.encode()).hexdigest()}"',
         }
         url = f"https://api.koreaaitel.com/v1/accounts/{self.account_id}/calls"
         async with aiohttp.ClientSession() as session:

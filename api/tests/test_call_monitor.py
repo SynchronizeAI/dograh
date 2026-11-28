@@ -15,9 +15,12 @@ from pipecat.frames.frames import (
     LLMContextFrame,
     LLMFullResponseEndFrame,
     OutputAudioRawFrame,
+    ProposedUserStoppedSpeakingFrame,
+    TranscriptionFrame,
     TTSSpeakFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
+    VADUserStartedSpeakingFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
@@ -29,7 +32,11 @@ from pipecat.processors.aggregators.llm_response_universal import (
 from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.tests.mock_transport import MockOutputTransport
 from pipecat.transports.base_transport import TransportParams
+from pipecat.turns.user_start import VADUserTurnStartStrategy
+from pipecat.turns.user_stop import ExternalUserTurnStopStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.utils.enums import EndTaskReason
+from pipecat.utils.time import time_now_iso8601
 
 from api.services.pipecat.agent_bridge import AgentBridgeProcessor
 from api.services.pipecat.pipeline_builder import (
@@ -125,7 +132,7 @@ class ControlledOutput(MockOutputTransport):
 
 
 class ResponseHarness:
-    def __init__(self, *, split=True):
+    def __init__(self, *, split=True, turns=None):
         self.runner = create_worker_runner()
         self.llm = ControlledLLM()
         self.tts = ControlledTTS()
@@ -144,7 +151,9 @@ class ResponseHarness:
         self.engine.call_monitor.tool_timeout = 0.5
         self.user, self.assistant = LLMContextAggregatorPair(
             self.context,
-            user_params=LLMUserAggregatorParams(user_idle_timeout=0),
+            user_params=LLMUserAggregatorParams(
+                user_idle_timeout=0, user_turn_strategies=turns
+            ),
             realtime_service_mode=False,
         )
         self.idle = asyncio.Event()
@@ -252,8 +261,8 @@ class ResponseHarness:
 @pytest.fixture
 async def response(request):
     param = getattr(request, "param", True)
-    split, activate = param if isinstance(param, tuple) else (param, True)
-    harness = ResponseHarness(split=split)
+    split, activate, *turns = param if isinstance(param, tuple) else (param, True)
+    harness = ResponseHarness(split=split, turns=turns[0] if turns else None)
     try:
         await harness.start(activate=activate)
         yield harness
@@ -1031,3 +1040,121 @@ async def test_skipped_speech_does_not_leave_a_response_watch(response):
     assert not response.monitor.pending_response
     await asyncio.wait_for(response.idle.wait(), 1)
     assert not response.engine.is_call_disposed()
+
+
+CALLER_TURNS = UserTurnStrategies(
+    start=[VADUserTurnStartStrategy()],
+    stop=[ExternalUserTurnStopStrategy(timeout=0.05)],
+)
+
+
+class RecordedContexts:
+    """The message texts each LLM completion was asked to answer."""
+
+    def __init__(self, llm):
+        self.requests = []
+        generate = llm.get_chat_completions
+
+        async def record(context):
+            self.requests.append([m.get("content") for m in context.get_messages()])
+            return await generate(context)
+
+        llm.get_chat_completions = record
+
+    @property
+    def reminders(self):
+        return [t for r in self.requests for t in r if "has been quiet" in str(t)]
+
+
+def reminders_in(context):
+    return [m for m in context.messages if "has been quiet" in str(m.get("content"))]
+
+
+async def start_reminder(response):
+    """Let the idle window end; later windows stay far away."""
+    response.handle_idle = True
+    response.monitor.user_idle_timeout = 0.1
+    response.monitor.resume()
+    await asyncio.wait_for(response.idle.wait(), 2)
+    response.monitor.user_idle_timeout = 30
+
+
+async def caller_starts(response):
+    await response.worker.queue_frame(VADUserStartedSpeakingFrame())
+    assert await response.worker.flush_pipeline(timeout=1)
+
+
+async def caller_finishes(response, text):
+    await response.worker.queue_frame(
+        TranscriptionFrame(text, "user", time_now_iso8601())
+    )
+    await response.worker.queue_frame(ProposedUserStoppedSpeakingFrame())
+
+
+async def assert_only_the_answer_to_the_caller(response, asked):
+    await asyncio.wait_for(response.output.stopped.wait(), 2)
+    assert asked.requests == [["다음 주에 방문하고 싶어요"]]
+    assert reminders_in(response.context) == []
+    assert response.output.events.count(BotStartedSpeakingFrame) == 2
+
+
+async def test_silent_caller_hears_the_reminder_once(response):
+    asked = RecordedContexts(response.llm)
+    await start_reminder(response)
+    await asyncio.wait_for(response.output.stopped.wait(), 2)
+    assert len(asked.reminders) == 1
+    assert len(reminders_in(response.context)) == 1
+    # The transport broadcasts each speaking event upstream and downstream.
+    assert response.output.events.count(BotStartedSpeakingFrame) == 2
+
+
+@pytest.mark.parametrize("response", [(True, True, CALLER_TURNS)], indirect=True)
+async def test_caller_speaking_before_reminder_audio_cancels_the_reminder(response):
+    # The reminder is in the context and requested from the LLM, but nothing
+    # is audible yet when the caller's first words arrive.
+    asked = RecordedContexts(response.llm)
+    response.llm.mode = "before_start"
+    await start_reminder(response)
+    await asyncio.wait_for(response.llm.requested.wait(), 2)
+    assert len(reminders_in(response.context)) == 1
+
+    await caller_starts(response)
+    response.llm.mode = "audio"
+    response.llm.release.set()
+    await caller_finishes(response, "다음 주에 방문하고 싶어요")
+    await assert_only_the_answer_to_the_caller(response, asked)
+
+
+@pytest.mark.parametrize("response", [(True, True, CALLER_TURNS)], indirect=True)
+async def test_caller_starting_while_the_reminder_is_still_in_flight(response):
+    # The caller starts in the same instant the reminder is queued, so it can
+    # land in the context after the caller's turn began.
+    asked = RecordedContexts(response.llm)
+    response.handle_idle = True
+    response.monitor.user_idle_timeout = 0.1
+    response.monitor.resume()
+    await asyncio.wait_for(response.idle.wait(), 2)
+    response.monitor.user_idle_timeout = 30
+    await caller_starts(response)
+    await caller_finishes(response, "다음 주에 방문하고 싶어요")
+    await assert_only_the_answer_to_the_caller(response, asked)
+
+
+@pytest.mark.parametrize("response", [(True, True, CALLER_TURNS)], indirect=True)
+async def test_audible_reminder_stays_when_the_caller_interrupts_it(response):
+    asked = RecordedContexts(response.llm)
+    response.output.release.clear()
+    await start_reminder(response)
+    await asyncio.wait_for(response.output.writing.wait(), 2)
+    assert response.output.events.count(BotStartedSpeakingFrame) == 2
+
+    # The stuck transport write also blocks a flush, so let the frame settle.
+    await response.worker.queue_frame(VADUserStartedSpeakingFrame())
+    await asyncio.sleep(0.1)
+    response.output.release.set()
+    await caller_finishes(response, "다음 주에 방문하고 싶어요")
+    async with asyncio.timeout(2):
+        while len(asked.requests) < 2:
+            await asyncio.sleep(0.01)
+    assert len(asked.reminders) == 2
+    assert len(reminders_in(response.context)) == 1

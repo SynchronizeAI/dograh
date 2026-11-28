@@ -40,6 +40,7 @@ async def test_openai_realtime_messages_append_frame_sends_conversation_item():
 async def test_user_idle_handler_uses_realtime_append_path():
     engine = SimpleNamespace(
         llm=SimpleNamespace(),
+        call_monitor=SimpleNamespace(),
         end_call_with_reason=AsyncMock(),
     )
     aggregator = SimpleNamespace(push_frame=AsyncMock())

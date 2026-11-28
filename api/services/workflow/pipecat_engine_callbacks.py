@@ -36,9 +36,8 @@ async def handle_user_idle(engine: "PipecatEngine", aggregator, attempt: int) ->
         if attempt == 1
         else "The user has been quiet. We will be disconnecting the call now. Wish them a good day in the language that the user has been speaking so far."
     )
-    await aggregator.push_frame(
-        LLMMessagesAppendFrame([{"role": "user", "content": content}], run_llm=True)
-    )
+    engine.call_monitor.reminder = message = {"role": "user", "content": content}
+    await aggregator.push_frame(LLMMessagesAppendFrame([message], run_llm=True))
     if attempt > 1:
         await engine.end_call_with_reason(
             EndTaskReason.USER_IDLE_MAX_DURATION_EXCEEDED.value

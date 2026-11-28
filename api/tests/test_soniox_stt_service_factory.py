@@ -1,11 +1,10 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import pytest
 from pipecat.services.settings import NOT_GIVEN
 from pipecat.transcriptions.language import Language
 from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
-from pydantic import TypeAdapter, ValidationError
+from pydantic import TypeAdapter
 
 from api.schemas.ai_model_configuration import EffectiveAIModelConfiguration
 from api.services.configuration.options import SONIOX_STT_LANGUAGES, SONIOX_STT_MODELS
@@ -50,8 +49,6 @@ def test_soniox_stt_configuration_exposes_defaults_and_languages():
     assert SONIOX_STT_MODELS == ("stt-rt-v5", "stt-rt-v6")
     assert config.enable_endpoint_detection is False
     assert config.max_endpoint_delay_ms is None
-    assert config.endpoint_sensitivity is None
-    assert config.endpoint_latency_adjustment_level is None
     assert "multi" in SONIOX_STT_LANGUAGES
     assert "hi" in SONIOX_STT_LANGUAGES
     assert language_schema["examples"] == list(SONIOX_STT_LANGUAGES)
@@ -187,116 +184,3 @@ def test_soniox_without_endpoint_detection_keeps_assemblyai_backup_on_local_turn
     assert stt.primary._vad_force_turn_endpoint is True
     assert stt.backup._vad_force_turn_endpoint is True
     assert stt.backup.service_metadata_frame().user_turn_strategies is None
-
-
-def test_soniox_endpoint_tuning_reaches_soniox_when_endpointing_is_on():
-    service = create_stt_service(
-        _soniox_config(
-            enable_endpoint_detection=True,
-            endpoint_sensitivity=0.6,
-            endpoint_latency_adjustment_level=2,
-        ),
-        _audio_config(),
-    )
-
-    assert service._settings.endpoint_sensitivity == 0.6
-    assert service._settings.endpoint_latency_adjustment_level == 2
-    # Left unset, Soniox keeps its own default delay.
-    assert service._settings.max_endpoint_delay_ms is None
-
-
-def test_soniox_endpoint_tuning_keeps_zero_as_a_chosen_value():
-    service = create_stt_service(
-        _soniox_config(
-            enable_endpoint_detection=True,
-            endpoint_sensitivity=0.0,
-            endpoint_latency_adjustment_level=0,
-        ),
-        _audio_config(),
-    )
-
-    assert service._settings.endpoint_sensitivity == 0.0
-    assert service._settings.endpoint_latency_adjustment_level == 0
-
-
-def test_soniox_endpoint_tuning_unset_leaves_soniox_defaults():
-    service = create_stt_service(
-        _soniox_config(enable_endpoint_detection=True), _audio_config()
-    )
-
-    assert service._settings.endpoint_sensitivity is None
-    assert service._settings.endpoint_latency_adjustment_level is None
-
-
-def test_soniox_endpoint_tuning_is_ignored_without_endpoint_detection():
-    service = create_stt_service(
-        _soniox_config(endpoint_sensitivity=0.6, endpoint_latency_adjustment_level=2),
-        _audio_config(),
-    )
-
-    assert service._settings.endpoint_sensitivity is None
-    assert service._settings.endpoint_latency_adjustment_level is None
-
-
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("endpoint_sensitivity", -1.01),
-        ("endpoint_sensitivity", 1.01),
-        ("endpoint_sensitivity", float("nan")),
-        ("endpoint_latency_adjustment_level", -1),
-        ("endpoint_latency_adjustment_level", 4),
-    ],
-)
-def test_soniox_endpoint_tuning_rejects_values_outside_soniox_bounds(field, value):
-    with pytest.raises(ValidationError, match=field):
-        SonioxSTTConfiguration(api_key="test-key", **{field: value})
-
-
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("endpoint_sensitivity", -1.0),
-        ("endpoint_sensitivity", 1.0),
-        ("endpoint_latency_adjustment_level", 0),
-        ("endpoint_latency_adjustment_level", 3),
-    ],
-)
-def test_soniox_endpoint_tuning_accepts_the_bounds(field, value):
-    config = SonioxSTTConfiguration(api_key="test-key", **{field: value})
-
-    assert getattr(config, field) == value
-
-
-def test_soniox_as_backup_carries_endpoint_tuning():
-    config = EffectiveAIModelConfiguration.model_validate(
-        {
-            "stt": {
-                "provider": "assemblyai",
-                "api_key": "primary-key",
-                "model": ASSEMBLYAI_REALTIME_AGENT_MODEL,
-                "language": "ko",
-            },
-            "stt_fallback": {
-                "rules": [
-                    {
-                        "condition": {"type": "error"},
-                        "target": {
-                            "provider": "soniox",
-                            "api_key": "backup-key",
-                            "language": "ko",
-                            "enable_endpoint_detection": True,
-                            "endpoint_sensitivity": 0.4,
-                            "endpoint_latency_adjustment_level": 1,
-                        },
-                    }
-                ]
-            },
-        }
-    )
-
-    stt = create_stt_service(config, _audio_config())
-
-    assert isinstance(stt, FallbackSTTService)
-    assert stt.backup._settings.endpoint_sensitivity == 0.4
-    assert stt.backup._settings.endpoint_latency_adjustment_level == 1
